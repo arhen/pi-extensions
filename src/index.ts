@@ -13,10 +13,19 @@
  */
 
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 // =============================================================================
 // Types
@@ -65,9 +74,17 @@ interface ModelMetadata {
 	[key: string]: unknown;
 }
 
-type ModelMetadataApi = Record<string, { models?: Record<string, ModelMetadata> }>;
+type ModelMetadataApi = Record<
+	string,
+	{ models?: Record<string, ModelMetadata> }
+>;
 type ModelMetadataIndex = Map<string, ModelMetadata>;
-type DiscoveryStatus = "idle" | "discovering" | "connected" | "not_configured" | "disconnected";
+type DiscoveryStatus =
+	| "idle"
+	| "discovering"
+	| "connected"
+	| "not_configured"
+	| "disconnected";
 
 // =============================================================================
 // Constants
@@ -78,8 +95,14 @@ const ENV_BASE_URL = process.env.NINE_ROUTER_BASE_URL;
 const ENV_API_KEY = process.env.NINE_ROUTER_API_KEY;
 const ENV_ENABLE_REASONING = process.env.NINE_ROUTER_ENABLE_REASONING;
 const CONFIG_PATH = join(homedir(), ".pi", "agent", "9router-config.json");
-const CACHE_DIR = join(process.env.XDG_CACHE_HOME || join(homedir(), ".cache"), "pi");
-const MODEL_METADATA_CACHE_PATH = join(CACHE_DIR, "9router-model-metadata.json");
+const CACHE_DIR = join(
+	process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
+	"pi",
+);
+const MODEL_METADATA_CACHE_PATH = join(
+	CACHE_DIR,
+	"9router-model-metadata.json",
+);
 const DISCOVERY_CACHE_PATH = join(CACHE_DIR, "9router-discovery-cache.json");
 const MODEL_METADATA_URL = "https://models.dev/api.json";
 const MODEL_METADATA_TTL_MS = 24 * 60 * 60 * 1000;
@@ -104,14 +127,17 @@ function normalizeBaseUrl(url: string): string {
 
 function maskApiKey(key: string): string {
 	if (key.length <= 8) return "●".repeat(key.length);
-	return key.slice(0, 4) + "●".repeat(Math.max(0, key.length - 8)) + key.slice(-4);
+	return (
+		key.slice(0, 4) + "●".repeat(Math.max(0, key.length - 8)) + key.slice(-4)
+	);
 }
 
 function parseBooleanFlag(value: string | undefined): boolean | undefined {
 	if (!value) return undefined;
 	const normalized = value.trim().toLowerCase();
 	if (["1", "true", "yes", "on", "enabled"].includes(normalized)) return true;
-	if (["0", "false", "no", "off", "disabled"].includes(normalized)) return false;
+	if (["0", "false", "no", "off", "disabled"].includes(normalized))
+		return false;
 	return undefined;
 }
 
@@ -119,20 +145,24 @@ function applyEnvOverrides(config: NineRouterConfig): NineRouterConfig {
 	return {
 		baseUrl: normalizeBaseUrl(ENV_BASE_URL || config.baseUrl),
 		apiKey: ENV_API_KEY || config.apiKey,
-		enableReasoning: parseBooleanFlag(ENV_ENABLE_REASONING) ?? config.enableReasoning,
+		enableReasoning:
+			parseBooleanFlag(ENV_ENABLE_REASONING) ?? config.enableReasoning,
 	};
 }
 
 function loadConfigFromDisk(): NineRouterConfig | null {
 	try {
 		if (!existsSync(CONFIG_PATH)) return null;
-		const data = JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<NineRouterConfig>;
+		const data = JSON.parse(
+			readFileSync(CONFIG_PATH, "utf8"),
+		) as Partial<NineRouterConfig>;
 		if (!data.baseUrl || typeof data.baseUrl !== "string") return null;
 		return {
 			baseUrl: normalizeBaseUrl(data.baseUrl),
-			apiKey: typeof data.apiKey === "string" && data.apiKey.trim()
-				? data.apiKey.trim()
-				: undefined,
+			apiKey:
+				typeof data.apiKey === "string" && data.apiKey.trim()
+					? data.apiKey.trim()
+					: undefined,
 			enableReasoning: data.enableReasoning === true,
 		};
 	} catch (err) {
@@ -146,11 +176,15 @@ function saveConfigToDisk(config: NineRouterConfig) {
 		mkdirSync(dirname(CONFIG_PATH), { recursive: true });
 		writeFileSync(
 			CONFIG_PATH,
-			`${JSON.stringify({
-				baseUrl: config.baseUrl,
-				apiKey: config.apiKey,
-				enableReasoning: config.enableReasoning,
-			}, null, 2)}\n`,
+			`${JSON.stringify(
+				{
+					baseUrl: config.baseUrl,
+					apiKey: config.apiKey,
+					enableReasoning: config.enableReasoning,
+				},
+				null,
+				2,
+			)}\n`,
 			{ mode: 0o600 },
 		);
 	} catch (err) {
@@ -159,11 +193,13 @@ function saveConfigToDisk(config: NineRouterConfig) {
 }
 
 function getInitialConfig(): NineRouterConfig {
-	return applyEnvOverrides(loadConfigFromDisk() || {
-		baseUrl: DEFAULT_BASE_URL,
-		apiKey: undefined,
-		enableReasoning: false,
-	});
+	return applyEnvOverrides(
+		loadConfigFromDisk() || {
+			baseUrl: DEFAULT_BASE_URL,
+			apiKey: undefined,
+			enableReasoning: false,
+		},
+	);
 }
 
 function loadConfigFromSession(ctx: ExtensionContext): NineRouterConfig | null {
@@ -202,7 +238,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isCachedModel(value: unknown): value is NineRouterModel {
-	return isRecord(value) && typeof value.id === "string" && value.id.trim().length > 0;
+	return (
+		isRecord(value) &&
+		typeof value.id === "string" &&
+		value.id.trim().length > 0
+	);
 }
 
 function apiKeyHash(apiKey: string | undefined): string {
@@ -211,8 +251,12 @@ function apiKeyHash(apiKey: string | undefined): string {
 		: "none";
 }
 
-function cacheMatchesConfig(cache: Partial<NineRouterDiscoveryCache>, config: NineRouterConfig): boolean {
-	if (normalizeBaseUrl(String(cache.baseUrl || "")) !== config.baseUrl) return false;
+function cacheMatchesConfig(
+	cache: Partial<NineRouterDiscoveryCache>,
+	config: NineRouterConfig,
+): boolean {
+	if (normalizeBaseUrl(String(cache.baseUrl || "")) !== config.baseUrl)
+		return false;
 	// Legacy caches without credential fingerprint: trust only unauthenticated.
 	if (typeof cache.apiKeyHash !== "string") return !config.apiKey;
 	return cache.apiKeyHash === apiKeyHash(config.apiKey);
@@ -225,12 +269,17 @@ interface NineRouterDiscoveryCache {
 	models: NineRouterModel[];
 }
 
-function readDiscoveryCache(config: NineRouterConfig): NineRouterDiscoveryCache | undefined {
+function readDiscoveryCache(
+	config: NineRouterConfig,
+): NineRouterDiscoveryCache | undefined {
 	try {
 		if (!existsSync(DISCOVERY_CACHE_PATH)) return undefined;
-		const cache = JSON.parse(readFileSync(DISCOVERY_CACHE_PATH, "utf8")) as Partial<NineRouterDiscoveryCache>;
+		const cache = JSON.parse(
+			readFileSync(DISCOVERY_CACHE_PATH, "utf8"),
+		) as Partial<NineRouterDiscoveryCache>;
 		if (!cacheMatchesConfig(cache, config)) return undefined;
-		if (!Array.isArray(cache.models) || cache.models.length === 0) return undefined;
+		if (!Array.isArray(cache.models) || cache.models.length === 0)
+			return undefined;
 		return {
 			baseUrl: config.baseUrl,
 			apiKeyHash: apiKeyHash(config.apiKey),
@@ -238,39 +287,54 @@ function readDiscoveryCache(config: NineRouterConfig): NineRouterDiscoveryCache 
 			models: cache.models.filter(isCachedModel),
 		};
 	} catch (err) {
-		console.warn(`[pi-9router] Failed to load discovery cache: ${errorMessage(err)}`);
+		console.warn(
+			`[pi-9router] Failed to load discovery cache: ${errorMessage(err)}`,
+		);
 		return undefined;
 	}
 }
 
-function writeDiscoveryCache(config: NineRouterConfig, models: NineRouterModel[]) {
+function writeDiscoveryCache(
+	config: NineRouterConfig,
+	models: NineRouterModel[],
+) {
 	if (models.length === 0) return;
 	try {
 		mkdirSync(dirname(DISCOVERY_CACHE_PATH), { recursive: true });
 		writeFileSync(
 			DISCOVERY_CACHE_PATH,
-			`${JSON.stringify({
-				baseUrl: config.baseUrl,
-				apiKeyHash: apiKeyHash(config.apiKey),
-				ts: Date.now(),
-				models,
-			}, null, 2)}\n`,
+			`${JSON.stringify(
+				{
+					baseUrl: config.baseUrl,
+					apiKeyHash: apiKeyHash(config.apiKey),
+					ts: Date.now(),
+					models,
+				},
+				null,
+				2,
+			)}\n`,
 			{ mode: 0o600 },
 		);
 	} catch (err) {
-		console.warn(`[pi-9router] Failed to persist discovery cache: ${errorMessage(err)}`);
+		console.warn(
+			`[pi-9router] Failed to persist discovery cache: ${errorMessage(err)}`,
+		);
 	}
 }
 
 function clearDiscoveryCache(config: NineRouterConfig) {
 	try {
 		if (!existsSync(DISCOVERY_CACHE_PATH)) return;
-		const cache = JSON.parse(readFileSync(DISCOVERY_CACHE_PATH, "utf8")) as Partial<NineRouterDiscoveryCache>;
+		const cache = JSON.parse(
+			readFileSync(DISCOVERY_CACHE_PATH, "utf8"),
+		) as Partial<NineRouterDiscoveryCache>;
 		if (cacheMatchesConfig(cache, config)) {
 			unlinkSync(DISCOVERY_CACHE_PATH);
 		}
 	} catch (err) {
-		console.warn(`[pi-9router] Failed to clear discovery cache: ${errorMessage(err)}`);
+		console.warn(
+			`[pi-9router] Failed to clear discovery cache: ${errorMessage(err)}`,
+		);
 	}
 }
 
@@ -278,7 +342,10 @@ function clearDiscoveryCache(config: NineRouterConfig) {
 // Fetch Helpers
 // =============================================================================
 
-function createTimeoutSignal(signal: AbortSignal | undefined, timeoutMs: number) {
+function createTimeoutSignal(
+	signal: AbortSignal | undefined,
+	timeoutMs: number,
+) {
 	const controller = new AbortController();
 	const abort = () => controller.abort();
 	const timer = setTimeout(abort, timeoutMs);
@@ -321,12 +388,14 @@ function errorMessage(err: unknown): string {
 
 function isAuthError(err: unknown): boolean {
 	const message = errorMessage(err).toLowerCase();
-	return message.includes("401")
-		|| message.includes("403")
-		|| message.includes("unauthorized")
-		|| message.includes("forbidden")
-		|| message.includes("api key")
-		|| message.includes("auth");
+	return (
+		message.includes("401") ||
+		message.includes("403") ||
+		message.includes("unauthorized") ||
+		message.includes("forbidden") ||
+		message.includes("api key") ||
+		message.includes("auth")
+	);
 }
 
 function connectionFailureStatus(err: unknown): DiscoveryStatus {
@@ -356,7 +425,9 @@ function isStaleDiscoveryError(err: unknown): boolean {
 function readMetadataCache(): { ts: number; data: unknown } | undefined {
 	try {
 		if (!existsSync(MODEL_METADATA_CACHE_PATH)) return undefined;
-		const cache = JSON.parse(readFileSync(MODEL_METADATA_CACHE_PATH, "utf8")) as { ts?: unknown; data?: unknown };
+		const cache = JSON.parse(
+			readFileSync(MODEL_METADATA_CACHE_PATH, "utf8"),
+		) as { ts?: unknown; data?: unknown };
 		if (typeof cache.ts !== "number") return undefined;
 		return { ts: cache.ts, data: cache.data };
 	} catch {
@@ -367,7 +438,11 @@ function readMetadataCache(): { ts: number; data: unknown } | undefined {
 function writeMetadataCache(data: unknown) {
 	try {
 		mkdirSync(dirname(MODEL_METADATA_CACHE_PATH), { recursive: true });
-		writeFileSync(MODEL_METADATA_CACHE_PATH, JSON.stringify({ ts: Date.now(), data }), { mode: 0o600 });
+		writeFileSync(
+			MODEL_METADATA_CACHE_PATH,
+			JSON.stringify({ ts: Date.now(), data }),
+			{ mode: 0o600 },
+		);
 	} catch (err) {
 		console.error("[pi-9router] Failed to persist model metadata cache:", err);
 	}
@@ -396,7 +471,11 @@ function stripModelPrefixForLookup(id: string): string {
 	return hasColonNamespace(id) ? id : stripModelPrefix(id);
 }
 
-function addMetadataIndexEntry(index: ModelMetadataIndex, key: string, model: ModelMetadata) {
+function addMetadataIndexEntry(
+	index: ModelMetadataIndex,
+	key: string,
+	model: ModelMetadata,
+) {
 	if (!key) return;
 	if (!index.has(key)) index.set(key, model);
 	const normalized = normalizeModelId(key);
@@ -411,16 +490,32 @@ function buildModelMetadataIndex(api: ModelMetadataApi): ModelMetadataIndex {
 			const indexedModel = { ...model, id: model.id || modelId };
 			addMetadataIndexEntry(index, modelId, indexedModel);
 			addMetadataIndexEntry(index, indexedModel.id, indexedModel);
-			addMetadataIndexEntry(index, stripModelPrefixForLookup(modelId), indexedModel);
-			addMetadataIndexEntry(index, stripModelPrefixForLookup(indexedModel.id), indexedModel);
+			addMetadataIndexEntry(
+				index,
+				stripModelPrefixForLookup(modelId),
+				indexedModel,
+			);
+			addMetadataIndexEntry(
+				index,
+				stripModelPrefixForLookup(indexedModel.id),
+				indexedModel,
+			);
 		}
 	}
 	return index;
 }
 
-function lookupModelMetadata(id: string, index: ModelMetadataIndex): ModelMetadata | undefined {
+function lookupModelMetadata(
+	id: string,
+	index: ModelMetadataIndex,
+): ModelMetadata | undefined {
 	const stripped = stripModelPrefixForLookup(id);
-	const candidates = [id, stripped, normalizeModelId(id), normalizeModelId(stripped)];
+	const candidates = [
+		id,
+		stripped,
+		normalizeModelId(id),
+		normalizeModelId(stripped),
+	];
 	for (const candidate of candidates) {
 		const match = index.get(candidate);
 		if (match) return match;
@@ -429,7 +524,10 @@ function lookupModelMetadata(id: string, index: ModelMetadataIndex): ModelMetada
 	const normalized = normalizeModelId(stripped);
 	for (const [key, model] of index) {
 		const normalizedKey = normalizeModelId(key);
-		if (normalizedKey.startsWith(normalized) || normalized.startsWith(normalizedKey)) {
+		if (
+			normalizedKey.startsWith(normalized) ||
+			normalized.startsWith(normalizedKey)
+		) {
 			return model;
 		}
 	}
@@ -438,10 +536,15 @@ function lookupModelMetadata(id: string, index: ModelMetadataIndex): ModelMetada
 
 function readCachedModelMetadataIndex(): ModelMetadataIndex {
 	const cached = readMetadataCache();
-	return cached ? buildModelMetadataIndex((cached.data as ModelMetadataApi) || {}) : new Map();
+	return cached
+		? buildModelMetadataIndex((cached.data as ModelMetadataApi) || {})
+		: new Map();
 }
 
-async function fetchModelMetadataIndex(signal?: AbortSignal, timeoutMs = REQUEST_TIMEOUT_MS): Promise<ModelMetadataIndex> {
+async function fetchModelMetadataIndex(
+	signal?: AbortSignal,
+	timeoutMs = REQUEST_TIMEOUT_MS,
+): Promise<ModelMetadataIndex> {
 	const cached = readMetadataCache();
 	if (cached && Date.now() - cached.ts < MODEL_METADATA_TTL_MS) {
 		return buildModelMetadataIndex((cached.data as ModelMetadataApi) || {});
@@ -454,7 +557,8 @@ async function fetchModelMetadataIndex(signal?: AbortSignal, timeoutMs = REQUEST
 			signal,
 			timeoutMs,
 			async (response) => {
-				if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+				if (!response.ok)
+					throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 				return (await response.json()) as ModelMetadataApi;
 			},
 		);
@@ -462,10 +566,14 @@ async function fetchModelMetadataIndex(signal?: AbortSignal, timeoutMs = REQUEST
 		return buildModelMetadataIndex(payload);
 	} catch (err) {
 		if (cached) {
-			console.warn(`[pi-9router] Failed to refresh model metadata, using stale cache: ${errorMessage(err)}`);
+			console.warn(
+				`[pi-9router] Failed to refresh model metadata, using stale cache: ${errorMessage(err)}`,
+			);
 			return buildModelMetadataIndex((cached.data as ModelMetadataApi) || {});
 		}
-		console.warn(`[pi-9router] Failed to fetch model metadata: ${errorMessage(err)}`);
+		console.warn(
+			`[pi-9router] Failed to fetch model metadata: ${errorMessage(err)}`,
+		);
 		return new Map();
 	}
 }
@@ -497,7 +605,9 @@ async function fetchModels(
 		async (response) => {
 			if (!response.ok) {
 				const text = await response.text().catch(() => "");
-				throw new Error(`9router returned ${response.status}: ${text || response.statusText}`);
+				throw new Error(
+					`9router returned ${response.status}: ${text || response.statusText}`,
+				);
 			}
 			const payload = (await response.json()) as NineRouterModelsResponse;
 			return payload.data || [];
@@ -523,11 +633,17 @@ async function testConnection(
 			async (response) => {
 				const text = await response.text().catch(() => "");
 				if (response.ok) return { ok: true };
-				return { ok: false, error: `HTTP ${response.status}: ${text || response.statusText}` };
+				return {
+					ok: false,
+					error: `HTTP ${response.status}: ${text || response.statusText}`,
+				};
 			},
 		);
 	} catch (err) {
-		return { ok: false, error: err instanceof Error ? err.message : String(err) };
+		return {
+			ok: false,
+			error: err instanceof Error ? err.message : String(err),
+		};
 	}
 }
 
@@ -547,11 +663,15 @@ function parseTokenCount(value: unknown): number | undefined {
 
 	const amount = Number(match[1]);
 	if (!Number.isFinite(amount) || amount <= 0) return undefined;
-	const multiplier = match[2] === "m" ? 1_000_000 : match[2] === "k" ? 1_000 : 1;
+	const multiplier =
+		match[2] === "m" ? 1_000_000 : match[2] === "k" ? 1_000 : 1;
 	return Math.floor(amount * multiplier);
 }
 
-function readPath(record: Record<string, unknown>, path: readonly string[]): unknown {
+function readPath(
+	record: Record<string, unknown>,
+	path: readonly string[],
+): unknown {
 	let current: unknown = record;
 	for (const segment of path) {
 		if (!isRecord(current)) return undefined;
@@ -560,7 +680,10 @@ function readPath(record: Record<string, unknown>, path: readonly string[]): unk
 	return current;
 }
 
-function firstTokenCount(record: Record<string, unknown>, paths: readonly (readonly string[])[]): number | undefined {
+function firstTokenCount(
+	record: Record<string, unknown>,
+	paths: readonly (readonly string[])[],
+): number | undefined {
 	for (const path of paths) {
 		const value = readPath(record, path);
 		const parsed = parseTokenCount(value);
@@ -577,53 +700,109 @@ interface LimitInfo {
 }
 
 const ROUTER_CONTEXT_PATHS = [
-	["contextWindow"], ["context_window"], ["contextLength"], ["context_length"],
-	["maxContextWindow"], ["max_context_window"], ["maxContextLength"], ["max_context_length"],
-	["maxInputTokens"], ["max_input_tokens"], ["maxModelLen"], ["max_model_len"],
-	["inputTokenLimit"], ["input_token_limit"], ["totalTokenLimit"], ["total_token_limit"],
-	["tokenLimit"], ["token_limit"], ["n_ctx"], ["ctx_size"],
+	["contextWindow"],
+	["context_window"],
+	["contextLength"],
+	["context_length"],
+	["maxContextWindow"],
+	["max_context_window"],
+	["maxContextLength"],
+	["max_context_length"],
+	["maxInputTokens"],
+	["max_input_tokens"],
+	["maxModelLen"],
+	["max_model_len"],
+	["inputTokenLimit"],
+	["input_token_limit"],
+	["totalTokenLimit"],
+	["total_token_limit"],
+	["tokenLimit"],
+	["token_limit"],
+	["n_ctx"],
+	["ctx_size"],
 	["top_provider", "context_length"],
-	["metadata", "contextWindow"], ["metadata", "context_window"], ["metadata", "context_length"],
-	["metadata", "maxInputTokens"], ["metadata", "max_input_tokens"],
-	["metadata", "maxModelLen"], ["metadata", "max_model_len"],
-	["limits", "contextWindow"], ["limits", "context_window"], ["limits", "context_length"],
-	["limits", "maxInputTokens"], ["limits", "max_input_tokens"],
-	["limits", "maxModelLen"], ["limits", "max_model_len"],
-	["capabilities", "contextWindow"], ["capabilities", "context_window"], ["capabilities", "context_length"],
-	["capabilities", "maxInputTokens"], ["capabilities", "max_input_tokens"],
-	["capabilities", "maxModelLen"], ["capabilities", "max_model_len"],
+	["metadata", "contextWindow"],
+	["metadata", "context_window"],
+	["metadata", "context_length"],
+	["metadata", "maxInputTokens"],
+	["metadata", "max_input_tokens"],
+	["metadata", "maxModelLen"],
+	["metadata", "max_model_len"],
+	["limits", "contextWindow"],
+	["limits", "context_window"],
+	["limits", "context_length"],
+	["limits", "maxInputTokens"],
+	["limits", "max_input_tokens"],
+	["limits", "maxModelLen"],
+	["limits", "max_model_len"],
+	["capabilities", "contextWindow"],
+	["capabilities", "context_window"],
+	["capabilities", "context_length"],
+	["capabilities", "maxInputTokens"],
+	["capabilities", "max_input_tokens"],
+	["capabilities", "maxModelLen"],
+	["capabilities", "max_model_len"],
 ] as const;
 
 const ROUTER_OUTPUT_PATHS = [
-	["maxOutputTokens"], ["max_output_tokens"], ["maxCompletionTokens"], ["max_completion_tokens"],
-	["outputTokenLimit"], ["output_token_limit"], ["maxNewTokens"], ["max_new_tokens"], ["n_predict"],
+	["maxOutputTokens"],
+	["max_output_tokens"],
+	["maxCompletionTokens"],
+	["max_completion_tokens"],
+	["outputTokenLimit"],
+	["output_token_limit"],
+	["maxNewTokens"],
+	["max_new_tokens"],
+	["n_predict"],
 	["top_provider", "max_completion_tokens"],
-	["metadata", "maxOutputTokens"], ["metadata", "max_output_tokens"],
-	["metadata", "maxCompletionTokens"], ["metadata", "max_completion_tokens"],
-	["metadata", "maxNewTokens"], ["metadata", "max_new_tokens"],
-	["limits", "maxOutputTokens"], ["limits", "max_output_tokens"],
-	["limits", "maxCompletionTokens"], ["limits", "max_completion_tokens"],
-	["limits", "maxNewTokens"], ["limits", "max_new_tokens"],
-	["capabilities", "maxOutputTokens"], ["capabilities", "max_output_tokens"],
-	["capabilities", "maxCompletionTokens"], ["capabilities", "max_completion_tokens"],
-	["capabilities", "maxNewTokens"], ["capabilities", "max_new_tokens"],
-	["maxTokens"], ["max_tokens"],
-	["metadata", "maxTokens"], ["metadata", "max_tokens"],
-	["limits", "maxTokens"], ["limits", "max_tokens"],
-	["capabilities", "maxTokens"], ["capabilities", "max_tokens"],
+	["metadata", "maxOutputTokens"],
+	["metadata", "max_output_tokens"],
+	["metadata", "maxCompletionTokens"],
+	["metadata", "max_completion_tokens"],
+	["metadata", "maxNewTokens"],
+	["metadata", "max_new_tokens"],
+	["limits", "maxOutputTokens"],
+	["limits", "max_output_tokens"],
+	["limits", "maxCompletionTokens"],
+	["limits", "max_completion_tokens"],
+	["limits", "maxNewTokens"],
+	["limits", "max_new_tokens"],
+	["capabilities", "maxOutputTokens"],
+	["capabilities", "max_output_tokens"],
+	["capabilities", "maxCompletionTokens"],
+	["capabilities", "max_completion_tokens"],
+	["capabilities", "maxNewTokens"],
+	["capabilities", "max_new_tokens"],
+	["maxTokens"],
+	["max_tokens"],
+	["metadata", "maxTokens"],
+	["metadata", "max_tokens"],
+	["limits", "maxTokens"],
+	["limits", "max_tokens"],
+	["capabilities", "maxTokens"],
+	["capabilities", "max_tokens"],
 ] as const;
 
 const METADATA_CONTEXT_PATHS = [
-	["limit", "context"], ["limits", "context"],
-	["contextWindow"], ["context_window"], ["contextLength"], ["context_length"],
-	["maxInputTokens"], ["max_input_tokens"],
+	["limit", "context"],
+	["limits", "context"],
+	["contextWindow"],
+	["context_window"],
+	["contextLength"],
+	["context_length"],
+	["maxInputTokens"],
+	["max_input_tokens"],
 ] as const;
 
 const METADATA_OUTPUT_PATHS = [
-	["limit", "output"], ["limits", "output"],
-	["maxOutputTokens"], ["max_output_tokens"],
-	["maxCompletionTokens"], ["max_completion_tokens"],
-	["maxTokens"], ["max_tokens"],
+	["limit", "output"],
+	["limits", "output"],
+	["maxOutputTokens"],
+	["max_output_tokens"],
+	["maxCompletionTokens"],
+	["max_completion_tokens"],
+	["maxTokens"],
+	["max_tokens"],
 ] as const;
 
 function isMimoModel(model: NineRouterModel): boolean {
@@ -631,56 +810,100 @@ function isMimoModel(model: NineRouterModel): boolean {
 	return id.includes("mimo");
 }
 
-function modelContextWindowInfo(model: NineRouterModel, metadata?: ModelMetadata): LimitInfo {
+function modelContextWindowInfo(
+	model: NineRouterModel,
+	metadata?: ModelMetadata,
+): LimitInfo {
 	const routerValue = firstTokenCount(model, ROUTER_CONTEXT_PATHS);
-	if (routerValue !== undefined) return { value: routerValue, source: "router" };
+	if (routerValue !== undefined)
+		return { value: routerValue, source: "router" };
 
-	const metadataValue = metadata ? firstTokenCount(metadata, METADATA_CONTEXT_PATHS) : undefined;
-	if (metadataValue !== undefined) return { value: metadataValue, source: "metadata" };
+	const metadataValue = metadata
+		? firstTokenCount(metadata, METADATA_CONTEXT_PATHS)
+		: undefined;
+	if (metadataValue !== undefined)
+		return { value: metadataValue, source: "metadata" };
 
 	return { value: FALLBACK_CONTEXT_WINDOW, source: "fallback" };
 }
 
-function modelMaxTokensInfo(model: NineRouterModel, metadata: ModelMetadata | undefined, contextWindow: number): LimitInfo {
-	const modelMaxCap = isMimoModel(model) ? MIMO_MAX_COMPLETION_TOKENS : Infinity;
+function modelMaxTokensInfo(
+	model: NineRouterModel,
+	metadata: ModelMetadata | undefined,
+	contextWindow: number,
+): LimitInfo {
+	const modelMaxCap = isMimoModel(model)
+		? MIMO_MAX_COMPLETION_TOKENS
+		: Infinity;
 
 	const routerValue = firstTokenCount(model, ROUTER_OUTPUT_PATHS);
-	if (routerValue !== undefined) return { value: Math.min(routerValue, contextWindow, modelMaxCap), source: "router" };
+	if (routerValue !== undefined)
+		return {
+			value: Math.min(routerValue, contextWindow, modelMaxCap),
+			source: "router",
+		};
 
-	const metadataValue = metadata ? firstTokenCount(metadata, METADATA_OUTPUT_PATHS) : undefined;
-	if (metadataValue !== undefined) return { value: Math.min(metadataValue, contextWindow, modelMaxCap), source: "metadata" };
+	const metadataValue = metadata
+		? firstTokenCount(metadata, METADATA_OUTPUT_PATHS)
+		: undefined;
+	if (metadataValue !== undefined)
+		return {
+			value: Math.min(metadataValue, contextWindow, modelMaxCap),
+			source: "metadata",
+		};
 
-	return { value: Math.min(FALLBACK_MAX_TOKENS, contextWindow, modelMaxCap), source: "fallback" };
+	return {
+		value: Math.min(FALLBACK_MAX_TOKENS, contextWindow, modelMaxCap),
+		source: "fallback",
+	};
 }
 
-function modelContextWindow(model: NineRouterModel, metadata?: ModelMetadata): number {
+function modelContextWindow(
+	model: NineRouterModel,
+	metadata?: ModelMetadata,
+): number {
 	return modelContextWindowInfo(model, metadata).value;
 }
 
-function modelMaxTokens(model: NineRouterModel, metadata?: ModelMetadata, contextWindow = modelContextWindow(model, metadata)): number {
+function modelMaxTokens(
+	model: NineRouterModel,
+	metadata?: ModelMetadata,
+	contextWindow = modelContextWindow(model, metadata),
+): number {
 	return modelMaxTokensInfo(model, metadata, contextWindow).value;
 }
 
 function modelInputTypes(metadata?: ModelMetadata): ("text" | "image")[] {
 	const input = metadata?.modalities?.input;
 	if (Array.isArray(input)) {
-		const types = input.filter((item): item is "text" | "image" => item === "text" || item === "image");
+		const types = input.filter(
+			(item): item is "text" | "image" => item === "text" || item === "image",
+		);
 		if (types.length > 0) return types;
 	}
 	return ["text"];
 }
 
 function formatTokenCount(tokens: number): string {
-	return tokens >= 1000 && tokens % 1000 === 0 ? `${tokens / 1000}k` : String(tokens);
+	return tokens >= 1000 && tokens % 1000 === 0
+		? `${tokens / 1000}k`
+		: String(tokens);
 }
 
-function modelLimitSummary(model: NineRouterModel, metadata?: ModelMetadata): string {
+function modelLimitSummary(
+	model: NineRouterModel,
+	metadata?: ModelMetadata,
+): string {
 	const context = modelContextWindowInfo(model, metadata);
 	const output = modelMaxTokensInfo(model, metadata, context.value);
 	return `${formatTokenCount(context.value)} ctx / ${formatTokenCount(output.value)} out (${context.source}/${output.source})`;
 }
 
-function mapNineRouterModel(model: NineRouterModel, enableReasoning: boolean, metadata?: ModelMetadata) {
+function mapNineRouterModel(
+	model: NineRouterModel,
+	enableReasoning: boolean,
+	metadata?: ModelMetadata,
+) {
 	const isCombo = model.owned_by === "combo";
 	const contextWindow = modelContextWindow(model, metadata);
 	const maxTokens = modelMaxTokens(model, metadata, contextWindow);
@@ -689,18 +912,20 @@ function mapNineRouterModel(model: NineRouterModel, enableReasoning: boolean, me
 		id: model.id,
 		name: isCombo ? `🔀 ${model.id}` : model.id,
 		reasoning: enableReasoning,
-		...(enableReasoning ? {
-			// Pi levels → 9router's OpenAI-style reasoning_effort. 9router does not
-			// expose per-model reasoning from /v1/models, so this is user config.
-			thinkingLevelMap: {
-				off: "none",
-				minimal: null,
-				low: "low",
-				medium: "medium",
-				high: "high",
-				xhigh: "xhigh",
-			},
-		} : {}),
+		...(enableReasoning
+			? {
+					// Pi levels → 9router's OpenAI-style reasoning_effort. 9router does not
+					// expose per-model reasoning from /v1/models, so this is user config.
+					thinkingLevelMap: {
+						off: "none",
+						minimal: null,
+						low: "low",
+						medium: "medium",
+						high: "high",
+						xhigh: "xhigh",
+					},
+				}
+			: {}),
 		input: modelInputTypes(metadata),
 		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
 		contextWindow,
@@ -732,11 +957,13 @@ function registerNineRouterProvider(
 		baseUrl: `${config.baseUrl}/v1`,
 		apiKey: config.apiKey || "9router-no-api-key",
 		api: "openai-completions",
-		models: models.map((model) => mapNineRouterModel(
-			model,
-			config.enableReasoning,
-			lookupModelMetadata(model.id, metadataIndex),
-		)),
+		models: models.map((model) =>
+			mapNineRouterModel(
+				model,
+				config.enableReasoning,
+				lookupModelMetadata(model.id, metadataIndex),
+			),
+		),
 	});
 }
 
@@ -757,7 +984,9 @@ export default async function (pi: ExtensionAPI) {
 	let discoveryStatus: DiscoveryStatus = "idle";
 	let lastDiscoveryError: string | undefined;
 	let isDiscovering = false;
-	let providerRegistration: { baseUrl: string; apiKey: string | undefined } | undefined;
+	let providerRegistration:
+		| { baseUrl: string; apiKey: string | undefined }
+		| undefined;
 	let discoveryGeneration = 0;
 
 	function beginDiscovery() {
@@ -784,7 +1013,11 @@ export default async function (pi: ExtensionAPI) {
 		}
 	}
 
-	function markDiscoveryFailure(err: unknown, context: string, generation: number) {
+	function markDiscoveryFailure(
+		err: unknown,
+		context: string,
+		generation: number,
+	) {
 		if (!isCurrentDiscovery(generation)) return;
 		isConnected = false;
 		discoveryStatus = connectionFailureStatus(err);
@@ -792,9 +1025,10 @@ export default async function (pi: ExtensionAPI) {
 		// Auth failures = credential known unusable. Non-auth failures keep the
 		// previous provider only when baseUrl/apiKey identity did not change.
 		const authFailure = isAuthError(err);
-		const registrationChanged = !providerRegistration
-			|| providerRegistration.baseUrl !== config.baseUrl
-			|| providerRegistration.apiKey !== config.apiKey;
+		const registrationChanged =
+			!providerRegistration ||
+			providerRegistration.baseUrl !== config.baseUrl ||
+			providerRegistration.apiKey !== config.apiKey;
 		if (authFailure || discoveredModels.length === 0 || registrationChanged) {
 			unregisterNineRouterProvider(pi);
 			providerRegistration = undefined;
@@ -807,7 +1041,12 @@ export default async function (pi: ExtensionAPI) {
 		console.warn(`[pi-9router] ${context}: ${lastDiscoveryError}`);
 	}
 
-	async function refreshModels(discoveryConfig: NineRouterConfig, generation: number, signal?: AbortSignal, timeoutMs = REQUEST_TIMEOUT_MS): Promise<NineRouterModel[]> {
+	async function refreshModels(
+		discoveryConfig: NineRouterConfig,
+		generation: number,
+		signal?: AbortSignal,
+		timeoutMs = REQUEST_TIMEOUT_MS,
+	): Promise<NineRouterModel[]> {
 		try {
 			const [models, metadataIndex] = await Promise.all([
 				fetchModels(discoveryConfig, signal, timeoutMs),
@@ -824,7 +1063,12 @@ export default async function (pi: ExtensionAPI) {
 			isConnected = true;
 			discoveryStatus = "connected";
 			lastDiscoveryError = undefined;
-			registerNineRouterProvider(pi, { ...discoveryConfig, enableReasoning: config.enableReasoning }, models, metadataIndex);
+			registerNineRouterProvider(
+				pi,
+				{ ...discoveryConfig, enableReasoning: config.enableReasoning },
+				models,
+				metadataIndex,
+			);
 			setProviderRegistration(discoveryConfig);
 			writeDiscoveryCache(discoveryConfig, models);
 			return models;
@@ -837,10 +1081,19 @@ export default async function (pi: ExtensionAPI) {
 		const discovery = beginDiscovery();
 		void (async () => {
 			try {
-				await refreshModels(discovery.config, discovery.generation, undefined, STARTUP_DISCOVERY_TIMEOUT_MS);
+				await refreshModels(
+					discovery.config,
+					discovery.generation,
+					undefined,
+					STARTUP_DISCOVERY_TIMEOUT_MS,
+				);
 			} catch (err) {
 				if (isStaleDiscoveryError(err)) return;
-				markDiscoveryFailure(err, `${reason} model discovery skipped`, discovery.generation);
+				markDiscoveryFailure(
+					err,
+					`${reason} model discovery skipped`,
+					discovery.generation,
+				);
 			}
 		})();
 	}
@@ -848,8 +1101,10 @@ export default async function (pi: ExtensionAPI) {
 	function discoveryStatusLine(): string {
 		if (isDiscovering) return "discovering";
 		if (discoveryStatus === "connected") return "connected";
-		if (discoveryStatus === "not_configured") return `not configured${lastDiscoveryError ? ` — ${lastDiscoveryError}` : ""}`;
-		if (discoveryStatus === "disconnected") return `disconnected${lastDiscoveryError ? ` — ${lastDiscoveryError}` : ""}`;
+		if (discoveryStatus === "not_configured")
+			return `not configured${lastDiscoveryError ? ` — ${lastDiscoveryError}` : ""}`;
+		if (discoveryStatus === "disconnected")
+			return `disconnected${lastDiscoveryError ? ` — ${lastDiscoveryError}` : ""}`;
 		return "idle";
 	}
 
@@ -860,16 +1115,30 @@ export default async function (pi: ExtensionAPI) {
 	if (cachedDiscovery && cachedDiscovery.models.length > 0) {
 		discoveredModels = cachedDiscovery.models;
 		modelMetadataIndex = readCachedModelMetadataIndex();
-		registerNineRouterProvider(pi, config, discoveredModels, modelMetadataIndex);
+		registerNineRouterProvider(
+			pi,
+			config,
+			discoveredModels,
+			modelMetadataIndex,
+		);
 		setProviderRegistration(config);
 		startBackgroundDiscovery("startup");
 	} else {
 		const discovery = beginDiscovery();
 		try {
-			await refreshModels(discovery.config, discovery.generation, undefined, STARTUP_DISCOVERY_TIMEOUT_MS);
+			await refreshModels(
+				discovery.config,
+				discovery.generation,
+				undefined,
+				STARTUP_DISCOVERY_TIMEOUT_MS,
+			);
 		} catch (err) {
 			if (!isStaleDiscoveryError(err)) {
-				markDiscoveryFailure(err, "startup model discovery skipped", discovery.generation);
+				markDiscoveryFailure(
+					err,
+					"startup model discovery skipped",
+					discovery.generation,
+				);
 			}
 		}
 	}
@@ -887,7 +1156,10 @@ export default async function (pi: ExtensionAPI) {
 		}
 
 		if (isConnected && discoveredModels.length > 0) {
-			ctx.ui.notify(`9router connected — ${discoveredModels.length} models available`, "info");
+			ctx.ui.notify(
+				`9router connected — ${discoveredModels.length} models available`,
+				"info",
+			);
 		} else if (isDiscovering) {
 			ctx.ui.notify("9router discovery running in background", "info");
 		} else {
@@ -933,7 +1205,10 @@ export default async function (pi: ExtensionAPI) {
 		description: "Browse 9router available models and combos",
 		handler: async (_args, ctx) => {
 			if (discoveredModels.length === 0) {
-				ctx.ui.notify("No 9router models discovered. Check connection with /9router-status", "warning");
+				ctx.ui.notify(
+					"No 9router models discovered. Check connection with /9router-status",
+					"warning",
+				);
 				return;
 			}
 
@@ -968,10 +1243,12 @@ export default async function (pi: ExtensionAPI) {
 		description: "Configure 9router connection and reasoning",
 		handler: async (_args, ctx) => {
 			while (true) {
-				const choice = await ctx.ui.select(
-					"9router configuration",
-					["Connection", "Reasoning", "View status", "Done"],
-				);
+				const choice = await ctx.ui.select("9router configuration", [
+					"Connection",
+					"Reasoning",
+					"View status",
+					"Done",
+				]);
 				if (!choice || choice === "Done") return;
 
 				if (choice === "Connection") {
@@ -998,20 +1275,33 @@ export default async function (pi: ExtensionAPI) {
 					config = {
 						...config,
 						baseUrl: normalizeBaseUrl(newBaseUrl.trim() || config.baseUrl),
-						apiKey: apiKeyInput === "-"
-							? undefined
-							: apiKeyInput || config.apiKey,
+						apiKey:
+							apiKeyInput === "-" ? undefined : apiKeyInput || config.apiKey,
 					};
 					persistConfig(pi, config);
 
 					const discovery = beginDiscovery();
 					try {
-						const models = await refreshModels(discovery.config, discovery.generation, ctx.signal);
-						ctx.ui.notify(`9router connection updated — ${models.length} models`, "info");
+						const models = await refreshModels(
+							discovery.config,
+							discovery.generation,
+							ctx.signal,
+						);
+						ctx.ui.notify(
+							`9router connection updated — ${models.length} models`,
+							"info",
+						);
 					} catch (err) {
 						if (isStaleDiscoveryError(err)) continue;
-						markDiscoveryFailure(err, "connection update failed", discovery.generation);
-						ctx.ui.notify(`Failed to connect: ${discoveryStatusLine()}`, isAuthError(err) ? "warning" : "error");
+						markDiscoveryFailure(
+							err,
+							"connection update failed",
+							discovery.generation,
+						);
+						ctx.ui.notify(
+							`Failed to connect: ${discoveryStatusLine()}`,
+							isAuthError(err) ? "warning" : "error",
+						);
 					}
 				}
 
@@ -1027,10 +1317,18 @@ export default async function (pi: ExtensionAPI) {
 					};
 					persistConfig(pi, config);
 					if (discoveredModels.length > 0) {
-						registerNineRouterProvider(pi, config, discoveredModels, modelMetadataIndex);
+						registerNineRouterProvider(
+							pi,
+							config,
+							discoveredModels,
+							modelMetadataIndex,
+						);
 						setProviderRegistration(config);
 					}
-					ctx.ui.notify(`9router reasoning ${config.enableReasoning ? "enabled" : "disabled"}`, "info");
+					ctx.ui.notify(
+						`9router reasoning ${config.enableReasoning ? "enabled" : "disabled"}`,
+						"info",
+					);
 				}
 
 				if (choice === "View status") {
@@ -1071,7 +1369,12 @@ export default async function (pi: ExtensionAPI) {
 			persistConfig(pi, config);
 
 			if (discoveredModels.length > 0) {
-				registerNineRouterProvider(pi, config, discoveredModels, modelMetadataIndex);
+				registerNineRouterProvider(
+					pi,
+					config,
+					discoveredModels,
+					modelMetadataIndex,
+				);
 				setProviderRegistration(config);
 			}
 
@@ -1092,7 +1395,11 @@ export default async function (pi: ExtensionAPI) {
 		handler: async (_args, ctx) => {
 			const discovery = beginDiscovery();
 			try {
-				const models = await refreshModels(discovery.config, discovery.generation, ctx.signal);
+				const models = await refreshModels(
+					discovery.config,
+					discovery.generation,
+					ctx.signal,
+				);
 				ctx.ui.notify(
 					`9router reloaded — ${models.length} models (${config.enableReasoning ? "reasoning enabled" : "reasoning disabled"})`,
 					"info",
@@ -1100,7 +1407,10 @@ export default async function (pi: ExtensionAPI) {
 			} catch (err) {
 				if (isStaleDiscoveryError(err)) return;
 				markDiscoveryFailure(err, "reload failed", discovery.generation);
-				ctx.ui.notify(`Reload failed: ${discoveryStatusLine()}`, isAuthError(err) ? "warning" : "error");
+				ctx.ui.notify(
+					`Reload failed: ${discoveryStatusLine()}`,
+					isAuthError(err) ? "warning" : "error",
+				);
 			}
 		},
 	});
