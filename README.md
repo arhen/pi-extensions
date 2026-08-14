@@ -1,5 +1,10 @@
 # pi-9router
 
+[![npm version](https://img.shields.io/npm/v/@arhen/pi-9router)](https://www.npmjs.com/package/@arhen/pi-9router)
+[![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-9router)](https://www.npmjs.com/package/@arhen/pi-9router)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-9router)](https://github.com/arhen/pi-9router)
+
 Pi Coding Agent extension for [9router](https://9router.example.com) — AI routing proxy.
 
 Registers 9router as a Pi provider with dynamic model discovery. **Provider only, no web tools** — use [pi-web-access](https://github.com/nicobailon/pi-web-access) for web search/fetch.
