@@ -1,0 +1,31 @@
+{
+  "name": "@arhen/pi-skill-tool",
+  "version": "0.1.0",
+  "description": "Pi extension — opencode2-style skills: strips the built-in skill catalog from the system prompt and exposes skills via a single lazy `skill` tool. Agent auto-invokes, no user input, saves ~4.5K tokens/session.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "skills",
+    "agent-skills"
+  ],
+  "license": "MIT",
+  "author": "arhen <arhen@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arhen/pi-skill-tool.git"
+  },
+  "type": "module",
+  "main": "./src/index.ts",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
