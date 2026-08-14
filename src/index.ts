@@ -118,57 +118,61 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	// ── Register skill tool (opencode2-style) ────────────────────────────────
-	pi.registerTool({
-		name: "skill",
-		label: "Skill",
-		description: [
-			"Load a skill to get detailed instructions for a specific task.",
-			"Skills provide specialized knowledge and step-by-step guidance.",
-			"Use this when a task matches an available skill's description.",
-			"Only the skills listed here are available:",
-			"<available_skills>",
-			...visible.map(
-				(s) =>
-					`  <skill>\n    <name>${s.name}</name>\n    <description>${escapeXml(truncateDescription(s.description))}</description>\n  </skill>`,
-			),
-			"</available_skills>",
-		].join("\n"),
-		parameters: {
-			type: "object",
-			properties: {
-				name: {
-					type: "string",
-					description: "The skill identifier from available_skills",
+	// Set PI_SKILL_TOOL=0 to disable the tool (catalog stripped, no tool —
+	// skills only usable via pi's built-in /skill:name commands).
+	if (process.env.PI_SKILL_TOOL !== "0") {
+		pi.registerTool({
+			name: "skill",
+			label: "Skill",
+			description: [
+				"Load a skill to get detailed instructions for a specific task.",
+				"Skills provide specialized knowledge and step-by-step guidance.",
+				"Use this when a task matches an available skill's description.",
+				"Only the skills listed here are available:",
+				"<available_skills>",
+				...visible.map(
+					(s) =>
+						`  <skill>\n    <name>${s.name}</name>\n    <description>${escapeXml(truncateDescription(s.description))}</description>\n  </skill>`,
+				),
+				"</available_skills>",
+			].join("\n"),
+			parameters: {
+				type: "object",
+				properties: {
+					name: {
+						type: "string",
+						description: "The skill identifier from available_skills",
+					},
 				},
+				required: ["name"],
 			},
-			required: ["name"],
-		},
-		async execute(_toolCallId, params: { name: string }) {
-			const skill = [...skills.values()].find((s) => s.name === params.name);
-			if (!skill) {
+			async execute(_toolCallId, params: { name: string }) {
+				const skill = [...skills.values()].find((s) => s.name === params.name);
+				if (!skill) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Skill "${params.name}" not found. Available skills: ${[...skills.values()].map((s) => s.name).join(", ")}`,
+							},
+						],
+						details: { ok: false },
+					};
+				}
+				const body = readSkillBody(skill.filePath);
+				const dir = skill.filePath.slice(0, -"SKILL.md".length);
 				return {
 					content: [
 						{
 							type: "text",
-							text: `Skill "${params.name}" not found. Available skills: ${[...skills.values()].map((s) => s.name).join(", ")}`,
+							text: `## Skill: ${skill.name}\n\n**Base directory**: ${dir}\n\n${body}`,
 						},
 					],
-					details: { ok: false },
+					details: { ok: true },
 				};
-			}
-			const body = readSkillBody(skill.filePath);
-			const dir = skill.filePath.slice(0, -"SKILL.md".length);
-			return {
-				content: [
-					{
-						type: "text",
-						text: `## Skill: ${skill.name}\n\n**Base directory**: ${dir}\n\n${body}`,
-					},
-				],
-				details: { ok: true },
-			};
-		},
-	});
+			},
+		});
+	}
 }
 
 function escapeXml(str: string): string {
