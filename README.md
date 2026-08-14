@@ -1,5 +1,10 @@
 # pi-skill-tool
 
+[![npm version](https://img.shields.io/npm/v/@arhen/pi-skill-tool)](https://www.npmjs.com/package/@arhen/pi-skill-tool)
+[![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-skill-tool)](https://www.npmjs.com/package/@arhen/pi-skill-tool)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-skill-tool)](https://github.com/arhen/pi-skill-tool)
+
 Pi extension that implements **opencode2-style skills**: the skill catalog is stripped from the system prompt and exposed through a single lazy `skill` tool.
 
 ## Why
