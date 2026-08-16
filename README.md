@@ -14,6 +14,12 @@ pi install npm:@arhen/pi-core-todo
 
 > Registers the `todo` tool — conflicts with other todo extensions (`@juicesharp/rpiv-todo`). Run one at a time.
 
+## Widget
+
+![Todos widget](docs/todo-widget.png)
+
+Above-editor tree: `● Todos (2/5)` heading, `✓` strikethrough for completed, `◐` for in-progress with `activeForm` in parens, `○` for pending.
+
 ## What's kept
 
 - `todo` tool: create / update / list / get / delete / clear
