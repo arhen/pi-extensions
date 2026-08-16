@@ -1,6 +1,6 @@
-# @arhen/pi-todo
+# @arhen/pi-core-todo
 
-[![npm version](https://img.shields.io/npm/v/@arhen%2Fpi-todo?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-todo)
+[![npm version](https://img.shields.io/npm/v/@arhen%2Fpi-todo?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-core-todo)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://github.com/earendil-works/pi)
 
@@ -9,7 +9,7 @@ Minimalist pi todo extension: `todo` tool with a 4-state machine and `blockedBy`
 ## Install
 
 ```sh
-pi install npm:@arhen/pi-todo
+pi install npm:@arhen/pi-core-todo
 ```
 
 > Registers the `todo` tool — conflicts with other todo extensions (`@juicesharp/rpiv-todo`). Run one at a time.
