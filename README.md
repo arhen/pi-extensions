@@ -2,13 +2,16 @@
 
 Minimalist [pi coding agent](https://github.com/earendil-works/pi) extensions that just solve problems. One package, one problem. No config surfaces, minimal context footprint.
 
-## Install everything
+## Install / update / remove the whole family
 
 ```sh
-for p in subagent todo ask vision 9router skill-tool tps-stats vantis wafer; do
-  pi install npm:@arhen/pi-$p
-done
+pi-toolset install    # install every @arhen/pi-* package (discovered live from npm)
+pi-toolset update     # update all installed ones
+pi-toolset remove     # remove all installed ones
+pi-toolset list       # list the family
 ```
+
+The family is discovered from the npm registry at runtime — adding a new package needs no changes here. (Script: `pi-toolset` in this repo.)
 
 ## Browse the family
 

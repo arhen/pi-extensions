@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# pi-toolset — manage all @arhen/pi-* extensions dynamically.
+# Discovers the family from the npm registry at runtime (never a static list):
+#   pi-toolset install   install every @arhen/pi-* package
+#   pi-toolset update    update every installed @arhen/pi-* package
+#   pi-toolset remove    remove every installed @arhen/pi-* package
+#   pi-toolset list      list the family
+set -euo pipefail
+
+SCOPE="@arhen"
+PREFIX="pi-"
+
+family() {
+  npm search --json "${SCOPE}" 2>/dev/null | python3 -c "
+import json, sys
+for r in json.load(sys.stdin):
+    name = r['name']
+    if name.startswith('$SCOPE/$PREFIX') and not name.endswith('toolset'):
+        print(name)
+"
+}
+
+installed() {
+  pi list 2>/dev/null | grep -o "npm:${SCOPE}/${PREFIX}[a-z0-9-]*" | sed 's/^npm://' || true
+}
+
+case "${1:-}" in
+  install)
+    for p in $(family); do
+      echo "→ pi install npm:${p}"
+      pi install "npm:${p}"
+    done
+    ;;
+  update)
+    for p in $(installed); do
+      echo "→ pi update npm:${p}"
+      pi update "npm:${p}"
+    done
+    ;;
+  remove)
+    for p in $(installed); do
+      echo "→ pi remove npm:${p}"
+      pi remove "npm:${p}"
+    done
+    ;;
+  list)
+    family
+    ;;
+  *)
+    echo "usage: pi-toolset {install|update|remove|list}" >&2
+    exit 1
+    ;;
+esac
