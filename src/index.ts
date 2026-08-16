@@ -2,116 +2,51 @@
  * pi-skill-tool — opencode2-style skills for pi.
  *
  * Strips the built-in <available_skills> catalog from the system prompt
- * (~7.2K tokens) and instead exposes skills through a single `skill` tool.
+ * (~7.2K tokens) and exposes skills through a single `skill` tool.
  * The agent still auto-invokes skills by calling the tool — no user input.
  *
- * Install: copy to ~/.pi/agent/extensions/pi-skill-tool/
+ * The catalog comes from pi's own discovery (event.systemPromptOptions.skills):
+ * project, user, settings, CLI, and package skills are all covered — no
+ * re-scanning, no divergence.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { parseFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFileSync } from "node:fs";
 
-const CATALOG_DESC_MAX = 100; // truncate catalog descriptions to keep tool schema lean
+const CATALOG_DESC_MAX = 100;
+
+interface SkillEntry {
+	name: string;
+	description: string;
+	filePath?: string;
+	disableModelInvocation: boolean;
+}
 
 function truncateDescription(desc: string): string {
 	if (desc.length <= CATALOG_DESC_MAX) return desc;
 	return desc.slice(0, CATALOG_DESC_MAX).trimEnd() + "…";
 }
 
-// =============================================================================
-// Skill discovery (mirrors pi's locations: ~/.pi/agent/skills, ~/.agents/skills,
-// npm package skills). Dedupes symlinks via realpath.
-// =============================================================================
-
-const AGENT_DIR = join(homedir(), ".pi", "agent");
-const NPM_DIR = join(AGENT_DIR, "npm", "node_modules");
-
-interface SkillInfo {
-	name: string;
-	description: string;
-	filePath: string;
-}
-
-function scanDirForSkills(dir: string, out: Map<string, SkillInfo>) {
-	if (!existsSync(dir)) return;
-	for (const entry of readdirSync(dir, { withFileTypes: true })) {
-		if (!entry.isDirectory()) continue;
-		const skillDir = join(dir, entry.name);
-		const mdPath = join(skillDir, "SKILL.md");
-		if (!existsSync(mdPath)) continue;
-		try {
-			const real = realpathSync(mdPath);
-			if (out.has(real)) continue; // dedupe symlinked skills
-			const parsed = parseSkill(mdPath);
-			if (parsed) out.set(real, parsed);
-		} catch {
-			// unreadable skill — skip
-		}
-	}
-}
-
-function parseSkill(mdPath: string): SkillInfo | null {
-	const content = readFileSync(mdPath, "utf8");
-	const m = content.match(/^---\n([\s\S]*?)\n---/);
-	if (!m) return null;
-	const fm = m[1];
-	const name = fm.match(/^name:\s*(.+)$/m)?.[1]?.trim();
-	const description = fm.match(/^description:\s*(.+)$/m)?.[1]?.trim();
-	if (!name || !description) return null;
-	return { name, description, filePath: mdPath };
-}
-
-function loadSkills(): Map<string, SkillInfo> {
-	const out = new Map<string, SkillInfo>();
-	scanDirForSkills(join(AGENT_DIR, "skills"), out);
-	scanDirForSkills(join(homedir(), ".agents", "skills"), out);
-	// npm package skills: node_modules/<pkg>/skills/*/SKILL.md and scoped
-	for (const scope of [NPM_DIR]) {
-		if (!existsSync(scope)) continue;
-		for (const entry of readdirSync(scope, { withFileTypes: true })) {
-			const base =
-				entry.isDirectory() && entry.name.startsWith("@")
-					? join(scope, entry.name)
-					: scope;
-			const pkgDir =
-				entry.isDirectory() && entry.name.startsWith("@")
-					? null
-					: join(scope, entry.name);
-			if (pkgDir) {
-				scanDirForSkills(join(pkgDir, "skills"), out);
-			} else {
-				for (const sub of readdirSync(base, { withFileTypes: true })) {
-					if (sub.isDirectory()) {
-						scanDirForSkills(join(base, sub.name, "skills"), out);
-					}
-				}
-			}
-		}
-	}
-	return out;
-}
-
 function readSkillBody(filePath: string): string {
 	const content = readFileSync(filePath, "utf8");
-	const m = content.match(/^---\n[\s\S]*?\n---\n?([\s\S]*)$/);
-	return m ? m[1].trim() : content;
+	const { body } = parseFrontmatter<Record<string, unknown>>(content);
+	return body.trim() || content;
 }
 
-// =============================================================================
-// Extension
-// =============================================================================
-
 export default async function (pi: ExtensionAPI) {
-	const skills = loadSkills();
-	const visible = [...skills.values()];
+	let catalog: SkillEntry[] = [];
 
-	// ── Strip built-in catalog from system prompt ───────────────────────────
+	// ── Strip built-in catalog from system prompt (intro + block) ──────────
 	pi.on("before_agent_start", (event) => {
-		if (!event.systemPrompt.includes("<available_skills>")) return;
+		catalog = (event.systemPromptOptions.skills ?? []).map((s) => ({
+			name: s.name,
+			description: s.description,
+			filePath: s.filePath,
+			disableModelInvocation: s.disableModelInvocation,
+		}));
+		if (!event.systemPromptOptions.skills) return; // no catalog → nothing to strip
 		const stripped = event.systemPrompt.replace(
-			/<available_skills>[\s\S]*?<\/available_skills>/,
+			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*?<\/available_skills>\n?/,
 			"",
 		);
 		return { systemPrompt: stripped };
@@ -130,10 +65,12 @@ export default async function (pi: ExtensionAPI) {
 				"Use this when a task matches an available skill's description.",
 				"Only the skills listed here are available:",
 				"<available_skills>",
-				...visible.map(
-					(s) =>
-						`  <skill>\n    <name>${s.name}</name>\n    <description>${escapeXml(truncateDescription(s.description))}</description>\n  </skill>`,
-				),
+				...catalog
+					.filter((s) => !s.disableModelInvocation)
+					.map(
+						(s) =>
+							`  <skill>\n    <name>${escapeXml(s.name)}</name>\n    <description>${escapeXml(truncateDescription(s.description))}</description>\n  </skill>`,
+					),
 				"</available_skills>",
 			].join("\n"),
 			parameters: {
@@ -147,16 +84,25 @@ export default async function (pi: ExtensionAPI) {
 				required: ["name"],
 			},
 			async execute(_toolCallId, params: { name: string }) {
-				const skill = [...skills.values()].find((s) => s.name === params.name);
+				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === params.name);
 				if (!skill) {
 					return {
 						content: [
 							{
 								type: "text",
-								text: `Skill "${params.name}" not found. Available skills: ${[...skills.values()].map((s) => s.name).join(", ")}`,
+								text: `Skill "${params.name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}`,
 							},
 						],
-						details: { ok: false },
+					};
+				}
+				if (!skill.filePath) {
+					return {
+						content: [
+							{
+								type: "text",
+								text: `Skill "${skill.name}" has no loadable file path in this context.`,
+							},
+						],
 					};
 				}
 				const body = readSkillBody(skill.filePath);
@@ -168,7 +114,6 @@ export default async function (pi: ExtensionAPI) {
 							text: `## Skill: ${skill.name}\n\n**Base directory**: ${dir}\n\n${body}`,
 						},
 					],
-					details: { ok: true },
 				};
 			},
 		});

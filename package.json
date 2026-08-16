@@ -1,7 +1,7 @@
 {
   "name": "@arhen/pi-core-skill-tool",
   "version": "1.0.0",
-  "description": "Pi extension \u2014 opencode2-style skills: strips the built-in skill catalog from the system prompt and exposes skills via a single lazy `skill` tool. Agent auto-invokes, no user input, saves ~4.5K tokens/session.",
+  "description": "Pi extension — opencode2-style skills: strips the built-in skill catalog from the system prompt and exposes skills via a single lazy `skill` tool. Agent auto-invokes, no user input, saves ~4.5K tokens/session.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -22,11 +22,12 @@
     ]
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": "^0.84.2"
   },
   "devDependencies": {
+    "@types/bun": "^1.3.14",
     "@types/node": "^22.0.0",
-    "typescript": "^5.0.0"
+    "typescript": "^7.0.2"
   },
   "publishConfig": {
     "access": "public",
