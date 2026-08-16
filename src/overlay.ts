@@ -134,7 +134,8 @@ export class TodoOverlay {
 			const budget = MAX_ROWS - 1;
 			const nonCompleted = visible.filter((t) => t.status !== "completed");
 			if (nonCompleted.length <= budget) {
-				rows = visible.slice(0, budget);
+				// L5: completed-first drop — pending rows must not be displaced by early completed ones.
+				rows = [...nonCompleted, ...visible.filter((t) => t.status === "completed")].slice(0, budget);
 				const hidden = visible.slice(budget);
 				hiddenCompleted = hidden.filter((t) => t.status === "completed").length;
 				truncatedTail = hidden.length - hiddenCompleted;

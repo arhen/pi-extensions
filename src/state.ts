@@ -103,6 +103,9 @@ function taskChanged(before: Task, after: Task): boolean {
 export function applyTaskMutation(state: TaskState, action: TaskAction, params: TaskMutationParams): ApplyResult {
 	switch (action) {
 		case "create": {
+			if (params.status !== undefined || params.addBlockedBy !== undefined || params.removeBlockedBy !== undefined || params.includeDeleted !== undefined || params.id !== undefined) {
+				return errorResult(state, "create accepts only: subject, description, activeForm, blockedBy, owner, metadata");
+			}
 			if (!params.subject?.trim()) return errorResult(state, "subject required for create");
 			if (params.blockedBy?.length) {
 				for (const dep of params.blockedBy) {
@@ -128,6 +131,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			const idx = state.tasks.findIndex((t) => t.id === params.id);
 			if (idx === -1) return errorResult(state, `#${params.id} not found`);
 			const current = state.tasks[idx]!;
+			if (current.status === "deleted") return errorResult(state, `#${current.id} is deleted — use delete-free data: none; tombstones are immutable`);
 
 			const hasMutation =
 				params.subject !== undefined ||
@@ -148,7 +152,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 				return errorResult(state, "use addBlockedBy/removeBlockedBy on update (blockedBy is create-only)");
 			}
 
-			let newStatus = current.status;
+			let newStatus: TaskStatus = current.status;
 			if (params.status !== undefined) {
 				if (!isTransitionValid(current.status, params.status)) {
 					return errorResult(state, `illegal transition ${current.status} → ${params.status}`);
@@ -200,6 +204,15 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 
 			const newTasks = [...state.tasks];
 			newTasks[idx] = updated;
+			// M1: updating to deleted must cascade deps out of other tasks (parity with delete).
+			if (newStatus === "deleted") {
+				for (let i = 0; i < newTasks.length; i++) {
+					const t = newTasks[i]!;
+					if (t.blockedBy?.includes(updated.id)) {
+						newTasks[i] = { ...t, blockedBy: t.blockedBy.filter((d) => d !== updated.id) };
+					}
+				}
+			}
 			return {
 				state: { tasks: newTasks, nextId: state.nextId },
 				op: { kind: "update", id: updated.id, fromStatus: current.status, toStatus: newStatus, changed: taskChanged(current, updated) },

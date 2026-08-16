@@ -1,6 +1,6 @@
 # @arhen/pi-core-todo
 
-[![npm version](https://img.shields.io/npm/v/@arhen%2Fpi-todo?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-core-todo)
+[![npm version](https://img.shields.io/npm/v/@arhen%2Fpi-core-todo?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-core-todo)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://github.com/earendil-works/pi)
 

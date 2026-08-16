@@ -35,6 +35,7 @@ function loadFromDisk(): void {
 		const raw = JSON.parse(fs.readFileSync(stateFile(), "utf-8")) as Record<string, TaskState>;
 		for (const [k, v] of Object.entries(raw)) {
 			if (!v || !Array.isArray(v.tasks) || typeof v.nextId !== "number") continue;
+			if (sessions.has(k)) continue; // L4: never clobber a live in-memory session
 			const maxId = v.tasks.reduce((m, t) => Math.max(m, t.id ?? 0), 0);
 			if (v.nextId <= maxId) v.nextId = maxId + 1; // never reuse ids
 			sessions.set(k, v);

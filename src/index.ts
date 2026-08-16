@@ -11,8 +11,8 @@ import { applyTaskMutation, buildToolResult, sanitizeTerminalText } from "./stat
 import {
 	clearActiveRenderSession,
 	commitState,
-	evictSession,
 	hasSession,
+	schedulePersist,
 	getActiveRenderSession,
 	getRenderState,
 	getState,
@@ -159,7 +159,8 @@ export default function (pi: ExtensionAPI) {
 		} catch {
 			s = "";
 		}
-		evictSession(s);
+		// M2: keep session data on disk + memory across shutdown/resume — no evict erase.
+		schedulePersist();
 		if (s === "" || s === getActiveRenderSession()) {
 			overlay.dispose();
 			clearActiveRenderSession();
@@ -171,7 +172,8 @@ export default function (pi: ExtensionAPI) {
 		refreshOverlay();
 	});
 
-	pi.on("agent_start", async () => {
+	pi.on("agent_start", async (_event, ctx) => {
+		if (sid(ctx) !== getActiveRenderSession()) return; // only the foreground session hides rows
 		overlay.hideCompletedTasksFromPreviousTurn();
 	});
 }
