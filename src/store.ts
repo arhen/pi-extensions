@@ -101,7 +101,7 @@ export function getRenderState(): TaskState {
 
 /** Restore the given session's slot from disk. Returns true when restored. */
 export function restoreSession(sessionId: string): boolean {
-	if (sessions.size === 0) loadFromDisk();
+	if (!sessions.has(sessionId)) loadFromDisk(); // any missing session reloads from disk
 	if (!sessions.has(sessionId)) return false;
 	return true;
 }

@@ -144,6 +144,9 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 					"update requires at least one mutable field: subject, description, activeForm, status, owner, metadata, addBlockedBy, or removeBlockedBy",
 				);
 			}
+			if (params.blockedBy !== undefined) {
+				return errorResult(state, "use addBlockedBy/removeBlockedBy on update (blockedBy is create-only)");
+			}
 
 			let newStatus = current.status;
 			if (params.status !== undefined) {
@@ -151,6 +154,9 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 					return errorResult(state, `illegal transition ${current.status} → ${params.status}`);
 				}
 				newStatus = params.status;
+			}
+			if (params.subject !== undefined && !params.subject.trim()) {
+				return errorResult(state, "subject must not be blank");
 			}
 
 			let newBlockedBy = current.blockedBy ? [...current.blockedBy] : [];
@@ -182,6 +188,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			}
 
 			const updated: Task = { ...current, status: newStatus };
+			if (newStatus !== "in_progress") delete updated.activeForm; // stale spinner label
 			if (params.subject !== undefined) updated.subject = params.subject;
 			if (params.description !== undefined) updated.description = params.description;
 			if (params.activeForm !== undefined) updated.activeForm = params.activeForm;
@@ -221,11 +228,19 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			if (current.status === "deleted") return errorResult(state, `#${current.id} is already deleted`);
 			const newTasks = [...state.tasks];
 			newTasks[idx] = { ...current, status: "deleted" };
+			// Cascade: drop the deleted id from every other task's blockedBy (no dangling deps).
+			for (let i = 0; i < newTasks.length; i++) {
+				const t = newTasks[i]!;
+				if (t.blockedBy?.includes(current.id)) {
+					newTasks[i] = { ...t, blockedBy: t.blockedBy.filter((d) => d !== current.id) };
+				}
+			}
 			return { state: { tasks: newTasks, nextId: state.nextId }, op: { kind: "delete", id: current.id, subject: current.subject } };
 		}
 
 		case "clear": {
-			return { state: { tasks: [], nextId: 1 }, op: { kind: "clear", count: state.tasks.length } };
+			const count = state.tasks.filter((t) => t.status !== "deleted").length;
+			return { state: { tasks: [], nextId: 1 }, op: { kind: "clear", count } };
 		}
 	}
 }

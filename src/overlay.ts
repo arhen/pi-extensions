@@ -135,7 +135,9 @@ export class TodoOverlay {
 			const nonCompleted = visible.filter((t) => t.status !== "completed");
 			if (nonCompleted.length <= budget) {
 				rows = visible.slice(0, budget);
-				hiddenCompleted = visible.length - rows.length;
+				const hidden = visible.slice(budget);
+				hiddenCompleted = hidden.filter((t) => t.status === "completed").length;
+				truncatedTail = hidden.length - hiddenCompleted;
 			} else {
 				rows = nonCompleted.slice(0, budget);
 				truncatedTail = nonCompleted.length - budget;
