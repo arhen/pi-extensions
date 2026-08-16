@@ -7,11 +7,11 @@
       "devDependencies": {
         "@types/bun": "^1.3.14",
         "@types/node": "^22.0.0",
-        "typebox": "^1.3.14",
         "typescript": "^7.0.2",
       },
       "peerDependencies": {
         "@earendil-works/pi-coding-agent": "^0.84.2",
+        "typebox": "^1.3.0",
       },
     },
   },

@@ -20,6 +20,7 @@ interface SkillEntry {
 	name: string;
 	description: string;
 	filePath?: string;
+	baseDir: string;
 	disableModelInvocation: boolean;
 }
 
@@ -29,9 +30,13 @@ function truncateDescription(desc: string): string {
 }
 
 function readSkillBody(filePath: string): string {
-	const content = readFileSync(filePath, "utf8");
-	const { body } = parseFrontmatter<Record<string, unknown>>(content);
-	return body.trim(); // L1: never leak frontmatter to the model
+	try {
+		const content = readFileSync(filePath, "utf8");
+		const { body } = parseFrontmatter<Record<string, unknown>>(content);
+		return body.trim(); // L1: never leak frontmatter to the model
+	} catch (err) {
+		return `Skill file unreadable: ${filePath} (${err instanceof Error ? err.message : String(err)})`;
+	}
 }
 
 export default async function (pi: ExtensionAPI) {
@@ -40,15 +45,17 @@ export default async function (pi: ExtensionAPI) {
 
 	// ── Strip built-in catalog from system prompt (intro + block) ──────────
 	pi.on("before_agent_start", (event) => {
-		catalog = (event.systemPromptOptions.skills ?? []).map((s) => ({
+		const skills = event.systemPromptOptions.skills ?? [];
+		if (skills.length === 0) return; // no catalog → nothing to strip
+		catalog = skills.map((s) => ({
 			name: s.name,
 			description: s.description,
 			filePath: s.filePath,
+			baseDir: s.baseDir,
 			disableModelInvocation: s.disableModelInvocation,
 		}));
-		if (!event.systemPromptOptions.skills) return; // no catalog → nothing to strip
 		const stripped = event.systemPrompt.replace(
-			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*?<\/available_skills>\n?/,
+			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*<\/available_skills>\n?/,
 			"",
 		);
 		if (stripped === event.systemPrompt) {
@@ -113,7 +120,7 @@ export default async function (pi: ExtensionAPI) {
 					};
 				}
 				const body = readSkillBody(skill.filePath);
-				const dir = skill.filePath.endsWith("SKILL.md") ? skill.filePath.slice(0, -"SKILL.md".length) : skill.filePath; // L2: suffix guard
+				const dir = skill.baseDir;
 				return {
 					content: [
 						{
