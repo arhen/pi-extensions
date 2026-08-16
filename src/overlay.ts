@@ -133,16 +133,18 @@ export class TodoOverlay {
 		} else {
 			const budget = MAX_ROWS - 1;
 			const nonCompleted = visible.filter((t) => t.status !== "completed");
+			const totalCompleted = visible.length - nonCompleted.length;
 			if (nonCompleted.length <= budget) {
 				// L5: completed-first drop — pending rows must not be displaced by early completed ones.
 				rows = [...nonCompleted, ...visible.filter((t) => t.status === "completed")].slice(0, budget);
-				const hidden = visible.slice(budget);
-				hiddenCompleted = hidden.filter((t) => t.status === "completed").length;
-				truncatedTail = hidden.length - hiddenCompleted;
+				// rows is reordered (non-completed first) — hidden counts come from the rows
+				// complement, not from slicing the original order.
+				hiddenCompleted = totalCompleted - (rows.length - nonCompleted.length);
+				truncatedTail = 0; // every non-completed task fits within the budget
 			} else {
 				rows = nonCompleted.slice(0, budget);
 				truncatedTail = nonCompleted.length - budget;
-				hiddenCompleted = visible.length - nonCompleted.length;
+				hiddenCompleted = totalCompleted;
 			}
 		}
 

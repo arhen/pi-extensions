@@ -34,6 +34,7 @@ function loadFromDisk(): void {
 	try {
 		const raw = JSON.parse(fs.readFileSync(stateFile(), "utf-8")) as Record<string, TaskState>;
 		for (const [k, v] of Object.entries(raw)) {
+			if (!k) continue; // never restore the anonymous "" slot from an older sidecar
 			if (!v || !Array.isArray(v.tasks) || typeof v.nextId !== "number") continue;
 			if (sessions.has(k)) continue; // L4: never clobber a live in-memory session
 			const maxId = v.tasks.reduce((m, t) => Math.max(m, t.id ?? 0), 0);
@@ -52,7 +53,8 @@ function writeDisk(): void {
 		const dir = path.dirname(stateFile());
 		fs.mkdirSync(dir, { recursive: true });
 		const tmp = `${stateFile()}.tmp`;
-		fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(sessions)));
+		// The anonymous "" slot (no sessionManager) is ephemeral — never persisted as a key.
+		fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries([...sessions].filter(([k]) => k !== ""))));
 		fs.renameSync(tmp, stateFile());
 	} catch {
 		/* persistence is best-effort */

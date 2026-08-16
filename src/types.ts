@@ -4,7 +4,7 @@
  */
 
 import { StringEnum } from "@earendil-works/pi-ai";
-import { type Static, Type } from "typebox";
+import { Type } from "typebox";
 
 export const TOOL_NAME = "todo";
 export const TOOL_LABEL = "Todo";
@@ -90,4 +90,3 @@ export const TodoParamsSchema = Type.Object({
 	),
 });
 
-export type TodoParams = Static<typeof TodoParamsSchema>;

@@ -89,7 +89,9 @@ export default function (pi: ExtensionAPI) {
 		},
 		renderResult(result, _opts, theme) {
 			const details = result.details;
-			if (!details) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0);
+			const fallback = result.content[0]?.type === "text" ? result.content[0].text : "";
+			// get/error results carry single-task/error text in content — don't render the whole list.
+			if (!details || details.error || details.action === "get") return new Text(fallback, 0, 0);
 			const lines: string[] = [];
 			for (const task of details.tasks) {
 				// Only hide tombstones for list-without-includeDeleted; delete actions show them.
@@ -100,17 +102,14 @@ export default function (pi: ExtensionAPI) {
 				if (task.status === "completed" || task.status === "deleted") subject = theme.strikethrough(subject);
 				lines.push(`${glyph} ${subject}`);
 			}
-			return new Text(lines.join("\n") || (result.content[0]?.type === "text" ? result.content[0].text : ""), 0, 0);
+			return new Text(lines.join("\n") || fallback, 0, 0);
 		},
 	});
 
 	pi.registerCommand(COMMAND_NAME, {
 		description: "Show all todos on the current session, grouped by status",
 		handler: async (_args, ctx) => {
-			if (!ctx.hasUI) {
-				ctx.ui.notify("/todos requires interactive mode", "error");
-				return;
-			}
+			if (!ctx.hasUI) return; // no ui (print/json modes) — nothing to notify
 			const state: TaskState = getState(sid(ctx));
 			const visible = state.tasks.filter((t) => t.status !== "deleted");
 			if (visible.length === 0) {
@@ -160,8 +159,9 @@ export default function (pi: ExtensionAPI) {
 			s = "";
 		}
 		// M2: keep session data on disk + memory across shutdown/resume — no evict erase.
+		if (s === "") return; // anonymous context (no session id): skip dispose + skip persist
 		schedulePersist();
-		if (s === "" || s === getActiveRenderSession()) {
+		if (s === getActiveRenderSession()) {
 			overlay.dispose();
 			clearActiveRenderSession();
 		}
