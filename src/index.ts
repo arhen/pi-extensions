@@ -89,7 +89,9 @@ export default function (pi: ExtensionAPI) {
 			if (!details) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0);
 			const lines: string[] = [];
 			for (const task of details.tasks) {
-				if (task.status === "deleted" && !details.action === undefined) continue;
+				// Only hide tombstones for list-without-includeDeleted; delete actions show them.
+				const showDeleted = details.action === "delete" || (details.action === "list" && Boolean((details.params as { includeDeleted?: boolean })?.includeDeleted));
+				if (task.status === "deleted" && !showDeleted) continue;
 				const glyph = theme.fg(STATUS_COLOR[task.status] ?? "dim", STATUS_GLYPH[task.status] ?? "·");
 				let subject = theme.fg(task.status === "completed" ? "muted" : "text", sanitizeTerminalText(task.subject));
 				if (task.status === "completed" || task.status === "deleted") subject = theme.strikethrough(subject);

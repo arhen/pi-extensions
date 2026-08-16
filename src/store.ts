@@ -38,17 +38,24 @@ function loadFromDisk(): void {
 }
 
 /** Debounced write of the whole map. Called on every commit; cheap at this cadence. */
+/** Atomic write: tmp + rename so a crash mid-write can't corrupt the sidecar. */
+function writeDisk(): void {
+	try {
+		const dir = path.dirname(stateFile());
+		fs.mkdirSync(dir, { recursive: true });
+		const tmp = `${stateFile()}.tmp`;
+		fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(sessions)));
+		fs.renameSync(tmp, stateFile());
+	} catch {
+		/* persistence is best-effort */
+	}
+}
+
 export function schedulePersist(): void {
 	if (persistTimer) return;
 	persistTimer = setTimeout(() => {
 		persistTimer = undefined;
-		try {
-			const dir = path.dirname(stateFile());
-			fs.mkdirSync(dir, { recursive: true });
-			fs.writeFileSync(stateFile(), JSON.stringify(Object.fromEntries(sessions)));
-		} catch {
-			/* persistence is best-effort */
-		}
+		writeDisk();
 	}, 500);
 }
 
@@ -66,6 +73,13 @@ export function replaceState(sessionId: string, state: TaskState): void {
 }
 
 export function evictSession(sessionId: string): void {
+	// Flush the session's final state BEFORE deleting it — a pending debounce
+	// would otherwise serialize the map without it and lose the data.
+	if (persistTimer) {
+		clearTimeout(persistTimer);
+		persistTimer = undefined;
+		writeDisk();
+	}
 	sessions.delete(sessionId);
 	schedulePersist();
 }
