@@ -94,6 +94,7 @@ export default async function (pi: ExtensionAPI) {
 								text: `Skill "${name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}`,
 							},
 						],
+						details: {},
 					};
 				}
 				if (!skill.filePath) {
