@@ -93,12 +93,12 @@ What the extension changes:
 
 ## Pros
 
-- **Saves ~4.5K tokens/session** — 17% of fresh context, every session, no behavior change
+- **Saves ~4.5K tokens/session (measured)** — 17% of fresh context, every session, no behavior change
 - **Agent keeps full skill autonomy** — same invocation flow as baseline, no user input required
 - **Lazy by design** — skill bodies load only when the tool is called, exactly like opencode2
 - **Zero config** — discovers the same skill locations pi uses, dedupes symlinks
 - **Reversible** — uninstall to go back to baseline; no skill files are modified
-- **Kill switch** — `PI_SKILL_TOOL=0` disables the tool (strip-only, ~18K) for emergency savings
+- **Kill switch** — `PI_SKILL_TOOL=0` disables the tool (strip-only, ~19K) for emergency savings
 
 ## Cons
 

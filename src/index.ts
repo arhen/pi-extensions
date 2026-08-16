@@ -31,11 +31,12 @@ function truncateDescription(desc: string): string {
 function readSkillBody(filePath: string): string {
 	const content = readFileSync(filePath, "utf8");
 	const { body } = parseFrontmatter<Record<string, unknown>>(content);
-	return body.trim() || content;
+	return body.trim(); // L1: never leak frontmatter to the model
 }
 
 export default async function (pi: ExtensionAPI) {
 	let catalog: SkillEntry[] = [];
+	let toolRegistered = false;
 
 	// ── Strip built-in catalog from system prompt (intro + block) ──────────
 	pi.on("before_agent_start", (event) => {
@@ -50,13 +51,22 @@ export default async function (pi: ExtensionAPI) {
 			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*?<\/available_skills>\n?/,
 			"",
 		);
+		if (stripped === event.systemPrompt) {
+			console.warn("[pi-core-skill-tool] strip failed — pi's skills prompt format changed; catalog left intact");
+		}
+		// H1: the tool's description must carry the populated catalog, so register
+		// lazily on the FIRST agent start (registration snapshots the description).
+		if (!toolRegistered && process.env.PI_SKILL_TOOL !== "0") {
+			toolRegistered = true;
+			registerSkillTool();
+		}
 		return { systemPrompt: stripped };
 	});
 
 	// ── Register skill tool (opencode2-style) ────────────────────────────────
 	// Set PI_SKILL_TOOL=0 to disable the tool (catalog stripped, no tool —
 	// skills only usable via pi's built-in /skill:name commands).
-	if (process.env.PI_SKILL_TOOL !== "0") {
+	function registerSkillTool() {
 		pi.registerTool({
 			name: "skill",
 			label: "Skill",
@@ -103,7 +113,7 @@ export default async function (pi: ExtensionAPI) {
 					};
 				}
 				const body = readSkillBody(skill.filePath);
-				const dir = skill.filePath.slice(0, -"SKILL.md".length);
+				const dir = skill.filePath.endsWith("SKILL.md") ? skill.filePath.slice(0, -"SKILL.md".length) : skill.filePath; // L2: suffix guard
 				return {
 					content: [
 						{
