@@ -4,15 +4,17 @@
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://github.com/earendil-works/pi)
 
-Minimalist pi todo extension: `todo` tool with a 4-state machine and `blockedBy` dependencies, `/todos` command, persistent tree widget. Fork of `@juicesharp/rpiv-todo`, cut to the core — no i18n, no branch replay, no config, no lazy-loading machinery.
-
 ## Install
+
+Requires the [pi coding agent](https://github.com/earendil-works/pi) — install it first: `npm install -g @earendil-works/pi-coding-agent`.
 
 ```sh
 pi install npm:@arhen/pi-core-todo
 ```
 
 > Registers the `todo` tool — conflicts with other todo extensions (`@juicesharp/rpiv-todo`). Run one at a time.
+
+Minimalist pi todo extension: `todo` tool with a 4-state machine and `blockedBy` dependencies, `/todos` command, persistent tree widget. Fork of `@juicesharp/rpiv-todo`, cut to the core — no i18n, no branch replay, no config, no lazy-loading machinery.
 
 ## Widget
 
