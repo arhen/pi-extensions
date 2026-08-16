@@ -1,0 +1,40 @@
+{
+  "name": "@arhen/pi-todo",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Minimalist pi todo extension: todo tool with 4-state machine and blockedBy dependencies, /todos command, persistent tree widget. Fork of @juicesharp/rpiv-todo, cut to the core.",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "pi-package",
+    "todo"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "^0.84.2",
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2",
+    "typebox": "^1.3.14"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.2",
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
+  }
+}
