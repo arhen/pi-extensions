@@ -1,8 +1,8 @@
 {
-  "name": "@arhen/add-pi-wafer",
+  "name": "@arhen/pi-add-wafer",
   "version": "1.0.0",
   "type": "module",
-  "description": "Additional pi extension: wafer.",
+  "description": "pi extension: wafer.",
   "license": "MIT",
   "main": "./src/index.ts",
   "files": [
