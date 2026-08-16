@@ -14,8 +14,12 @@ const sessions = new Map<string, TaskState>();
 let activeRenderSession = "";
 let persistTimer: ReturnType<typeof setTimeout> | undefined;
 
-export function sid(ctx: { sessionManager: { getSessionId(): string } }): string {
-	return ctx.sessionManager.getSessionId() ?? "";
+export function sid(ctx: { sessionManager?: { getSessionId?(): string } }): string {
+	try {
+		return ctx.sessionManager?.getSessionId?.() ?? "";
+	} catch {
+		return "";
+	}
 }
 
 function freshState(): TaskState {
@@ -30,7 +34,10 @@ function loadFromDisk(): void {
 	try {
 		const raw = JSON.parse(fs.readFileSync(stateFile(), "utf-8")) as Record<string, TaskState>;
 		for (const [k, v] of Object.entries(raw)) {
-			if (v && Array.isArray(v.tasks) && typeof v.nextId === "number") sessions.set(k, v);
+			if (!v || !Array.isArray(v.tasks) || typeof v.nextId !== "number") continue;
+			const maxId = v.tasks.reduce((m, t) => Math.max(m, t.id ?? 0), 0);
+			if (v.nextId <= maxId) v.nextId = maxId + 1; // never reuse ids
+			sessions.set(k, v);
 		}
 	} catch {
 		/* first run or corrupt file — start empty */
@@ -104,6 +111,11 @@ export function restoreSession(sessionId: string): boolean {
 	if (!sessions.has(sessionId)) loadFromDisk(); // any missing session reloads from disk
 	if (!sessions.has(sessionId)) return false;
 	return true;
+}
+
+/** Does the session have a live state slot? (widget reclaim check) */
+export function hasSession(sessionId: string): boolean {
+	return sessions.has(sessionId);
 }
 
 /** Test hook. */

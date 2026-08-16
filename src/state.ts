@@ -114,7 +114,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			const newTask: Task = { id: state.nextId, subject: params.subject, status: "pending" };
 			if (params.description) newTask.description = params.description;
 			if (params.activeForm) newTask.activeForm = params.activeForm;
-			if (params.blockedBy?.length) newTask.blockedBy = [...params.blockedBy];
+			if (params.blockedBy?.length) newTask.blockedBy = [...new Set(params.blockedBy)];
 			if (params.owner) newTask.owner = params.owner;
 			if (params.metadata) newTask.metadata = { ...params.metadata };
 			return {
@@ -178,7 +178,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			}
 
 			let newMetadata = current.metadata;
-			if (params.metadata !== undefined) {
+			if (params.metadata !== undefined && Object.keys(params.metadata).length > 0) {
 				const merged: Record<string, unknown> = { ...(current.metadata ?? {}) };
 				for (const [k, v] of Object.entries(params.metadata)) {
 					if (v === null) delete merged[k];

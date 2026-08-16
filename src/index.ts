@@ -12,6 +12,7 @@ import {
 	clearActiveRenderSession,
 	commitState,
 	evictSession,
+	hasSession,
 	getActiveRenderSession,
 	getRenderState,
 	getState,
@@ -73,7 +74,9 @@ export default function (pi: ExtensionAPI) {
 			const action = typed.action as TaskAction;
 			const sessionId = sid(ctx);
 			const result = applyTaskMutation(getState(sessionId), action, typed);
-			commitState(sessionId, result.state);
+			if (action !== "list" && action !== "get" && result.op.kind !== "error") {
+				commitState(sessionId, result.state); // L11: read-only actions don't dirty the store
+			}
 			return buildToolResult(action, typed, result.state, result.op);
 		},
 		renderCall(args, theme) {
@@ -142,7 +145,8 @@ export default function (pi: ExtensionAPI) {
 		const id = sid(ctx);
 		restoreSession(id);
 		if (!ctx.hasUI) return;
-		if (getActiveRenderSession() === "") setActiveRenderSession(id);
+		// Re-claim the widget if the previous foreground session is gone.
+		if (getActiveRenderSession() === "" || !hasSession(getActiveRenderSession())) setActiveRenderSession(id);
 		if (id !== getActiveRenderSession()) return;
 		overlay.setUICtx(ctx.ui);
 		refreshOverlay(true);

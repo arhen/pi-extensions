@@ -46,3 +46,7 @@ bun test   # pure-logic: reducer, transitions, cycles, sanitize
 ## License
 
 MIT.
+
+## Notes
+
+- Sidecar persistence assumes a **single pi process** per agent dir; concurrent processes overwrite each other's todo state.
