@@ -90,7 +90,7 @@ export default async function (pi: ExtensionAPI) {
 						content: [
 							{
 								type: "text",
-								text: `Skill "${params.name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}`,
+								text: `Skill "${name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}`,
 							},
 						],
 					};
