@@ -171,7 +171,7 @@ export default async function (pi: ExtensionAPI) {
   };
   registerProvider();
 
-  const statusText = () => [zdrOn ? "ZDR" : "", lastSpendFetched ? `$${(lastSpendCents / 100).toFixed(2)}` : ""].filter(Boolean).join("·");
+  const statusText = () => (zdrOn ? "ZDR" : ""); // spend removed: redundant with pi's built-in session cost
 
   pi.on("session_start", async (_event, ctx) => {
     ctx.ui.setStatus("wafer", statusText() || undefined);
