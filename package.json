@@ -1,7 +1,7 @@
 {
-  "name": "@arhen/pi-9router",
-  "version": "0.1.0",
-  "description": "Pi Coding Agent extension for 9router — provider registration and model discovery only, no web tools",
+  "name": "@arhen/pi-add-9router",
+  "version": "1.0.0",
+  "description": "Pi Coding Agent extension for 9router \u2014 provider registration and model discovery only, no web tools",
   "keywords": [
     "pi-package",
     "pi-extension",
