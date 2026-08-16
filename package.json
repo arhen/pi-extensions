@@ -1,6 +1,6 @@
 {
   "name": "@arhen/pi-core-skill-tool",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Pi extension — opencode2-style skills: strips the built-in skill catalog from the system prompt and exposes skills via a single lazy `skill` tool. Agent auto-invokes, no user input, saves ~4.5K tokens/session.",
   "keywords": [
     "pi-package",
