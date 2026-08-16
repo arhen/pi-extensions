@@ -12,7 +12,7 @@
   "author": "arhen <arhen@users.noreply.github.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arhen/pi-skill-tool.git"
+    "url": "git+https://github.com/arhen/pi-core-skill-tool.git"
   },
   "type": "module",
   "main": "./src/index.ts",

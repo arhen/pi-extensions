@@ -1,9 +1,9 @@
 # pi-skill-tool
 
-[![npm version](https://img.shields.io/npm/v/@arhen/pi-skill-tool)](https://www.npmjs.com/package/@arhen/pi-skill-tool)
-[![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-skill-tool)](https://www.npmjs.com/package/@arhen/pi-skill-tool)
+[![npm version](https://img.shields.io/npm/v/@arhen/pi-core-skill-tool)](https://www.npmjs.com/package/@arhen/pi-core-skill-tool)
+[![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-core-skill-tool)](https://www.npmjs.com/package/@arhen/pi-core-skill-tool)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-skill-tool)](https://github.com/arhen/pi-skill-tool)
+[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-core-skill-tool)](https://github.com/arhen/pi-core-skill-tool)
 
 Pi extension that implements **opencode2-style skills**: the skill catalog is stripped from the system prompt and exposed through a single lazy `skill` tool.
 
@@ -108,7 +108,7 @@ What the extension changes:
 ## Install
 
 ```bash
-pi install npm:@arhen/pi-skill-tool
+pi install npm:@arhen/pi-core-skill-tool
 ```
 
 ## License
