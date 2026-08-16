@@ -5,6 +5,14 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/arhen/pi-core-skill-tool)](https://github.com/arhen/pi-core-skill-tool)
 
+## Install
+
+Requires the [pi coding agent](https://github.com/earendil-works/pi) — install it first: `npm install -g @earendil-works/pi-coding-agent`.
+
+```sh
+pi install npm:@arhen/pi-core-skill-tool
+```
+
 Pi extension that implements **opencode2-style skills**: the skill catalog is stripped from the system prompt and exposed through a single lazy `skill` tool.
 
 ## Why
@@ -104,12 +112,6 @@ What the extension changes:
 
 - **Truncated descriptions** (100 chars) — the agent matches on keywords rather than full text. Skill bodies are complete when loaded; only the catalog summary is shortened
 - **Catalog still costs ~2.9K** — the tool description must carry skill names for the agent to discover them. Removing it entirely (Ext OFF+flag) is cheaper but kills agent invocation
-
-## Install
-
-```bash
-pi install npm:@arhen/pi-core-skill-tool
-```
 
 ## License
 
