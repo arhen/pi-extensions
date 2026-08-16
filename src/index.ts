@@ -12,6 +12,7 @@
 
 import { parseFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
+import { Type } from "typebox";
 
 const CATALOG_DESC_MAX = 100;
 
@@ -73,16 +74,9 @@ export default async function (pi: ExtensionAPI) {
 					),
 				"</available_skills>",
 			].join("\n"),
-			parameters: {
-				type: "object",
-				properties: {
-					name: {
-						type: "string",
-						description: "The skill identifier from available_skills",
-					},
-				},
-				required: ["name"],
-			},
+			parameters: Type.Object({
+				name: Type.String({ description: "The skill identifier from available_skills" }),
+			}),
 			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
 				const name = typeof params.name === "string" ? params.name : "";
 				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
