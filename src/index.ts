@@ -83,8 +83,9 @@ export default async function (pi: ExtensionAPI) {
 				},
 				required: ["name"],
 			},
-			async execute(_toolCallId, params: { name: string }) {
-				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === params.name);
+			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) {
+				const name = typeof params.name === "string" ? params.name : "";
+				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
 				if (!skill) {
 					return {
 						content: [
@@ -114,6 +115,7 @@ export default async function (pi: ExtensionAPI) {
 							text: `## Skill: ${skill.name}\n\n**Base directory**: ${dir}\n\n${body}`,
 						},
 					],
+					details: {},
 				};
 			},
 		});
