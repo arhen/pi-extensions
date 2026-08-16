@@ -173,12 +173,22 @@ export default async function (pi: ExtensionAPI) {
 
   const statusText = () => (zdrOn ? "ZDR" : ""); // spend removed: redundant with pi's built-in session cost
 
+  // Footer status only while a wafer model is active.
+  const syncStatus = (ctx: { ui: { setStatus(k: string, v: string | undefined): void } }, model?: { provider?: string }) => {
+    const active = model?.provider === "wafer";
+    ctx.ui.setStatus("wafer", active ? statusText() || undefined : undefined);
+  };
+
   pi.on("session_start", async (_event, ctx) => {
-    ctx.ui.setStatus("wafer", statusText() || undefined);
+    syncStatus(ctx, ctx.model);
     // Startup refresh is offline-only; fetch the live catalog when a key exists.
     if (waferKey()) {
       void ctx.modelRegistry.refresh({ providers: ["wafer"] }).catch(() => {});
     }
+  });
+
+  pi.on("model_select", (event, ctx) => {
+    syncStatus(ctx, event.model);
   });
 
   pi.registerCommand("wafer", {
