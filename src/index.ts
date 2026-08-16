@@ -83,7 +83,7 @@ export default async function (pi: ExtensionAPI) {
 				},
 				required: ["name"],
 			},
-			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown) {
+			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
 				const name = typeof params.name === "string" ? params.name : "";
 				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
 				if (!skill) {
@@ -104,6 +104,7 @@ export default async function (pi: ExtensionAPI) {
 								text: `Skill "${skill.name}" has no loadable file path in this context.`,
 							},
 						],
+						details: {},
 					};
 				}
 				const body = readSkillBody(skill.filePath);
