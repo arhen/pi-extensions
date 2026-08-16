@@ -2,7 +2,15 @@
 
 Minimalist [pi coding agent](https://github.com/earendil-works/pi) extensions that just solve problems. One package, one problem. No config surfaces, minimal context footprint.
 
-## Install / update / remove the whole family
+## Install
+
+Requires the [pi coding agent](https://github.com/earendil-works/pi) — install it first: `npm install -g @earendil-works/pi-coding-agent`.
+
+```sh
+npm install -g @arhen/pi-toolset
+```
+
+Then manage the whole family:
 
 ```sh
 pi-toolset install    # install every @arhen/pi-* package (discovered live from npm)
