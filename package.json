@@ -12,6 +12,7 @@
 	"scripts": {
 		"install:core": "node packages/pi-toolset/pi-toolset install",
 		"check": "npm run typecheck --workspaces --if-present",
+		"verify": "npm install --no-audit --no-fund && npm run check",
 		"format": "biome format --write ."
 	},
 	"devDependencies": {
