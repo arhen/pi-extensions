@@ -1,0 +1,40 @@
+{
+  "name": "@arhen/pi-core-ask",
+  "version": "1.0.9",
+  "type": "module",
+  "description": "Minimalist pi questionnaire: ask_user_question tool with up to 4 structured questions (2-4 options, multiSelect, previews, type-something).",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "assets",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "pi-package",
+    "questionnaire",
+    "ask"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2",
+    "typebox": "^1.3.14"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.14",
+    "typescript": "^7.0.2"
+  }
+}
