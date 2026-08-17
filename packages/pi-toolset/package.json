@@ -1,0 +1,25 @@
+{
+  "name": "@arhen/pi-toolset",
+  "version": "1.0.44",
+  "type": "module",
+  "description": "Manage all @arhen/pi-* extensions dynamically: install the core set, add additional ones, update, remove.",
+  "license": "MIT",
+  "bin": {
+    "pi-toolset": "./pi-toolset"
+  },
+  "files": [
+    "pi-toolset",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "toolset",
+    "extension-manager"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
