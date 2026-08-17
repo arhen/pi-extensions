@@ -20,7 +20,9 @@ Two rates, both counting **all** output tokens (thinking + text + tool-call argu
 
 TTFT is time to the *first* streamed token of any kind; on reasoning models that first token is usually thinking, not visible text.
 
-> Numbers before v1.1.0 were inflated — a text-only time window was paired with a token count that still included tool-call arguments, which reported ~766 t/s median (peaks near 4800) where the real rate was ~52.
+**Buffered providers.** Some gateways don't really stream — they hold the whole completion server-side, then flush every chunk within a millisecond. `vantis/deepseek-v4-flash-0731-fast` does this: 4.7s to first token, then 26 chunks in under 1ms. There is no stream window to divide by, so generation t/s is not reported at all; the status bar switches to `eff` and shows effective t/s, whose window is the full turn and stays honest. A high TTFT next to `eff` means the provider buffered, not that the model was slow to start.
+
+> Numbers before v1.1.0 were inflated — a text-only time window was paired with a token count that still included tool-call arguments, which reported ~766 t/s median (peaks near 4800) where the real rate was ~52. v1.2.0 fixes a second inflation source: buffered providers whose sub-millisecond flush made any window-based rate meaningless (~1500 t/s readings).
 
 ```sh
 npm test --workspace @arhen/pi-core-tps-stats

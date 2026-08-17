@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
 	MAX_SAMPLES,
+	MIN_STREAM_MS,
 	effTps,
 	fmtDur,
 	genTps,
@@ -33,6 +34,23 @@ assert.equal(
 	"negative window -> no sample",
 );
 assert.equal(genTps(100, 0, 1000), 100);
+
+// buffered provider: vantis deepseek-v4-flash-0731-fast, measured against the
+// live API — 4.74s to first token, then all 26 chunks inside 1ms. Dividing by
+// that window is what produced the 940/1490 t/s footer readings.
+assert.equal(
+	genTps(1300, 13_000, 13_001),
+	undefined,
+	"1ms flush is not a stream — no generation sample",
+);
+assert.equal(genTps(100, 0, MIN_STREAM_MS - 1), undefined, "below floor");
+assert.equal(genTps(100, 0, MIN_STREAM_MS), 1000, "at floor, still measured");
+// effective t/s stays meaningful for buffered responses: its window is the turn
+const bufferedEff = effTps(1300, 0, 13_001)!;
+assert.ok(
+	bufferedEff > 90 && bufferedEff < 110,
+	`buffered response still yields an honest ~100 t/s, got ${bufferedEff.toFixed(1)}`,
+);
 assert.equal(effTps(100, 0, 2000), 50, "eff includes prefill, so it is slower");
 
 // regression: the screenshot's 1777 t/s.
