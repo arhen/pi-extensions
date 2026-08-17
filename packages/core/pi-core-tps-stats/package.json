@@ -36,7 +36,8 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arhen/pi-core-tps-stats.git"
+    "url": "https://github.com/arhen/pi-extensions",
+    "directory": "packages/core/pi-core-tps-stats"
   },
   "author": "arhen"
 }

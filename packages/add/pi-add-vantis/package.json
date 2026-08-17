@@ -30,5 +30,10 @@
     "extensions": [
       "./src/index.ts"
     ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arhen/pi-extensions",
+    "directory": "packages/add/pi-add-vantis"
   }
 }

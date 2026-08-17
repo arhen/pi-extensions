@@ -1,7 +1,7 @@
 {
   "name": "@arhen/pi-add-9router",
   "version": "1.0.0",
-  "description": "Pi Coding Agent extension for 9router \u2014 provider registration and model discovery only, no web tools",
+  "description": "Pi Coding Agent extension for 9router — provider registration and model discovery only, no web tools",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -13,7 +13,8 @@
   "author": "arhen <arhen@users.noreply.github.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/arhen/pi-9router.git"
+    "url": "https://github.com/arhen/pi-extensions",
+    "directory": "packages/add/pi-add-9router"
   },
   "type": "module",
   "main": "./src/index.ts",
