@@ -9,8 +9,11 @@
 // the repo's check commands, self-test them, confirm with the user, and write
 // the config. No config that matches → enabled:false, silent forever after.
 //
-// ponytail: single command + args only (no shell pipes/&&). Upgrade path:
-// wrap cmd in `bash -lc "..."` if repos need shell syntax.
+// ⚠️ shell operators (&&  |  ;  redirects  subshells) in a check are wrapped in
+//    `bash -lc` so repo commands like "npm install && npm run check" work — no naive
+//    whitespace split (which would hand npm a literal "&&" arg). Plain single-command
+//    checks still run argv-direct. ponytail-lazy: no shell always; bash only on demand.
+const SHELL_OP = /[&|;><`()]/; // substring-only `$` (env, ${file}) is NOT an operator
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -80,12 +83,17 @@ export function findConfig(cwd: string): { config: CheckConfig; root: string } |
 }
 /** Empty input yields cmd "" — callers must skip it, spawn("") throws. */
 export function splitCmd(s: string): [string, string[]] {
-	const [cmd = "", ...args] = s.trim().split(/\s+/).filter(Boolean);
+	const t = s.trim();
+	if (!t) return ["", []];
+	if (SHELL_OP.test(t)) return ["bash", ["-lc", t]];
+	const [cmd = "", ...args] = t.split(/\s+/).filter(Boolean);
 	return [cmd, args];
 }
 /** Substitute after the split so a path with spaces stays one argv entry. */
 export function splitFileCmd(template: string, file: string): [string, string[]] {
-	const [cmd, args] = splitCmd(template);
+	const t = template.trim();
+	if (SHELL_OP.test(t)) return ["bash", ["-lc", t.replaceAll("${file}", file)]];
+	const [cmd, args] = splitCmd(t);
 	return [cmd.replaceAll("${file}", file), args.map((a) => a.replaceAll("${file}", file))];
 }
 /** write tool accepts file_path or path; edit uses path. */

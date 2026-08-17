@@ -1,6 +1,6 @@
 {
   "name": "@arhen/pi-add-code-diagnostic",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "type": "module",
   "description": "pi extension: repo-scoped typecheck/lint diagnostics for coding agents (LSP-equivalent, no servers).",
   "license": "MIT",
