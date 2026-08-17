@@ -35,41 +35,31 @@ export function mean(values: number[]): number {
 }
 
 /**
- * A stream window shorter than this is not a stream — it is a buffered response
- * delivered in one burst, and no generation rate can be recovered from it.
+ * Tokens per second = all output tokens over the whole turn.
  *
- * Some gateways (vantis deepseek-v4-flash-0731-fast, measured) hold the whole
- * completion server-side, then flush every chunk within a millisecond of the
- * first. Dividing hundreds of tokens by that window yields four-digit t/s.
- * ponytail: a flat floor, not an adaptive heuristic. Ceiling: a genuinely
- * sub-100ms real stream is discarded too, which needs ~1000 t/s to happen.
+ * There is deliberately only one rate here. The obvious alternative — divide by
+ * the stream window, from first chunk to last — does not survive contact with
+ * real providers, because SSE arrival times measure the gateway's flush
+ * schedule, not the model's generation speed. Measured against
+ * vantis/deepseek-v4-flash-0731-fast, median inter-chunk gap is 0.01ms: chunks
+ * land in instant batches separated by long pauses, so the "window" is an
+ * artifact of how many batch boundaries happened to fall inside it:
+ *
+ *     prompt              turn      window-based    this function
+ *     "Say OK."           1.40s        263 t/s          41 t/s
+ *     "List 3 fruits."    8.81s        801 t/s          14 t/s
+ *     900-word essay     18.49s         89 t/s          55 t/s
+ *
+ * The window-based column swings 9x on one model in one minute; this one stays
+ * in a plausible band. Earlier versions shipped the window math and reported
+ * four-digit rates (1777, 1490) that no local model could reach.
+ *
+ * `usage.output` counts thinking + text + tool-call arguments, and the turn
+ * covers all of it, so numerator and denominator describe the same work.
+ * Queue and prefill latency are included: this is the rate you actually wait
+ * for, which is why it reads lower than a provider's marketing number.
  */
-export const MIN_STREAM_MS = 100;
-
-/**
- * Generation t/s = every output token over the window they actually streamed in.
- *
- * `usage.output` counts thinking + text + tool-call argument tokens, so the
- * denominator must be the whole content stream, not just the text sub-window.
- * Pairing `output - reasoning` with a text-only window (the old math) divided a
- * numerator that still held tool-call tokens by a window that excluded thinking
- * time — measured 4x-163x inflation on deepseek-v4-flash, e.g. a bogus 1777 t/s.
- *
- * Returns undefined when the response never really streamed; callers fall back
- * to effective t/s, which stays meaningful because its window is the full turn.
- */
-export function genTps(
-	outputTokens: number,
-	streamStartMs: number,
-	endMs: number,
-): number | undefined {
-	const durationMs = endMs - streamStartMs;
-	if (outputTokens <= 0 || durationMs < MIN_STREAM_MS) return undefined;
-	return outputTokens / (durationMs / 1000);
-}
-
-/** Effective t/s = output tokens over the full turn, prefill/queue latency included. */
-export function effTps(
+export function tps(
 	outputTokens: number,
 	turnStartMs: number,
 	endMs: number,
@@ -94,8 +84,7 @@ const CONTENT_START_EVENTS = new Set([
 ]);
 
 export default function (pi: ExtensionAPI) {
-	let genValues: number[] = [];
-	let effValues: number[] = [];
+	let tpsValues: number[] = [];
 	let ttftValues: number[] = [];
 
 	let turnStart = 0;
@@ -115,16 +104,12 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function updateStatus(ctx: ExtensionContext) {
-		// buffered (non-streaming) providers produce no generation samples at all;
-		// effective t/s is then the only honest rate, so label it as such
-		const buffered = genValues.length === 0;
-		const values = buffered ? effValues : genValues;
-		if (values.length === 0) {
+		if (tpsValues.length === 0) {
 			ctx.ui.setStatus("tps", undefined);
 			return;
 		}
 		const t = ctx.ui.theme;
-		let text = `${t.fg("dim", buffered ? "eff" : "med")} ${tpsColored(t, median(values))} ${t.fg("dim", "t/s")}`;
+		let text = `${t.fg("dim", "med")} ${tpsColored(t, median(tpsValues))} ${t.fg("dim", "t/s")}`;
 		if (ttftValues.length > 0) {
 			text += ` | ${t.fg("warning", fmtDur(median(ttftValues)))} ${t.fg("dim", "ttft")}`;
 		}
@@ -133,10 +118,8 @@ export default function (pi: ExtensionAPI) {
 
 	function resetStats(ctx: ExtensionContext, modelLabel: string) {
 		// measure BEFORE clearing, else the flash branch is dead code
-		const hadSamples =
-			genValues.length > 0 || effValues.length > 0 || ttftValues.length > 0;
-		genValues = [];
-		effValues = [];
+		const hadSamples = tpsValues.length > 0 || ttftValues.length > 0;
+		tpsValues = [];
 		ttftValues = [];
 		turnStart = 0;
 		streamStart = 0;
@@ -151,8 +134,7 @@ export default function (pi: ExtensionAPI) {
 			`${t.fg("dim", "t/s reset")} ${t.fg("accent", modelLabel)}`,
 		);
 		resetTimer = setTimeout(() => {
-			if (genValues.length === 0 && effValues.length === 0)
-				ctx.ui.setStatus("tps", undefined);
+			if (tpsValues.length === 0) ctx.ui.setStatus("tps", undefined);
 		}, 2000);
 	}
 
@@ -161,6 +143,9 @@ export default function (pi: ExtensionAPI) {
 		streamStart = 0;
 	});
 
+	// TTFT only — the first token's arrival is a real observation. Where the
+	// *rest* of the chunks land is the gateway's flush schedule, so no rate is
+	// derived from them.
 	pi.on(
 		"message_update",
 		(event: MessageUpdateEvent, _ctx: ExtensionContext) => {
@@ -182,13 +167,10 @@ export default function (pi: ExtensionAPI) {
 		if (streamStart !== 0) {
 			const ttft = streamStart - turnStart;
 			if (ttft >= 0) push(ttftValues, ttft);
-			// undefined when the provider buffered the response — see MIN_STREAM_MS
-			const gen = genTps(output, streamStart, now);
-			if (gen !== undefined) push(genValues, gen);
 		}
 
-		const eff = effTps(output, turnStart, now);
-		if (eff !== undefined) push(effValues, eff);
+		const rate = tps(output, turnStart, now);
+		if (rate !== undefined) push(tpsValues, rate);
 
 		// pi's agent loop emits one assistant message per turn and re-fires
 		// turn_start for the next one, so message_end is the only place stats
@@ -206,37 +188,20 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("tps-stats", {
 		description: "Show token-per-second statistics for current model",
 		handler: async (_args, ctx) => {
-			const n = genValues.length;
-			if (n === 0 && effValues.length === 0) {
+			const n = tpsValues.length;
+			if (n === 0) {
 				ctx.ui.notify("t/s Stats: no data yet. Send a prompt first.", "info");
 				return;
 			}
-			const lines: string[] = [];
-			if (n === 0) {
-				lines.push(
-					"Generation t/s: unavailable — this provider buffers the whole",
-					`response and flushes it in under ${MIN_STREAM_MS}ms, so there is no`,
-					"stream window to measure. Effective t/s below is the real rate.",
-				);
-			} else {
-				const sorted = [...genValues].sort((a, b) => a - b);
-				lines.push(
-					"Generation t/s (all output tokens / stream window)",
-					`Samples: ${n}`,
-					`Average: ${mean(genValues).toFixed(1)}`,
-					`Median:  ${median(genValues).toFixed(1)}`,
-					`Min:     ${sorted[0].toFixed(1)}`,
-					`Max:     ${sorted[n - 1].toFixed(1)}`,
-				);
-			}
-			if (effValues.length > 0) {
-				lines.push(
-					"---",
-					"Effective t/s (all output tokens / full turn, prefill included):",
-					`Average: ${mean(effValues).toFixed(1)}`,
-					`Median:  ${median(effValues).toFixed(1)}`,
-				);
-			}
+			const sorted = [...tpsValues].sort((a, b) => a - b);
+			const lines = [
+				"t/s (all output tokens / full turn, prefill included)",
+				`Samples: ${n}`,
+				`Average: ${mean(tpsValues).toFixed(1)}`,
+				`Median:  ${median(tpsValues).toFixed(1)}`,
+				`Min:     ${sorted[0].toFixed(1)}`,
+				`Max:     ${sorted[n - 1].toFixed(1)}`,
+			];
 			if (ttftValues.length > 0) {
 				lines.push(
 					"---",

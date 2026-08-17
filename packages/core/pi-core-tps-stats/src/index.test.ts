@@ -1,14 +1,5 @@
 import { strict as assert } from "node:assert";
-import {
-	MAX_SAMPLES,
-	MIN_STREAM_MS,
-	effTps,
-	fmtDur,
-	genTps,
-	mean,
-	median,
-	push,
-} from "./index.ts";
+import { MAX_SAMPLES, fmtDur, mean, median, push, tps } from "./index.ts";
 
 // median / mean
 assert.equal(median([]), 0);
@@ -25,57 +16,49 @@ assert.equal(ring.length, MAX_SAMPLES);
 assert.equal(ring[0], 10, "oldest dropped");
 assert.equal(ring[MAX_SAMPLES - 1], MAX_SAMPLES + 9, "newest kept");
 
-// t/s guards
-assert.equal(genTps(0, 0, 1000), undefined, "no tokens -> no sample");
-assert.equal(genTps(100, 1000, 1000), undefined, "zero window -> no sample");
-assert.equal(
-	genTps(100, 2000, 1000),
-	undefined,
-	"negative window -> no sample",
-);
-assert.equal(genTps(100, 0, 1000), 100);
+// guards
+assert.equal(tps(0, 0, 1000), undefined, "no tokens -> no sample");
+assert.equal(tps(100, 1000, 1000), undefined, "zero turn -> no sample");
+assert.equal(tps(100, 2000, 1000), undefined, "negative turn -> no sample");
+assert.equal(tps(100, 0, 1000), 100);
+assert.equal(tps(50, 0, 2000), 25);
 
-// buffered provider: vantis deepseek-v4-flash-0731-fast, measured against the
-// live API — 4.74s to first token, then all 26 chunks inside 1ms. Dividing by
-// that window is what produced the 940/1490 t/s footer readings.
-assert.equal(
-	genTps(1300, 13_000, 13_001),
-	undefined,
-	"1ms flush is not a stream — no generation sample",
-);
-assert.equal(genTps(100, 0, MIN_STREAM_MS - 1), undefined, "below floor");
-assert.equal(genTps(100, 0, MIN_STREAM_MS), 1000, "at floor, still measured");
-// effective t/s stays meaningful for buffered responses: its window is the turn
-const bufferedEff = effTps(1300, 0, 13_001)!;
-assert.ok(
-	bufferedEff > 90 && bufferedEff < 110,
-	`buffered response still yields an honest ~100 t/s, got ${bufferedEff.toFixed(1)}`,
-);
-assert.equal(effTps(100, 0, 2000), 50, "eff includes prefill, so it is slower");
+// Regression: the four-digit footer readings (1777, 1490, 1075).
+// Live captures from vantis/deepseek-v4-flash-0731-fast. The gateway flushes
+// SSE chunks in instant batches (median inter-chunk gap 0.01ms), so the stream
+// window is an artifact of batch boundaries, not generation speed. Each row is
+// [outputTokens, turnSeconds, streamWindowSeconds] as measured.
+const captures: [number, number, number][] = [
+	[58, 1.4, 0.22], // "Say OK."
+	[124, 8.81, 0.155], // "List 3 fruits."
+	[1024, 18.49, 11.553], // 900-word essay
+];
+const windowRates = captures.map(([o, _t, w]) => o / w);
+const turnRates = captures.map(([o, t]) => tps(o, 0, t * 1000)!);
 
-// regression: the screenshot's 1777 t/s.
-// Real segment from a session log: 1754 output tokens (1564 reasoning), model
-// streamed ~18s total, text streamed in the last ~0.1s. The old math divided
-// (output - reasoning) = 190 by the 0.1s text-only window -> 1900 t/s.
-const OUT = 1754;
-const turnStart = 0;
-const firstToken = 500; // thinking_start
-const textStart = 18_400;
-const end = 18_500;
-const oldMath = (OUT - 1564) / ((end - textStart) / 1000);
-assert.ok(oldMath > 1500, `old math inflates (${oldMath.toFixed(0)} t/s)`);
-const gen = genTps(OUT, firstToken, end)!;
+// the old window math is wildly unstable across those three prompts...
+const windowSpread = Math.max(...windowRates) / Math.min(...windowRates);
 assert.ok(
-	gen > 90 && gen < 100,
-	`generation t/s is plausible for this hardware, got ${gen.toFixed(1)}`,
+	windowSpread > 8,
+	`window-based rate swings ${windowSpread.toFixed(1)}x on one model`,
 );
 assert.ok(
-	effTps(OUT, turnStart, end)! < gen,
-	"effective t/s <= generation t/s: same tokens, longer window",
+	Math.max(...windowRates) > 700,
+	"window math produces the implausible readings users reported",
 );
 
-// TTFT counts thinking as first token, not first text
-assert.equal(firstToken - turnStart, 500, "ttft = first content event");
+// ...while every turn-based rate stays in a band a real model can hit
+for (const r of turnRates) {
+	assert.ok(r > 5 && r < 200, `plausible rate, got ${r.toFixed(1)} t/s`);
+}
+const turnSpread = Math.max(...turnRates) / Math.min(...turnRates);
+assert.ok(
+	turnSpread < windowSpread,
+	`turn-based is steadier (${turnSpread.toFixed(1)}x vs ${windowSpread.toFixed(1)}x)`,
+);
+
+// TTFT stays a direct observation: first token arrival minus turn start.
+assert.equal(7380 - 0, 7380, "ttft is a subtraction, not a rate");
 
 // duration formatting
 assert.equal(fmtDur(6900), "6,9s");

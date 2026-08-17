@@ -11,18 +11,21 @@ Requires the [pi coding agent](https://github.com/earendil-works/pi) — install
 pi install npm:@arhen/pi-core-tps-stats
 ```
 
-Live token-per-second stats for the active model. Status bar shows median generation t/s + median TTFT; `/tps-stats` shows full stats (samples, avg/median/min/max, effective t/s, TTFT). Stats reset on model change.
+Live token-per-second stats for the active model. Status bar shows median t/s + median TTFT; `/tps-stats` shows full stats (samples, avg/median/min/max, TTFT). Stats reset on model change.
 
-Two rates, both counting **all** output tokens (thinking + text + tool-call arguments) because that is what `usage.output` reports:
+**One rate, deliberately.** t/s is all output tokens (thinking + text + tool-call arguments) divided by the whole turn, prefill and queue latency included. It reads lower than a provider's marketing number because it is the rate you actually wait for.
 
-- **Generation t/s** — tokens / the window from the first streamed token to the end of the message. What the model sustains once it starts producing.
-- **Effective t/s** — tokens / the whole turn, so queue and prefill latency drag it down. What you actually wait for.
+There is no separate "streaming t/s", because SSE arrival times measure the gateway's flush schedule rather than the model. Measured against `vantis/deepseek-v4-flash-0731-fast` (median inter-chunk gap: 0.01ms — chunks land in instant batches separated by long pauses):
 
-TTFT is time to the *first* streamed token of any kind; on reasoning models that first token is usually thinking, not visible text.
+| prompt | turn | window-based | this extension |
+|---|---|---|---|
+| `Say OK.` | 1.40s | 263 t/s | 41 t/s |
+| `List 3 fruits.` | 8.81s | 801 t/s | 14 t/s |
+| 900-word essay | 18.49s | 89 t/s | 55 t/s |
 
-**Buffered providers.** Some gateways don't really stream — they hold the whole completion server-side, then flush every chunk within a millisecond. `vantis/deepseek-v4-flash-0731-fast` does this: 4.7s to first token, then 26 chunks in under 1ms. There is no stream window to divide by, so generation t/s is not reported at all; the status bar switches to `eff` and shows effective t/s, whose window is the full turn and stays honest. A high TTFT next to `eff` means the provider buffered, not that the model was slow to start.
+The window-based column swings 9x on one model within a minute. Versions before v1.3.0 shipped that math and reported four-digit rates no local model can reach.
 
-> Numbers before v1.1.0 were inflated — a text-only time window was paired with a token count that still included tool-call arguments, which reported ~766 t/s median (peaks near 4800) where the real rate was ~52. v1.2.0 fixes a second inflation source: buffered providers whose sub-millisecond flush made any window-based rate meaningless (~1500 t/s readings).
+TTFT stays a direct observation — first streamed token minus turn start. On reasoning models that first token is usually thinking, not visible text.
 
 ```sh
 npm test --workspace @arhen/pi-core-tps-stats
