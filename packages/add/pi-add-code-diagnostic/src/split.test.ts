@@ -1,5 +1,5 @@
-import test from "node:test";
 import assert from "node:assert/strict";
+import test from "node:test";
 import { splitCmd, splitFileCmd } from "./index.ts";
 
 test("plain command stays argv-direct", () => {
@@ -15,13 +15,13 @@ test("pipes and redirects wrap too", () => {
 test("empty input yields empty command", () => {
 	assert.deepEqual(splitCmd("   "), ["", []]);
 });
-test("fileCheck substitutes ${file} and still wraps shell chains", () => {
+test("fileCheck substitutes placeholder and still wraps shell chains", () => {
 	assert.deepEqual(
-		splitFileCmd("npx biome check --formatter-enabled=false ${file}", "a b.ts"),
+		splitFileCmd(`npx biome check --formatter-enabled=false \${file}`, "a b.ts"),
 		["npx", ["biome", "check", "--formatter-enabled=false", "a b.ts"]],
 	);
 	assert.deepEqual(
-		splitFileCmd("cd pkg && lint ${file}", "src/a.ts"),
+		splitFileCmd(`cd pkg && lint \${file}`, "src/a.ts"),
 		["bash", ["-lc", "cd pkg && lint src/a.ts"]],
 	);
 });
