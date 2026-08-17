@@ -1,62 +1,93 @@
-import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
-	TurnStartEvent,
-	TurnEndEvent,
-	MessageUpdateEvent,
 	MessageEndEvent,
+	MessageUpdateEvent,
+	TurnStartEvent,
 } from "@earendil-works/pi-coding-agent";
 
+// ModelSelectEvent is declared in pi-coding-agent but not re-exported from its
+// entrypoint; only these two fields are used, so structural typing is enough.
+type ModelSelectEvent = { model: { provider: string; id: string } };
+
+// ── pure math (exported for src/index.test.ts) ──
+
+/** bounded ring: keep the newest MAX_SAMPLES values */
+export const MAX_SAMPLES = 200;
+
+export function push(arr: number[], v: number): void {
+	arr.push(v);
+	if (arr.length > MAX_SAMPLES) arr.shift();
+}
+
+export function median(values: number[]): number {
+	if (values.length === 0) return 0;
+	const sorted = [...values].sort((a, b) => a - b);
+	const mid = Math.floor(sorted.length / 2);
+	return sorted.length % 2 === 1
+		? sorted[mid]
+		: (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+export function mean(values: number[]): number {
+	if (values.length === 0) return 0;
+	return values.reduce((a, b) => a + b, 0) / values.length;
+}
+
+/**
+ * Generation t/s = every output token over the window they actually streamed in.
+ *
+ * `usage.output` counts thinking + text + tool-call argument tokens, so the
+ * denominator must be the whole content stream, not just the text sub-window.
+ * Pairing `output - reasoning` with a text-only window (the old math) divided a
+ * numerator that still held tool-call tokens by a window that excluded thinking
+ * time — measured 4x-163x inflation on deepseek-v4-flash, e.g. a bogus 1777 t/s.
+ */
+export function genTps(
+	outputTokens: number,
+	streamStartMs: number,
+	endMs: number,
+): number | undefined {
+	const durationMs = endMs - streamStartMs;
+	if (outputTokens <= 0 || durationMs <= 0) return undefined;
+	return outputTokens / (durationMs / 1000);
+}
+
+/** Effective t/s = output tokens over the full turn, prefill/queue latency included. */
+export function effTps(
+	outputTokens: number,
+	turnStartMs: number,
+	endMs: number,
+): number | undefined {
+	const durationMs = endMs - turnStartMs;
+	if (outputTokens <= 0 || durationMs <= 0) return undefined;
+	return outputTokens / (durationMs / 1000);
+}
+
+export function fmtDur(ms: number): string {
+	if (ms < 10000) return `${(ms / 1000).toFixed(1).replace(".", ",")}s`;
+	const s = Math.round(ms / 1000);
+	if (s < 60) return `${s}s`;
+	return `${Math.floor(s / 60)}m ${s % 60}s`;
+}
+
+/** first stream event of any kind — thinking counts, it is generated tokens too */
+const CONTENT_START_EVENTS = new Set([
+	"text_start",
+	"thinking_start",
+	"toolcall_start",
+]);
+
 export default function (pi: ExtensionAPI) {
-	// ── per-model segment ── (bounded: 200 samples keep memory + median responsive)
-	const MAX_SAMPLES = 200;
-	let tpsValues: number[] = [];
-	let effTpsValues: number[] = [];
+	let genValues: number[] = [];
+	let effValues: number[] = [];
 	let ttftValues: number[] = [];
-	const push = (arr: number[], v: number): void => {
-		arr.push(v);
-		if (arr.length > MAX_SAMPLES) arr.shift();
-	};
 
-	// ── current-turn tracking ──
 	let turnStart = 0;
-	let textStart = 0;
-	let pushedEff = false;
+	let streamStart = 0;
+	let resetTimer: ReturnType<typeof setTimeout> | undefined;
 
-	function median(sorted: number[]): number {
-		if (sorted.length === 0) return 0;
-		const mid = Math.floor(sorted.length / 2);
-		return sorted.length % 2 === 1
-			? sorted[mid]
-			: (sorted[mid - 1] + sorted[mid]) / 2;
-	}
-
-	// ponytail: provider token counts may lump thinking into output. Align numerator
-	// to the measured window: subtract reasoning tokens when reported, else estimate
-	// text tokens from content blocks (chars/4).
-	function textTokensOf(message: any): number {
-		const usage = message.usage;
-		if (!usage || typeof usage.output !== "number" || usage.output <= 0)
-			return 0;
-		if (typeof usage.reasoning === "number" && usage.reasoning >= 0) {
-			return Math.max(0, usage.output - usage.reasoning);
-		}
-		const text = (message.content ?? [])
-			.filter((b: any) => b.type === "text")
-			.map((b: any) => b.text)
-			.join("");
-		return Math.ceil(text.length / 4);
-	}
-
-	function fmtDur(ms: number): string {
-		if (ms < 10000) return `${(ms / 1000).toFixed(1).replace(".", ",")}s`;
-		const s = Math.round(ms / 1000);
-		if (s < 60) return `${s}s`;
-		return `${Math.floor(s / 60)}m ${s % 60}s`;
-	}
-
-	// ponytail: color by speed — <=40 red, <=80 yellow, <=100 white, >=100 green
+	// ponytail: color by speed — <=40 red, <=80 yellow, <100 white, >=100 green
 	function tpsColored(
 		t: { fg(color: string, text: string): string },
 		v: number,
@@ -69,34 +100,28 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function updateStatus(ctx: ExtensionContext) {
-		const n = tpsValues.length;
-		if (n === 0) {
+		if (genValues.length === 0) {
 			ctx.ui.setStatus("tps", undefined);
 			return;
 		}
-
-		const med = median([...tpsValues].sort((a, b) => a - b));
 		const t = ctx.ui.theme;
-		// ponytail: value first, label after — matches requested `xxx t/s` layout
-		let text = `${t.fg("dim", "med")} ${tpsColored(t, med)} ${t.fg("dim", "t/s")}`;
-
+		let text = `${t.fg("dim", "med")} ${tpsColored(t, median(genValues))} ${t.fg("dim", "t/s")}`;
 		if (ttftValues.length > 0) {
-			const avgTTFT = ttftValues.reduce((a, b) => a + b, 0) / ttftValues.length;
-			text += ` | ${t.fg("warning", fmtDur(avgTTFT))} ${t.fg("dim", "ttft")}`;
+			text += ` | ${t.fg("warning", fmtDur(median(ttftValues)))} ${t.fg("dim", "ttft")}`;
 		}
-
 		ctx.ui.setStatus("tps", text);
 	}
 
 	function resetStats(ctx: ExtensionContext, modelLabel: string) {
-		// F1: measure BEFORE clearing — otherwise the flash branch is dead code.
-		const hadSamples = tpsValues.length > 0 || effTpsValues.length > 0 || ttftValues.length > 0;
-		tpsValues = [];
-		effTpsValues = [];
+		// measure BEFORE clearing, else the flash branch is dead code
+		const hadSamples =
+			genValues.length > 0 || effValues.length > 0 || ttftValues.length > 0;
+		genValues = [];
+		effValues = [];
 		ttftValues = [];
 		turnStart = 0;
-		textStart = 0;
-		pushedEff = false;
+		streamStart = 0;
+		clearTimeout(resetTimer);
 		if (!hadSamples) {
 			ctx.ui.setStatus("tps", undefined);
 			return;
@@ -106,24 +131,22 @@ export default function (pi: ExtensionAPI) {
 			"tps",
 			`${t.fg("dim", "t/s reset")} ${t.fg("accent", modelLabel)}`,
 		);
-		setTimeout(() => {
-			if (tpsValues.length === 0 && effTpsValues.length === 0 && ttftValues.length === 0) ctx.ui.setStatus("tps", undefined);
+		resetTimer = setTimeout(() => {
+			if (genValues.length === 0) ctx.ui.setStatus("tps", undefined);
 		}, 2000);
 	}
 
-	pi.on("turn_start", (_event: TurnStartEvent, ctx: ExtensionContext) => {
+	pi.on("turn_start", (_event: TurnStartEvent, _ctx: ExtensionContext) => {
 		turnStart = Date.now();
-		textStart = 0;
-		pushedEff = false;
+		streamStart = 0;
 	});
 
 	pi.on(
 		"message_update",
 		(event: MessageUpdateEvent, _ctx: ExtensionContext) => {
-			if (!turnStart) return;
-			const ev = event.assistantMessageEvent;
-			if (ev?.type === "text_start" && textStart === 0) {
-				textStart = Date.now();
+			if (!turnStart || streamStart !== 0) return;
+			if (CONTENT_START_EVENTS.has(event.assistantMessageEvent?.type)) {
+				streamStart = Date.now();
 			}
 		},
 	);
@@ -133,115 +156,64 @@ export default function (pi: ExtensionAPI) {
 		if (!turnStart) return;
 
 		const now = Date.now();
-		const usage = event.message.usage;
-		if (!usage || typeof usage.output !== "number" || usage.output <= 0) return;
+		const output = event.message.usage?.output;
+		if (typeof output !== "number" || output <= 0) return;
 
-		// text-window math is only valid for segments that streamed text
-		// (thinking-only / tool-call-only segments never fire text_start)
-		if (textStart !== 0) {
-			const ttft = textStart - turnStart;
+		if (streamStart !== 0) {
+			const ttft = streamStart - turnStart;
 			if (ttft >= 0) push(ttftValues, ttft);
-
-			// streaming t/s: text tokens streamed inside [text_start, message_end]
-			const textTokens = textTokensOf(event.message);
-			const durationMs = now - textStart;
-			if (durationMs > 0 && textTokens > 0) {
-				push(tpsValues, textTokens / (durationMs / 1000));
-			}
+			const gen = genTps(output, streamStart, now);
+			if (gen !== undefined) push(genValues, gen);
 		}
 
-		// effective t/s: all output tokens over the full turn (incl. thinking time);
-		// recorded for every segment so tool-only segments aren't dropped from the set
-		const effDurationMs = now - turnStart;
-		if (effDurationMs > 0) {
-			push(effTpsValues, usage.output / (effDurationMs / 1000));
-			pushedEff = true;
-		}
+		const eff = effTps(output, turnStart, now);
+		if (eff !== undefined) push(effValues, eff);
 
-		// pi fires turn_start/turn_end per assistant message: keep turnStart across
-		// a segment's streaming; effTps is recorded per segment at message_end.
-		textStart = 0;
-		updateStatus(ctx);
-	});
-
-	// M1: finalize effective t/s once per full turn (final answer included).
-	pi.on("turn_end", (event: TurnEndEvent, ctx: ExtensionContext) => {
-		if (!turnStart) return;
-		const usage = (event.message as AssistantMessage)?.usage;
-		if (usage && typeof usage.output === "number" && usage.output > 0) {
-			const effDurationMs = Date.now() - turnStart;
-			if (effDurationMs > 0) {
-				const effTps = usage.output / (effDurationMs / 1000);
-				if (pushedEff) {
-					// F2: message_end already pushed this segment — replace, not append.
-					effTpsValues[effTpsValues.length - 1] = effTps;
-				} else {
-					// this segment recorded no effTps — append fresh instead of
-					// clobbering the previous segment's sample (or writing arr[-1])
-					push(effTpsValues, effTps);
-				}
-			}
-		}
-		pushedEff = false;
+		// pi's agent loop emits one assistant message per turn and re-fires
+		// turn_start for the next one, so message_end is the only place stats
+		// need recording — no turn_end reconciliation.
 		turnStart = 0;
-		textStart = 0;
+		streamStart = 0;
 		updateStatus(ctx);
 	});
 
-	pi.on("model_select", (event: { model: { provider: string; id: string } }, ctx: ExtensionContext) => {
-		const modelLabel = `${event.model.provider}/${event.model.id}`;
-		// ponytail: reset stats on model change — different models have different speeds
-		resetStats(ctx, modelLabel);
+	pi.on("model_select", (event: ModelSelectEvent, ctx: ExtensionContext) => {
+		// ponytail: reset on model change — different models, different speeds
+		resetStats(ctx, `${event.model.provider}/${event.model.id}`);
 	});
 
-	// ── detail via /tps-stats command ──
 	pi.registerCommand("tps-stats", {
 		description: "Show token-per-second statistics for current model",
 		handler: async (_args, ctx) => {
-			const n = tpsValues.length;
+			const n = genValues.length;
 			if (n === 0) {
 				ctx.ui.notify("t/s Stats: no data yet. Send a prompt first.", "info");
 				return;
 			}
-			const avg = tpsValues.reduce((a, b) => a + b, 0) / n;
-			const sorted = [...tpsValues].sort((a, b) => a - b);
-			const med = median(sorted);
-			const min = sorted[0];
-			const max = sorted[n - 1];
-
+			const sorted = [...genValues].sort((a, b) => a - b);
 			const lines = [
-				`Streaming t/s (text tokens / text window)`,
+				"Generation t/s (all output tokens / stream window)",
 				`Samples: ${n}`,
-				`Average: ${avg.toFixed(1)}`,
-				`Median:  ${med.toFixed(1)}`,
-				`Min:     ${min.toFixed(1)}`,
-				`Max:     ${max.toFixed(1)}`,
+				`Average: ${mean(genValues).toFixed(1)}`,
+				`Median:  ${median(genValues).toFixed(1)}`,
+				`Min:     ${sorted[0].toFixed(1)}`,
+				`Max:     ${sorted[n - 1].toFixed(1)}`,
 			];
-
-			if (effTpsValues.length > 0) {
-				const effAvg =
-					effTpsValues.reduce((a, b) => a + b, 0) / effTpsValues.length;
-				const effMed = median([...effTpsValues].sort((a, b) => a - b));
+			if (effValues.length > 0) {
 				lines.push(
-					`---`,
-					`Effective t/s (all tokens / full turn):`,
-					`Average: ${effAvg.toFixed(1)}`,
-					`Median:  ${effMed.toFixed(1)}`,
+					"---",
+					"Effective t/s (all output tokens / full turn, prefill included):",
+					`Average: ${mean(effValues).toFixed(1)}`,
+					`Median:  ${median(effValues).toFixed(1)}`,
 				);
 			}
-
 			if (ttftValues.length > 0) {
-				const avgTTFT =
-					ttftValues.reduce((a, b) => a + b, 0) / ttftValues.length;
-				const sortedTTFT = [...ttftValues].sort((a, b) => a - b);
-				const medTTFT = median(sortedTTFT);
 				lines.push(
-					`---`,
-					`TTFT avg:   ${fmtDur(avgTTFT)}`,
-					`TTFT median: ${fmtDur(medTTFT)}`,
+					"---",
+					`TTFT avg:    ${fmtDur(mean(ttftValues))}`,
+					`TTFT median: ${fmtDur(median(ttftValues))}`,
 				);
 			}
-
 			ctx.ui.notify(lines.join("\n"), "info");
 		},
 	});

@@ -1,6 +1,6 @@
 {
   "name": "@arhen/pi-core-vision",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Transparent vision fallback for text-only pi models — overrides read so image files are described by a vision model when the active model cannot see images. Supports any OpenAI-compatible endpoint.",
   "license": "MIT",
   "author": "arhen",

@@ -1,6 +1,6 @@
 {
   "name": "@arhen/pi-add-wafer",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "type": "module",
   "description": "pi extension: wafer.",
   "license": "MIT",

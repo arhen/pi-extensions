@@ -1,6 +1,6 @@
 {
 	"name": "@arhen/pi-core-subagent",
-	"version": "1.3.23",
+	"version": "1.3.24",
 	"type": "module",
 	"description": "pi extension: fast in-process subagents with a dependency-graph scheduler (needs edges gate tasks and carry upstream output into dependent prompts), plus background runs, intercom and agent-to-agent mailbox. Leader defines agents inline.",
 	"license": "MIT",

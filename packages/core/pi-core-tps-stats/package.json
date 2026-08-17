@@ -1,43 +1,48 @@
 {
-  "name": "@arhen/pi-core-tps-stats",
-  "version": "1.0.8",
-  "type": "module",
-  "description": "Minimalist pi extension: live tokens-per-second stats for the active model",
-  "license": "MIT",
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "pi-package"
-  ],
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "devDependencies": {
-    "@types/bun": "^1.3.14",
-    "typescript": "^7.0.2"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/core/pi-core-tps-stats"
-  },
-  "author": "arhen"
+	"name": "@arhen/pi-core-tps-stats",
+	"version": "1.1.0",
+	"type": "module",
+	"description": "Minimalist pi extension: live tokens-per-second stats for the active model",
+	"license": "MIT",
+	"main": "./src/index.ts",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"test": "node --experimental-strip-types src/index.test.ts"
+	},
+	"files": [
+		"src",
+		"!src/*.test.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"pi-package"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"devDependencies": {
+		"@types/bun": "^1.3.14",
+		"typescript": "^7.0.2"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/core/pi-core-tps-stats"
+	},
+	"author": "arhen"
 }
