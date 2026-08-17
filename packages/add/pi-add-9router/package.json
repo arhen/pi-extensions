@@ -1,0 +1,36 @@
+{
+  "name": "@arhen/pi-add-9router",
+  "version": "1.0.0",
+  "description": "Pi Coding Agent extension for 9router \u2014 provider registration and model discovery only, no web tools",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "9router",
+    "ai-router",
+    "openai-proxy"
+  ],
+  "license": "MIT",
+  "author": "arhen <arhen@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/arhen/pi-9router.git"
+  },
+  "type": "module",
+  "main": "./src/index.ts",
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  }
+}
