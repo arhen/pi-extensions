@@ -29,6 +29,10 @@ Boxed dialog, one question at a time: progress dots, header chip, option list (p
 
 ![ask_user_question example](assets/ask-example.png)
 
+Preview pane with a side-by-side comparison grid for the focused option:
+
+![ask_user_question preview comparison](assets/ask-preview-example.png)
+
 ```
 Questions (1/3)           ● ○ ○          [Workspace]
 Where to run ask frnd-chat-improvements? Active feature analyze-vision-billing exists…
