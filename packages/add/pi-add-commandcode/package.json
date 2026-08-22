@@ -1,0 +1,39 @@
+{
+  "name": "@arhen/pi-add-commandcode",
+  "version": "0.0.1",
+  "type": "module",
+  "description": "pi extension: Command Code Provider API (models, ZDR).",
+  "license": "MIT",
+  "main": "./src/index.ts",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "pi-package"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arhen/pi-extensions",
+    "directory": "packages/add/pi-add-commandcode"
+  }
+}
