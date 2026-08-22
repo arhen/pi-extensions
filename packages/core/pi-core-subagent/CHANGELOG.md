@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Agent-file matching is by **description**, not name: the spawn goal (`agent` name + `task`) is token-scored against each file's `description` frontmatter (≥2 shared meaningful tokens, plural/-ing stemmed). A matched file is authoritative — body = system prompt, frontmatter `model`/`tools` win over inline `prompt`/`model`/`tools`. No match → inline on-demand definition unchanged. Model stays in control: name + goal decide, user files that describe the goal take over.
+
+## 1.3.26
+
 - Named agent files supported: an `agent` name matching `<name>.md` in `.agents/agents`, `.claude/agents`, or `.pi/agents` (task `cwd` ancestors, then home) loads that file — body = system prompt, frontmatter `model`/`tools` apply, file `model` validated against the pi model registry. Lookup order: project `.agents` (single source) → `.claude` → `.pi`, nearest ancestor first; then `~/.agents` → `~/.claude` → `~/.pi`. Inline `prompt`/`model`/`tools`/`write` override the file. Files without frontmatter work (whole file = prompt).
 - New `src/agentfile.ts` + 9 resolution-order tests. README "no agent files" claims replaced with the real spec.
 - Breaking: blocking mode removed — every run is background. `background:false` and the `/subagents auto-bg` toggle are gone; use `autoAwait:true` on the spawn for an inline result (same background machinery, parks the tool call until the run finishes).

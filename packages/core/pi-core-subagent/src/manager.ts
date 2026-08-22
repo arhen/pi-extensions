@@ -632,19 +632,20 @@ export class SubagentManager {
 	): Promise<void> {
 		if (TERMINAL.includes(task.status)) return; // canceled while queued
 
-		// Named agent file (`.agents/agents` etc.): body = system prompt, frontmatter
-		// model/tools fill gaps. Inline params always win over the file.
-		const file = resolveAgentFile(input.agent, task.cwd, getAgentDir());
-		const prompt = input.prompt?.trim() ?? file?.body;
+		// Matched user agent file (`.agents/agents` etc., by description): the file
+		// is authoritative — body = system prompt, frontmatter model/tools win over
+		// inline. No match → inline on-demand definition as usual.
+		const file = resolveAgentFile(input.agent, input.task, task.cwd, getAgentDir());
+		const prompt = file?.body ?? input.prompt?.trim();
 		const thinking = input.thinking;
-		const baseTools = input.tools ?? (input.write ? WRITE_TOOLS : (file?.tools ?? READONLY_TOOLS));
+		const baseTools = file?.tools ?? input.tools ?? (input.write ? WRITE_TOOLS : READONLY_TOOLS);
 		const tools = [...baseTools, ...(run.allowIntercom ? CHILD_TALK_TOOLS : [])];
 
 		// Model + thinking resolve against the pi model registry; a bad request
 		// fails the TASK with a helpful message, not the whole run.
 		let model: Model<Api> | undefined;
 		try {
-			model = resolveChildModel(ctx, input.model ?? file?.model);
+			model = resolveChildModel(ctx, file?.model ?? input.model);
 			validateThinking(model, thinking);
 		} catch (err) {
 			this.updateTask(

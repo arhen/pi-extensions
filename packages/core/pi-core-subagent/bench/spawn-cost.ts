@@ -1,10 +1,11 @@
 /** Spawn-cost bench: replicate manager.runChild's pipeline, phase by phase.
  *  Phase 1-4: no LLM. Phase 5: one real end-to-end spawn (cheap model).
  *  Run: bun bench/spawn-cost.ts */
-import { performance } from "node:perf_hooks";
-import { join } from "node:path";
+
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
 	createAgentSession,
 	DefaultResourceLoader,
@@ -29,13 +30,16 @@ async function phase<T>(name: string, fn: () => Promise<T>): Promise<T> {
 // Phase 0: agent-file resolution cost (inline vs existing file)
 const tmp = mkdtempSync(join(tmpdir(), "spawn-bench-"));
 mkdirSync(join(tmp, ".agents/agents"), { recursive: true });
-writeFileSync(join(tmp, ".agents/agents/reviewer.md"), "---\nname: reviewer\nmodel: claude-opus-4-6\ntools: read, grep, find\n---\nYou are a reviewer.");
+writeFileSync(
+	join(tmp, ".agents/agents/reviewer.md"),
+	"---\nname: reviewer\ndescription: audits pull requests for security and style\nmodel: claude-opus-4-6\ntools: read, grep, find\n---\nYou are a reviewer.",
+);
 {
 	const t0 = performance.now();
-	for (let i = 0; i < 1000; i++) resolveAgentFile("reviewer", tmp, AGENT_DIR);
+	for (let i = 0; i < 1000; i++) resolveAgentFile("r", "review the pull request for security issues", tmp, AGENT_DIR);
 	console.log(`agent-file resolve (file hit, x1000 avg) ${((performance.now() - t0) / 1000).toFixed(3)}ms/call`);
 	const t1 = performance.now();
-	for (let i = 0; i < 1000; i++) resolveAgentFile("nobody", tmp, AGENT_DIR);
+	for (let i = 0; i < 1000; i++) resolveAgentFile("nobody", "count lines of code", tmp, AGENT_DIR);
 	console.log(`agent-file resolve (miss,   x1000 avg) ${((performance.now() - t1) / 1000).toFixed(3)}ms/call`);
 }
 rmSync(tmp, { recursive: true, force: true });
@@ -44,7 +48,10 @@ for (let run = 1; run <= RUNS; run++) {
 	console.log(`\n— pipeline run ${run}/${RUNS} (no LLM) —`);
 	// 1. child model runtime (createChildModelRuntime replica): disk auth/models + provider replay + refresh
 	const runtime = await phase("ModelRuntime.create+refresh", async () => {
-		const rt = await ModelRuntime.create({ authPath: join(AGENT_DIR, "auth.json"), modelsPath: join(AGENT_DIR, "models.json") });
+		const rt = await ModelRuntime.create({
+			authPath: join(AGENT_DIR, "auth.json"),
+			modelsPath: join(AGENT_DIR, "models.json"),
+		});
 		await rt.refresh({ allowNetwork: false });
 		return rt;
 	});
@@ -75,7 +82,10 @@ for (let run = 1; run <= RUNS; run++) {
 // Phase 5: real end-to-end — spawn until the child starts producing output
 console.log(`\n— end-to-end: spawn → first model output (${MODEL}) —`);
 const t0 = performance.now();
-const runtime = await ModelRuntime.create({ authPath: join(AGENT_DIR, "auth.json"), modelsPath: join(AGENT_DIR, "models.json") });
+const runtime = await ModelRuntime.create({
+	authPath: join(AGENT_DIR, "auth.json"),
+	modelsPath: join(AGENT_DIR, "models.json"),
+});
 await runtime.refresh({ allowNetwork: false });
 const loader = new DefaultResourceLoader({ cwd: CWD, agentDir: AGENT_DIR, noExtensions: true });
 await loader.reload();

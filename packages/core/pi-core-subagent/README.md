@@ -50,7 +50,7 @@ flowchart LR
 - **A bad graph fails before it spawns.** Unknown ids, self-edges and cycles are rejected at call time — never halfway through a run with three children already burning tokens.
 - **Proof is an exit code, never a self-report.** Tasks are asked for a runnable `Verify:` command; the leader checks `git diff --stat`. Agents auditing their own work score ~0. ([why](#why-9-is-a-verification-command-not-a-self-report))
 - **No ceremony without edges.** Six independent reviewers stay six independent reviewers — no waves, no gates, no graph vocabulary imposed on flat work.
-- **Agent files respected.** An `agent` name matching `.agents/agents/<name>.md`, `.claude/agents/<name>.md`, or `.pi/agents/<name>.md` loads that file — body = system prompt, frontmatter `model`/`tools` apply, `model` is validated against the pi model registry. Inline params override the file. Project dirs win over home (`~/.agents` single source → `~/.claude` → `~/.pi`).
+- **Agent files respected.** A spawn goal (name + task) that matches a user agent file's `description` (`.agents/agents`, `.claude/agents`, `.pi/agents` — project then home) loads that file — body = system prompt, frontmatter `model`/`tools` apply, file `model` validated against the pi model registry. File wins over inline; no match → on-demand definition.
 - **Two toolsets only.** Read-only (`read, grep, find, ls` — default) or write (`read, grep, find, ls, bash, edit, write` — `write: true`). No per-agent tool config surface.
 - **In-process** — children are `AgentSession`s in the same runtime. No process spawn, no context bleed.
 - **Zero parent-context injection.** No catalog, no context hook. 6 slim tools total.
@@ -118,24 +118,24 @@ Chain — `{previous}` is replaced with the prior agent's output:
 
 ## Agent files
 
-An `agent` name that matches `<name>.md` in an agents directory loads that file — no inline `prompt` needed. The file body becomes the system prompt; `model` and `tools` frontmatter apply.
+A user agent file in an agents directory is matched by its `description` frontmatter against the spawn goal (`agent` name + `task`) — not by name. When matched, the file is **authoritative**: body = system prompt, frontmatter `model`/`tools` apply, inline `prompt`/`model`/`tools` are ignored. No match → the inline on-demand definition stands. The model stays in control: it names the agent and states the goal; user files that describe that goal take over.
 
 ```md
 ---
 name: api-reviewer
-description: Strict API reviewer — auth, rate limiting, error handling
+description: reviews APIs for auth, rate limiting, and error handling
 model: claude-opus-4-6
 tools: read, grep, find, ls
 ---
 You are a strict API reviewer. Check auth, rate limiting, and error handling. Cite file:line.
 ```
 
-**Lookup order** (first match wins):
+**Lookup order** (first directory with a match wins):
 
 1. `.agents/agents/` then `.claude/agents/` then `.pi/agents/` in each directory from the task `cwd` up to the filesystem root (nearest ancestor wins).
 2. Home: `~/.agents/agents/` (single source) → `~/.claude/agents/` → `~/.pi/agents/`.
 
-**Precedence** — inline params always win over the file: `prompt` overrides the body, `model` overrides frontmatter `model`, `tools`/`write` override frontmatter `tools`. A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). Files without frontmatter work too — the whole file is the system prompt.
+Within a directory the file with the highest description-overlap score wins (≥2 shared meaningful tokens). A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). Files without a `description` frontmatter never match.
 
 ## Graph mode — `needs`
 
