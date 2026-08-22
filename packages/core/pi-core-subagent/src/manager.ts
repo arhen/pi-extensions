@@ -16,6 +16,7 @@ import {
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
+import { resolveAgentFile } from "./agentfile.ts";
 import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools, createWatchdog, type Watchdog } from "./child.ts";
 import {
 	activitySnippet,
@@ -631,18 +632,19 @@ export class SubagentManager {
 	): Promise<void> {
 		if (TERMINAL.includes(task.status)) return; // canceled while queued
 
-		// Inline params win; otherwise fall back to an existing agent file
-		// (~/.agents, .pi/agents, user dir). Never creates files.
-		const prompt = input.prompt?.trim();
+		// Named agent file (`.agents/agents` etc.): body = system prompt, frontmatter
+		// model/tools fill gaps. Inline params always win over the file.
+		const file = resolveAgentFile(input.agent, task.cwd, getAgentDir());
+		const prompt = input.prompt?.trim() ?? file?.body;
 		const thinking = input.thinking;
-		const baseTools = input.tools ?? (input.write ? WRITE_TOOLS : READONLY_TOOLS);
+		const baseTools = input.tools ?? (input.write ? WRITE_TOOLS : (file?.tools ?? READONLY_TOOLS));
 		const tools = [...baseTools, ...(run.allowIntercom ? CHILD_TALK_TOOLS : [])];
 
 		// Model + thinking resolve against the pi model registry; a bad request
 		// fails the TASK with a helpful message, not the whole run.
 		let model: Model<Api> | undefined;
 		try {
-			model = resolveChildModel(ctx, input.model);
+			model = resolveChildModel(ctx, input.model ?? file?.model);
 			validateThinking(model, thinking);
 		} catch (err) {
 			this.updateTask(

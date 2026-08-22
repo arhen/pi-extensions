@@ -50,7 +50,7 @@ flowchart LR
 - **A bad graph fails before it spawns.** Unknown ids, self-edges and cycles are rejected at call time — never halfway through a run with three children already burning tokens.
 - **Proof is an exit code, never a self-report.** Tasks are asked for a runnable `Verify:` command; the leader checks `git diff --stat`. Agents auditing their own work score ~0. ([why](#why-9-is-a-verification-command-not-a-self-report))
 - **No ceremony without edges.** Six independent reviewers stay six independent reviewers — no waves, no gates, no graph vocabulary imposed on flat work.
-- **No agent files, no discovery.** The leader defines every subagent inline per call — name, system prompt, toolset. Nothing is read from or written to disk.
+- **Agent files respected.** An `agent` name matching `.agents/agents/<name>.md`, `.claude/agents/<name>.md`, or `.pi/agents/<name>.md` loads that file — body = system prompt, frontmatter `model`/`tools` apply, `model` is validated against the pi model registry. Inline params override the file. Project dirs win over home (`~/.agents` single source → `~/.claude` → `~/.pi`).
 - **Two toolsets only.** Read-only (`read, grep, find, ls` — default) or write (`read, grep, find, ls, bash, edit, write` — `write: true`). No per-agent tool config surface.
 - **In-process** — children are `AgentSession`s in the same runtime. No process spawn, no context bleed.
 - **Zero parent-context injection.** No catalog, no context hook. 6 slim tools total.
@@ -83,7 +83,7 @@ The dotted arrows are the whole point: a child may burn 200k tokens reading file
 
 ## Usage — the leader invents the agents
 
-Define agents inline per call — never creates or reads agent files. Model resolution: explicit `provider/model-id` (or bare id) via the pi model registry → agent-file `model` → the parent's current model → settings default.
+Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: explicit `model` → agent-file `model` (validated against the pi model registry) → the parent's current model → settings default.
 
 ```json
 {
@@ -115,6 +115,27 @@ Chain — `{previous}` is replaced with the prior agent's output:
   ]
 }
 ```
+
+## Agent files
+
+An `agent` name that matches `<name>.md` in an agents directory loads that file — no inline `prompt` needed. The file body becomes the system prompt; `model` and `tools` frontmatter apply.
+
+```md
+---
+name: api-reviewer
+description: Strict API reviewer — auth, rate limiting, error handling
+model: claude-opus-4-6
+tools: read, grep, find, ls
+---
+You are a strict API reviewer. Check auth, rate limiting, and error handling. Cite file:line.
+```
+
+**Lookup order** (first match wins):
+
+1. `.agents/agents/` then `.claude/agents/` then `.pi/agents/` in each directory from the task `cwd` up to the filesystem root (nearest ancestor wins).
+2. Home: `~/.agents/agents/` (single source) → `~/.claude/agents/` → `~/.pi/agents/`.
+
+**Precedence** — inline params always win over the file: `prompt` overrides the body, `model` overrides frontmatter `model`, `tools`/`write` override frontmatter `tools`. A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). Files without frontmatter work too — the whole file is the system prompt.
 
 ## Graph mode — `needs`
 
