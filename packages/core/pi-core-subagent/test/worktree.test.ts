@@ -5,6 +5,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	statSync,
@@ -180,12 +181,37 @@ describe("worktree", () => {
 		writeFileSync(join(wt.path, "live.txt"), "in progress\n");
 		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(0); // owner alive → untouched
 		expect(existsSync(wt.path)).toBe(true);
-		// Dead owner: marker points at a pid that cannot exist.
-		writeFileSync(join(wt.path, ".subagent-owner"), "2147483647");
+		// The marker must live BESIDE the checkout, never inside it (it would be committed).
+		expect(existsSync(`${wt.path}.owner`)).toBe(true);
+		expect(existsSync(join(wt.path, ".subagent-owner"))).toBe(false);
+		// Dead owner: same host + boot, pid that cannot exist.
+		const marker = JSON.parse(readFileSync(`${wt.path}.owner`, "utf8"));
+		writeFileSync(`${wt.path}.owner`, JSON.stringify({ ...marker, pid: 2147483647 }));
 		expect(ownerAlive(wt.path)).toBe(false);
 		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(1);
 		expect(existsSync(wt.path)).toBe(false);
 		expect(git(["show", "--name-only", "--format=", wt.branch])).toContain("live.txt");
+	});
+
+	test("claimed worktree does not commit its owner marker into the branch", () => {
+		const wt = createWorktree(repo, "run_mark", "task_mark")!;
+		claimWorktree(wt);
+		expect(commitWorktree(wt, "nothing changed")).toBe("empty"); // marker must not count as a change
+		writeFileSync(join(wt.path, "real.txt"), "work\n");
+		expect(commitWorktree(wt, "real work")).toBe("committed");
+		const files = git(["show", "--name-only", "--format=", wt.branch]);
+		expect(files).toContain("real.txt");
+		expect(files).not.toContain("owner");
+		expect(branchDiff(wt).files).toEqual(["real.txt"]);
+		removeWorktree(wt);
+	});
+
+	test("commitWorktree refuses when the child moved HEAD off the branch", () => {
+		const wt = createWorktree(repo, "run_head", "task_head")!;
+		writeFileSync(join(wt.path, "x.txt"), "x\n");
+		execFileSync("git", ["checkout", "--detach", "-q"], { cwd: wt.path });
+		expect(() => commitWorktree(wt, "should refuse")).toThrow(/expected subagents\/run_head\/task_head/);
+		removeWorktree(wt);
 	});
 
 	test("reapDeadWorktrees keeps the dir when the commit fails (work must stay reachable)", () => {

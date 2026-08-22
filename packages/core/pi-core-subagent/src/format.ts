@@ -196,6 +196,23 @@ export class SubagentsWidget implements Component {
 	}
 }
 /** Blocking-call summary: full text, because the model asked for it. */
+/** Where a write child's edits went: a branch to merge, or straight into the tree. */
+function worktreeLine(task: TaskSnapshot): string {
+	const parts: string[] = [];
+	if (task.branch) {
+		const files = task.changedFiles?.length
+			? ` (${task.changedFiles.length} file(s): ${truncateText(task.changedFiles.join(", "), 160)})`
+			: "";
+		parts.push(`Branch: ${task.branch}${files} — merge with \`git merge --no-ff ${task.branch}\` after review.`);
+	} else if (task.isolation === "in-place") {
+		parts.push(
+			`Applied IN PLACE (no branch) — ${task.isolationReason ?? "worktree unavailable"}. Review the working tree directly.`,
+		);
+	}
+	if (task.worktreeError) parts.push(`Worktree: ${task.worktreeError}`);
+	return parts.length ? `\n${parts.join("\n")}` : "";
+}
+
 export function makeSummary(run: RunSnapshot): string {
 	const succeeded = run.tasks.filter((t) => t.status === "completed").length;
 	const failed = run.tasks.filter((t) => t.status === "failed").length;
@@ -210,7 +227,7 @@ export function makeSummary(run: RunSnapshot): string {
 		// Edges are named so the leader can compare what it delegated against what came back.
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		lines.push(
-			`\n## ${task.agent}${edge} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${task.branch ? `\nBranch: ${task.branch}${task.changedFiles?.length ? ` (${task.changedFiles.length} file(s): ${truncateText(task.changedFiles.join(", "), 160)})` : ""} — merge with \`git merge --no-ff ${task.branch}\` after review.` : ""}`,
+			`\n## ${task.agent}${edge} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task)}`,
 		);
 	}
 	// Ceiling on the WHOLE summary — 16 tasks × 24KB would otherwise flood the parent context.

@@ -1,7 +1,7 @@
 /** SubagentManager: run lifecycle, child sessions, intercom, persistence, widget plumbing. */
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
@@ -61,6 +61,8 @@ const DEFAULT_RUNTIME_MS = 0;
 const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
 /** Cap on a child's wait for reply_subagent — an ignored question must not pin the run open forever. */
 const PARENT_REPLY_TIMEOUT_MS = 600_000; // 10 min
+/** Intercom messages buffered per park before the followUp path takes over. */
+const PARKED_MSG_CAP = 24;
 const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 /** Tools that can mutate the tree — their presence is what earns a worktree. */
@@ -302,6 +304,16 @@ export class SubagentManager {
 			child.dispose();
 		}
 		this.liveChildren.clear();
+		// Release anyone parked on a run before the maps go — dropping waiters would
+		// leave their promises pending forever (autoAwait / await_subagent hang).
+		for (const [runId, waiters] of this.settleWaiters) {
+			const run = this.runs.get(runId);
+			for (const waiter of waiters) waiter(run ? cloneRun(run) : ({ id: runId, status: "aborted" } as RunSnapshot));
+		}
+		for (const pending of this.pendingReplies.values()) {
+			pending.resolve("(session ended — stop work immediately)");
+		}
+		this.parked.clear();
 		// Ownership markers stay on disk; the next session reaps those dirs (commit,
 		// keep branch, drop dir) once this pid is gone.
 		this.liveWorktrees.clear();
@@ -519,6 +531,12 @@ export class SubagentManager {
 		return {
 			onAskParent: async (_taskId, question) => {
 				const key = `${run.id}:${task.id}`;
+				// A tool call already in flight can reach here AFTER the task ended
+				// (abort/timeout/cancel). Reviving it would leave a "running" task in a
+				// finished run — hasActiveRun() then never clears.
+				if (TERMINAL.includes(task.status)) {
+					return "(your task has already ended — stop work and return immediately)";
+				}
 				this.updateTask(run, task, { status: "awaiting_parent" }, ctx);
 				this.liveChildren.get(key)?.touchWatchdog();
 				// While the leader is parked in await_subagent the question rides the wait
@@ -534,6 +552,12 @@ export class SubagentManager {
 				const keepAlive = setInterval(() => this.liveChildren.get(key)?.touchWatchdog(), 30_000);
 				try {
 					const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
+					// Cancel wins over a reply that arrived in the same tick: never move a
+					// terminal task back to "running" (that would let a canceled task be
+					// reported as completed).
+					if (TERMINAL.includes(task.status)) {
+						return "(your task was canceled while you waited — stop work and return immediately)";
+					}
 					this.updateTask(run, task, { status: "running" }, ctx);
 					this.liveChildren.get(key)?.touchWatchdog();
 					return reply;
@@ -578,28 +602,32 @@ export class SubagentManager {
 	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Promise<string> {
 		const key = `${runId}:${taskId}`;
 		return new Promise<string>((resolve) => {
-			const timer =
-				timeoutMs > 0
-					? setTimeout(() => {
-							this.pendingReplies.delete(key);
-							resolve(
-								"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
-							);
-						}, timeoutMs)
-					: undefined;
-			this.pendingReplies.set(key, {
+			// Identity-tagged: two asks from one child must not delete each other's
+			// entry (the loser would hang until its own timer).
+			const entry: PendingReply = {
 				resolve: (message) => {
 					if (timer) clearTimeout(timer);
+					if (this.pendingReplies.get(key) === entry) this.pendingReplies.delete(key);
 					resolve(message);
 				},
-			});
+			};
+			const timer =
+				timeoutMs > 0
+					? setTimeout(
+							() =>
+								entry.resolve(
+									"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
+								),
+							timeoutMs,
+						)
+					: undefined;
+			this.pendingReplies.set(key, entry);
 		});
 	}
 	deliverReply(runId: string, taskId: string, message: string): boolean {
 		const pending = this.pendingReplies.get(`${runId}:${taskId}`);
 		if (!pending) return false;
-		this.pendingReplies.delete(`${runId}:${taskId}`);
-		pending.resolve(message);
+		pending.resolve(message); // clears its own entry + timer
 		return true;
 	}
 
@@ -727,11 +755,14 @@ export class SubagentManager {
 		// non-git repos fall back to in-place. Created BEFORE session start so the
 		// child's cwd + AGENTS.md context chain are the worktree's.
 		let wt: Worktree | undefined;
+		let isolationReason: string | undefined;
 		if (canWrite) {
 			try {
 				wt = createWorktree(task.cwd, run.id, task.id);
-			} catch {
+				if (!wt) isolationReason = "not a git repository";
+			} catch (err) {
 				wt = undefined; // git failure → in-place
+				isolationReason = `git worktree add failed: ${err instanceof Error ? err.message : String(err)}`;
 			}
 		}
 		// Map a per-task cwd subpath into the worktree so relative paths stay correct.
@@ -741,13 +772,27 @@ export class SubagentManager {
 		let childCwd = wt?.path ?? task.cwd;
 		if (wt) {
 			const rel = relative(safeRealPath(wt.root), safeRealPath(task.cwd));
-			if (rel.startsWith("..")) {
+			if (rel === ".." || rel.startsWith(`..${sep}`)) {
 				removeWorktree(wt);
 				wt = undefined;
 				childCwd = task.cwd;
+				isolationReason = "task cwd is outside the repository";
 			} else if (rel && rel !== ".") {
 				childCwd = join(wt.path, rel);
+				// The subpath may be gitignored/untracked, so it won't exist in a fresh
+				// checkout — create it rather than fail session start.
+				try {
+					mkdirSync(childCwd, { recursive: true });
+				} catch {
+					childCwd = wt.path;
+				}
 			}
+		}
+		if (canWrite) {
+			// Never let isolation lapse quietly: the leader must know its edits landed
+			// straight in the working tree with no branch to review.
+			task.isolation = wt ? "worktree" : "in-place";
+			task.isolationReason = wt ? undefined : (isolationReason ?? "worktree unavailable");
 		}
 		if (wt) {
 			claimWorktree(wt); // pid marker: another pi session must not reap this
@@ -891,17 +936,12 @@ export class SubagentManager {
 					// until the branch is merged — cleanupMerged removes both then.
 					// Commit/diff failures must NOT downgrade a completed task or destroy
 					// its work: the error is reported, the status stays completed.
+					let committed: "committed" | "empty" | undefined;
 					try {
-						commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
-						keepWorktreeDir = true; // committed — dir stays until the leader merges
-						const { stat, files } = branchDiff(wt);
-						this.updateTask(
-							run,
-							task,
-							{ branch: wt.branch, diffStat: stat || undefined, changedFiles: files.length ? files : undefined },
-							ctx,
-							onUpdate,
-						);
+						committed = commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
+						// Only a real commit is worth a branch: an empty one would send the
+						// leader off to review and merge nothing.
+						keepWorktreeDir = committed === "committed";
 					} catch (commitErr) {
 						// Never drop a checkout whose work isn't on the branch — it would be
 						// unreachable once the base-tip branch is reaped as "merged".
@@ -911,11 +951,35 @@ export class SubagentManager {
 							task,
 							{
 								branch: wt.branch,
-								error: `Worktree commit failed (uncommitted changes remain in ${wt.path}): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
+								worktreeError: `commit failed (uncommitted changes remain in ${wt.path}): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
 							},
 							ctx,
 							onUpdate,
 						);
+					}
+					// Diff separately: a diff failure must not be reported as a lost commit.
+					if (committed === "committed") {
+						try {
+							const { stat, files } = branchDiff(wt);
+							this.updateTask(
+								run,
+								task,
+								{ branch: wt.branch, diffStat: stat || undefined, changedFiles: files.length ? files : undefined },
+								ctx,
+								onUpdate,
+							);
+						} catch (diffErr) {
+							this.updateTask(
+								run,
+								task,
+								{
+									branch: wt.branch,
+									worktreeError: `committed, but the diff could not be read: ${diffErr instanceof Error ? diffErr.message : String(diffErr)}`,
+								},
+								ctx,
+								onUpdate,
+							);
+						}
 					}
 				}
 			}
@@ -957,12 +1021,16 @@ export class SubagentManager {
 			// dir — dropping it would make the work unreachable.
 			if (wt && task.status !== "completed") {
 				await new Promise((r) => setTimeout(r, 250));
+				let partial: "committed" | "empty" | undefined;
 				try {
-					commitWorktree(wt, `subagent ${task.agent} (partial, ${task.status})`);
+					partial = commitWorktree(wt, `subagent ${task.agent} (partial, ${task.status})`);
 				} catch {
-					keepWorktreeDir = true;
+					keepWorktreeDir = true; // work exists only in the dir — keep it
 				}
-				this.updateTask(run, task, { branch: wt.branch }, ctx, onUpdate);
+				// A branch is only worth reporting when it actually carries something.
+				if (partial === "committed" || keepWorktreeDir) {
+					this.updateTask(run, task, { branch: wt.branch }, ctx, onUpdate);
+				}
 			}
 			if (wt && !keepWorktreeDir) removeWorktree(wt);
 			// Released only after the dir is gone: while it exists, the branch must stay
@@ -1122,19 +1190,33 @@ export class SubagentManager {
 		// Broken-upstream tasks are detected by the scheduler; mark them after the wave.
 		for (const s of skipped) {
 			const task = run.tasks.find((t) => t.id === s.id);
-			if (task) {
+			if (task && !TERMINAL.includes(task.status)) {
 				this.updateTask(
 					run,
 					task,
 					{
 						status: "aborted",
-						error: `Skipped: upstream task(s) did not complete: ${s.needs.join(", ")}`,
+						// Don't overwrite a real reason (e.g. "Canceled by subagent_cancel").
+						error: task.error || `Skipped: upstream task(s) did not complete: ${s.needs.join(", ")}`,
 						endedAt: Date.now(),
 					},
 					ctx,
 					onUpdate,
 				);
 			}
+		}
+		// Belt and braces: the wave loop breaks out when no frontier is ready, which
+		// would otherwise leave tasks queued inside a terminal run — hasActiveRun()
+		// then never clears and the widget stays pinned.
+		for (const task of run.tasks) {
+			if (TERMINAL.includes(task.status)) continue;
+			this.updateTask(
+				run,
+				task,
+				{ status: "aborted", error: task.error || "Never ran: no runnable wave", endedAt: Date.now() },
+				ctx,
+				onUpdate,
+			);
 		}
 
 		const failed = run.tasks.some((t) => t.status === "failed");
@@ -1290,15 +1372,30 @@ export class SubagentManager {
 	}
 
 	/** Child→leader messages collected while the parent is parked in await_subagent. */
-	private parked = new Map<string, { msgs: ParkedMsg[]; wake: () => void }>();
+	/** Every awaiter parked on a run — a SET, so two concurrent awaits can't
+	 *  overwrite each other's buffer and silently swallow one side's intercom. */
+	private parked = new Map<string, Set<{ msgs: ParkedMsg[]; wake: () => void }>>();
 
 	/** While the parent is parked on this run, deliver the message through the wait instead of the steering queue. */
 	private collectParked(runId: string, msg: ParkedMsg): boolean {
-		const p = this.parked.get(runId);
-		if (!p) return false;
-		if (p.msgs.length < 24) p.msgs.push(msg);
-		p.wake(); // resolve the parked await early — the leader breathes on every message
-		return true;
+		const parked = this.parked.get(runId);
+		if (!parked || parked.size === 0) return false;
+		let delivered = false;
+		for (const p of parked) {
+			if (p.msgs.length < PARKED_MSG_CAP) {
+				p.msgs.push(msg);
+				delivered = true;
+			} else if (msg.kind === "ask") {
+				// An unanswered ask blocks a child for 10 minutes — it must never be the
+				// message that gets dropped by the cap.
+				p.msgs[p.msgs.length - 1] = msg;
+				delivered = true;
+			}
+			p.wake(); // resolve the parked await early — the leader breathes on every message
+		}
+		// Not buffered anywhere → report undelivered so the caller falls back to a
+		// followUp notice instead of assuming the leader saw it.
+		return delivered;
 	}
 
 	awaitRun(
@@ -1307,8 +1404,12 @@ export class SubagentManager {
 	): Promise<{ run: RunSnapshot | undefined; intercom: ParkedMsg[] } | undefined> {
 		const run = this.runs.get(runId);
 		if (!run) return Promise.resolve(undefined);
+		let entry: { msgs: ParkedMsg[]; wake: () => void } | undefined;
 		const finish = (): void => {
-			this.parked.delete(runId);
+			const parked = this.parked.get(runId);
+			if (!parked || !entry) return;
+			parked.delete(entry); // only our own park — a sibling await keeps receiving
+			if (parked.size === 0) this.parked.delete(runId);
 		};
 		if (TERMINAL.includes(run.status)) {
 			run.awaited = true;
@@ -1331,17 +1432,28 @@ export class SubagentManager {
 			waiters.add(waiter);
 			// A child→leader message while parked wakes the wait: the leader gets it
 			// IN the await result, no steering queue, no turn boundary needed.
-			this.parked.set(runId, { msgs, wake: () => waiter(cloneRun(run)) });
+			entry = { msgs, wake: () => waiter(cloneRun(run)) };
+			let parked = this.parked.get(runId);
+			if (!parked) {
+				parked = new Set();
+				this.parked.set(runId, parked);
+			}
+			parked.add(entry);
 		});
 		if (timeoutMs !== undefined && timeoutMs > 0) {
+			let timedOut = false;
 			return Promise.race([
 				settled.then((r) => {
 					finish();
-					run.awaited = true;
+					// Only mark awaited when this call actually hands the run back to the
+					// leader. A slice that already timed out is abandoned — setting it here
+					// would suppress the run's completion notice the leader still needs.
+					if (!timedOut) run.awaited = true;
 					return { run: r, intercom: msgs };
 				}),
 				new Promise<{ run: RunSnapshot | undefined; intercom: ParkedMsg[] } | undefined>((resolve) => {
 					const timer = setTimeout(() => {
+						timedOut = true;
 						finish();
 						resolve(this.runs.get(runId) ? { run: cloneRun(this.runs.get(runId)!), intercom: msgs } : undefined);
 					}, timeoutMs);

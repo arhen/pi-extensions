@@ -110,6 +110,25 @@ describe("cancel", () => {
 		const settled = await Promise.all(waits);
 		expect(settled.every((s) => s?.run?.status === "aborted")).toBe(true);
 	});
+	test("a delivered reply is consumed once (identity-tagged entry clears itself)", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		// Real entry, created the way onAskParent does it.
+		const waiting = (
+			m as unknown as { awaitParentReply: (r: string, t: string, ms?: number) => Promise<string> }
+		).awaitParentReply(run.id, "task_1");
+		expect(m.deliverReply(run.id, "task_1", "answer one")).toBe(true);
+		expect(await waiting).toBe("answer one");
+		expect(m.deliverReply(run.id, "task_1", "answer two")).toBe(false); // entry gone, no double-answer
+	});
+	test("clearRuns releases parked awaits instead of hanging them", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		const waiting = m.awaitRun(run.id);
+		m.clearRuns();
+		const settled = await waiting; // would hang before the fix
+		expect(settled?.run).toBeDefined();
+	});
 	test("cancelRun releases a child parked on ask_parent", async () => {
 		const m = makeManager();
 		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);

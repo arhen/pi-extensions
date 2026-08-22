@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Fourth review round (both halves reviewed externally; the intercom layer for the first time) — worktree fixes:
+  - **The ownership marker was being committed into every branch**: `.subagent-owner` lived inside the checkout, so `add -A` staged it — `"empty"` could never be returned, `changedFiles`/diffstat were polluted, and merging carried the pid file into `main`. The marker now lives beside the checkout (`<dir>.owner`).
+  - **A failed `worktree list` meant "nothing is registered"**, so `sweepStale` deleted every subagent dir — live ones included — and `cleanupMerged` lost its live-checkout guard. The listing now returns `undefined` on failure and both callers bail out; `-z` falls back to the newline form for git < 2.36.
+  - **`--path-format=absolute` (git ≥ 2.31) failed silently**, disabling isolation and all cleanup forever; now falls back to resolving the relative `--git-common-dir`.
+  - **Commit could hang the extension**: no timeout, no `maxBuffer`, and gpg signing could block on a passphrase prompt. All git calls are now bounded, with `commit.gpgsign=false` and an identity fallback for machines without `user.email`.
+  - **pid reuse**: the marker now records host + boot id, and `EPERM` (process owned by another user) counts as alive rather than dead.
+  - `branchDiff` failures no longer masquerade as lost commits; a worktree problem goes to a separate `worktreeError` field so a completed task still shows its answer; empty commits no longer advertise a branch to merge.
+  - `commitIn` refuses when the child moved HEAD off its branch; `cleanupMerged` deletes the branch before removing the dir; `worktree add` branches from the recorded base SHA; `..foo` no longer reads as "outside the repo"; a gitignored task `cwd` is created inside the worktree instead of failing session start.
+  - **Isolation can no longer lapse silently**: `isolation: "worktree" | "in-place"` plus a reason is reported in the summary and in `subagent_result`.
+- Fourth review round — intercom fixes:
+  - **A late `ask_parent` could resurrect a finished task** (`aborted` → `awaiting_parent` → `running`), leaving a live task inside a terminal run so `hasActiveRun()` never cleared. Terminal tasks are now refused up front and after the wait — which also makes **cancel authoritative** over a reply that lands in the same tick.
+  - **Only the first ask was surfaced** by autoAwait: siblings that asked during the same wake had their notice swallowed by the park and blocked for the full 10-minute timeout. Every ask is now listed with its own `reply_subagent` line.
+  - **The 24-message park cap silently dropped asks and completions** while reporting them as delivered; asks now displace a buffered message and an undeliverable message falls back to the followUp path.
+  - **Two concurrent awaits on one run** overwrote each other's buffer (one side got no intercom, and the first `finish()` unparked both); parks are now a set with per-entry cleanup.
+  - `clearRuns()` no longer leaves parked awaits pending forever; two asks from one child no longer delete each other's pending entry; a timed-out slice no longer suppresses the run's completion notice; leftover non-terminal tasks are swept when the wave loop ends.
+- 6 new regression tests: marker never committed, HEAD-moved refusal, reply consumed once, clearRuns releasing awaits (89 total).
+
 - Third review round — worktree fixes:
   - **cwd mapping**: dropping the worktree for an out-of-repo cwd left `childCwd` pointing at the just-removed dir; `wt.root` wasn't realpathed, so any symlinked cwd (`/var` vs `/private/var`) looked "outside" and triggered it.
   - **Concurrent pi sessions**: "nothing of ours is live at session start" was false — session B committed half-written files onto session A's branch and force-removed A's live checkout. Worktrees now carry a `.subagent-owner` pid marker; reap/sweep/cleanup skip dirs whose owner is alive.

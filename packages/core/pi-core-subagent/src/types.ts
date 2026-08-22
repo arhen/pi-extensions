@@ -45,6 +45,13 @@ export interface TaskSnapshot {
 	branch?: string;
 	diffStat?: string;
 	changedFiles?: string[];
+	/** How a write child's edits were applied. "in-place" means NO branch: the
+	 *  changes are already in the leader's tree — always surfaced, never silent. */
+	isolation?: "worktree" | "in-place";
+	isolationReason?: string;
+	/** Worktree commit/diff trouble. Kept apart from `error` so a completed task
+	 *  still reports its answer. */
+	worktreeError?: string;
 }
 
 export interface RunSnapshot {

@@ -188,15 +188,23 @@ export default function (pi: ExtensionAPI) {
 					intercom.push(...awaited.intercom);
 					if (awaited.intercom.some((m) => m.kind === "ask")) break;
 				}
-				const asked = intercom.find((m) => m.kind === "ask");
+				// EVERY ask must surface: siblings that asked in the same wake got no
+				// followUp notice (the park swallowed it), so showing only the first
+				// leaves the rest blocked until their 10-minute timeout.
+				const asks = intercom.filter((m) => m.kind === "ask");
 				const heard = intercom.filter((m) => m.kind !== "ask");
 				const text = [
 					makeSummary(run),
 					heard.length > 0
 						? `\nIntercom while waiting:\n${heard.map((m) => `- [${m.kind}] ${m.agent} (${m.taskId}): ${truncateText(m.text)}`).join("\n")}`
 						: "",
-					asked
-						? `\nA child is waiting for your answer (${asked.agent}, ${asked.taskId}): ${asked.text}\nReply with reply_subagent(runId: "${run.id}", taskId: "${asked.taskId}", message: ...), then await_subagent again for the result.`
+					asks.length > 0
+						? `\n${asks.length} child(ren) waiting for your answer:\n${asks
+								.map(
+									(a) =>
+										`- ${a.agent} (${a.taskId}): ${a.text}\n  reply_subagent(runId: "${run.id}", taskId: "${a.taskId}", message: ...)`,
+								)
+								.join("\n")}\nAnswer each, then await_subagent again for the result.`
 						: "",
 				]
 					.filter(Boolean)
@@ -321,9 +329,12 @@ export default function (pi: ExtensionAPI) {
 				`Run ${run.id} — ${run.status}`,
 				...tasks.map((t) => {
 					const wt = t.branch
-						? `\nBranch: ${t.branch}\n${t.diffStat || "(no changes committed)"}\nMerge after review: \`git merge --no-ff ${t.branch}\``
-						: "";
-					return `\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}\n${formatUsage(t.usage)}`;
+						? `\nBranch: ${t.branch}\n${t.diffStat || "(no diff available)"}\nMerge after review: \`git merge --no-ff ${t.branch}\``
+						: t.isolation === "in-place"
+							? `\nApplied IN PLACE (no branch) — ${t.isolationReason ?? "worktree unavailable"}. The changes are already in your working tree.`
+							: "";
+					const wtErr = t.worktreeError ? `\nWorktree: ${t.worktreeError}` : "";
+					return `\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}${wtErr}\n${formatUsage(t.usage)}`;
 				}),
 			].join("\n");
 			return { content: [{ type: "text", text: truncateText(text) }], details: { run: cloneRun(run) } };
