@@ -30,6 +30,7 @@ import {
 	type SubagentParamsShape,
 } from "./schemas.ts";
 import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
+import { repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
@@ -109,6 +110,16 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		await manager.restoreFromSidecar(ctx);
+		// Crash leftovers: remove stale worktree dirs (branches survive for merging).
+		sweepStale(ctx.cwd);
+		for (const run of manager.listRuns()) {
+			for (const task of run.tasks) {
+				if (task.branch) {
+					const root = repoRoot(task.cwd);
+					if (root) sweepStale(root);
+				}
+			}
+		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx?.hasUI) {
@@ -127,7 +138,7 @@ export default function (pi: ExtensionAPI) {
 		// ponytail: this string is billed on every request. No example block — an example
 		// biases the model toward one shape; guidelines + JSON schema describe all of them.
 		description:
-			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. If a user agent file in `.agents/agents`, `.claude/agents`, or `.pi/agents` (project dirs, then home) has a `description` matching the spawn goal (name + task), that file is authoritative: body = system prompt, frontmatter `model`/`tools` apply, inline prompt/model/tools ignored. No match → the inline definition stands. Every run is background: the call returns a runId immediately and completion notifies you. Set autoAwait:true when you need the result before your next step — the call parks until the run finishes and returns runId + final result in one response. allowIntercom:true lets children talk to you and each other.",
+			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. If a user agent file in `.agents/agents`, `.claude/agents`, or `.pi/agents` (project dirs, then home) has a `description` matching the spawn goal (name + task), that file is authoritative: body = system prompt, frontmatter `model`/`tools` apply, inline prompt/model/tools ignored. No match → the inline definition stands. Write agents run in an isolated git worktree: on completion the result reports the branch + changed files — review, then merge with `git merge --no-ff <branch>` (merged branches are cleaned automatically). Every run is background: the call returns a runId immediately and completion notifies you. Set autoAwait:true when you need the result before your next step — the call parks until the run finishes and returns runId + final result in one response. allowIntercom:true lets children talk to you and each other.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
 			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
@@ -135,6 +146,7 @@ export default function (pi: ExtensionAPI) {
 			"Order comes from `needs`, not from separate calls: give tasks an `id`, list the ids each depends on. Tasks with no unmet needs run in parallel; dependents receive their upstream outputs automatically — do not restate them.",
 			"Prefer flat `tasks` (plain parallel) unless a real dependency exists — only add `needs` edges when ordering genuinely matters.",
 			"End each task with a runnable check, e.g. 'Verify: npx tsc --noEmit && bun test'. A subagent's claim of success is not evidence.",
+			"For write agents (write:true) in a git repo, the child works in an isolated worktree and its changes are committed to a branch — the result reports branch + changed files. Review the diff, then merge with `git merge --no-ff <branch>`; merged branches are cleaned up automatically. Never leave a worktree branch unmerged at the end of the task.",
 			"Define each agent yourself: invented name, focused system prompt, and read-only (default) or write:true. Prefer read-only. A user agent file (`.agents/agents`, `.claude/agents`, `.pi/agents` — project first, then home) whose `description` matches the spawn goal (name + task) takes over: its body is the system prompt, frontmatter `model`/`tools` apply and are validated against the model registry. Matching is by description, not name — name the agent whatever fits the goal.",
 			"When you need a run's result before your next step, spawn with autoAwait:true — the call returns runId + final result in one response. Otherwise spawn background and settle results (await_subagent / subagent_result) before continuing dependent work.",
 			"For long multi-task runs, don't autoAwait the whole run: spawn background, then loop await_subagent with short timeoutMs slices (e.g. 20s), processing whichever tasks completed in each slice while the rest keep running. You get incremental results instead of one big wait.",
@@ -270,10 +282,12 @@ export default function (pi: ExtensionAPI) {
 			const tasks = taskId ? run.tasks.filter((t) => t.id === taskId) : run.tasks;
 			const text = [
 				`Run ${run.id} — ${run.status}`,
-				...tasks.map(
-					(t) =>
-						`\n## ${t.agent} ${statusIcon(t.status)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}\n${formatUsage(t.usage)}`,
-				),
+				...tasks.map((t) => {
+					const wt = t.branch
+						? `\nBranch: ${t.branch}\n${t.diffStat || "(no changes committed)"}\nMerge after review: \`git merge --no-ff ${t.branch}\``
+						: "";
+					return `\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}\n${formatUsage(t.usage)}`;
+				}),
 			].join("\n");
 			return { content: [{ type: "text", text: truncateText(text) }], details: { run: cloneRun(run) } };
 		},

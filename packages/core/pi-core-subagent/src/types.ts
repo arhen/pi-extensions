@@ -41,6 +41,10 @@ export interface TaskSnapshot {
 	usage: UsageStats;
 	/** Sibling addresses for intercom tools (send_agent_message targets). */
 	roster?: string;
+	/** Git worktree isolation (write agents): branch + diff of the child's changes. */
+	branch?: string;
+	diffStat?: string;
+	changedFiles?: string[];
 }
 
 export interface RunSnapshot {

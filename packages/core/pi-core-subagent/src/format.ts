@@ -101,18 +101,7 @@ function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""): string
  * unknown/custom tools then read fine too. Add a case only if one reads badly.
  */
 // Order matters: the most specific arg wins (grep's pattern beats its path).
-const ARG_KEYS = [
-	"pattern",
-	"query",
-	"command",
-	"path",
-	"file_path",
-	"filePath",
-	"url",
-	"name",
-	"subject",
-	"task",
-];
+const ARG_KEYS = ["pattern", "query", "command", "path", "file_path", "filePath", "url", "name", "subject", "task"];
 export function describeCall(toolName: string, args: unknown, cwd?: string): string {
 	const verb = toolName.charAt(0).toUpperCase() + toolName.slice(1);
 	const obj = args && typeof args === "object" ? (args as Record<string, unknown>) : undefined;
@@ -221,7 +210,7 @@ export function makeSummary(run: RunSnapshot): string {
 		// Edges are named so the leader can compare what it delegated against what came back.
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		lines.push(
-			`\n## ${task.agent}${edge} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}`,
+			`\n## ${task.agent}${edge} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${task.branch ? `\nBranch: ${task.branch}${task.changedFiles?.length ? ` (${task.changedFiles.length} file(s): ${truncateText(task.changedFiles.join(", "), 160)})` : ""} — merge with \`git merge --no-ff ${task.branch}\` after review.` : ""}`,
 		);
 	}
 	// Ceiling on the WHOLE summary — 16 tasks × 24KB would otherwise flood the parent context.
@@ -229,9 +218,14 @@ export function makeSummary(run: RunSnapshot): string {
 }
 /** Per-task notice: one task's outcome, small. Full output stays out of parent context. */
 export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: string): string {
+	const goal = truncateText(task.task, 120);
 	const detail = task.error ? task.error : truncateText(task.finalText || "(no output)", 200);
+	const wt = task.branch
+		? ` · branch ${task.branch}${task.changedFiles?.length ? `, ${task.changedFiles.length} file(s)` : ""}`
+		: "";
 	return [
-		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}`,
+		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}${wt}`,
+		`Goal: ${goal}`,
 		`Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,
 	].join("\n");
 }

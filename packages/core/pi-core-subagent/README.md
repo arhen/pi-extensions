@@ -137,6 +137,18 @@ You are a strict API reviewer. Check auth, rate limiting, and error handling. Ci
 
 Within a directory the file with the highest description-overlap score wins (≥2 shared meaningful tokens). A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). Files without a `description` frontmatter never match.
 
+## Worktree isolation (write agents)
+
+In a git repo, a `write: true` subagent runs in an **isolated git worktree** at `<repo>/.git/subagents/<run>/<task>` on branch `subagents/<run>/<task>` — the child's cwd is the worktree, so project context (AGENTS.md chain) still loads, `node_modules` is symlinked, and the main tree stays clean while the child works. Parallel write agents can't collide on files.
+
+On completion the extension commits the child's changes (the child is told not to touch branches) and reports **branch + diffstat + changed files** in the result. The leader reviews, then merges:
+
+```
+git merge --no-ff subagents/<run>/<task>
+```
+
+Merged branches + their worktree dirs are cleaned automatically after the run. Failed/canceled tasks keep the branch (partial work survives for manual merging) but drop the worktree dir. Crash leftovers are swept at session start — worktree dirs are removed, branches are kept. Non-git repos fall back to in-place edits.
+
 ## Graph mode — `needs`
 
 `parallel` runs everything at once; `chain` runs everything one at a time. Most real work is neither. Give a task an `id` and list the ids it `needs`:

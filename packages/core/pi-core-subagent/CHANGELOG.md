@@ -2,7 +2,14 @@
 
 ## Unreleased
 
-- Agent-file matching is by **description**, not name: the spawn goal (`agent` name + `task`) is token-scored against each file's `description` frontmatter (≥2 shared meaningful tokens, plural/-ing stemmed). A matched file is authoritative — body = system prompt, frontmatter `model`/`tools` win over inline `prompt`/`model`/`tools`. No match → inline on-demand definition unchanged. Model stays in control: name + goal decide, user files that describe the goal take over.
+- **Worktree isolation for write agents**: in a git repo, `write: true` subagents run in an isolated worktree at `<repo>/.git/subagents/<run>/<task>` (branch `subagents/<run>/<task>`) — project AGENTS.md context chain preserved, `node_modules` symlinked, main tree stays clean, parallel writers can't collide. On completion the extension commits the child's changes and reports branch + diffstat + changed files; leader reviews and merges with `git merge --no-ff <branch>`. Merged branches + worktree dirs cleaned automatically; failed/canceled tasks keep the branch (partial work) but drop the dir; crash leftovers swept at session start (dirs removed, branches kept). Non-git repos fall back to in-place.
+- Result/notice formats: wake notices and `subagent_result` now carry the task goal (so the leader doesn't lose context across turns) + branch/diffstat for write tasks. `makeTaskNotice` shows goal snippet.
+- New `src/worktree.ts` + 7 tests against a real temp git repo.
+
+## 1.3.27
+
+- Agent-file matching is by **description**, not name: the spawn goal (`agent` name + `task`) is token-scored against each file's `description` frontmatter (≥2 shared meaningful tokens, plural/-ing stemmed). A matched file is authoritative — body = system prompt, frontmatter `model`/`tools` win over inline `prompt`/`model`/`tools`. No match → inline on-demand definition unchanged.
+- `src/agentfile.ts` rewritten for description matching (was name-based); tests updated to goal-vs-name fixtures.
 
 ## 1.3.26
 

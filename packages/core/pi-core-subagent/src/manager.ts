@@ -43,6 +43,17 @@ import {
 	TERMINAL,
 	type UsageStats,
 } from "./types.ts";
+import {
+	branchDiff,
+	cleanupMerged,
+	commitWorktree,
+	createWorktree,
+	removeByBranch,
+	removeWorktree,
+	repoRoot,
+	sweepStale,
+	type Worktree,
+} from "./worktree.ts";
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
@@ -641,6 +652,19 @@ export class SubagentManager {
 		const baseTools = file?.tools ?? input.tools ?? (input.write ? WRITE_TOOLS : READONLY_TOOLS);
 		const tools = [...baseTools, ...(run.allowIntercom ? CHILD_TALK_TOOLS : [])];
 
+		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
+		// non-git repos fall back to in-place. The worktree is created BEFORE session
+		// start so the child's cwd + AGENTS.md context chain are the worktree's.
+		let wt: Worktree | undefined;
+		if (input.write) {
+			try {
+				wt = createWorktree(task.cwd, run.id, task.id);
+			} catch {
+				wt = undefined; // git failure → in-place
+			}
+		}
+		const childCwd = wt?.path ?? task.cwd;
+
 		// Model + thinking resolve against the pi model registry; a bad request
 		// fails the TASK with a helpful message, not the whole run.
 		let model: Model<Api> | undefined;
@@ -689,11 +713,11 @@ export class SubagentManager {
 		const key = `${run.id}:${task.id}`;
 		try {
 			const subagentInstruction = run.allowIntercom
-				? `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.`
-				: `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer for the parent agent.`;
+				? `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${wt ? ` You work in an isolated git worktree (branch ${wt.branch}). Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes.` : ""}`
+				: `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer for the parent agent.${wt ? ` You work in an isolated git worktree (branch ${wt.branch}). Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes.` : ""}`;
 
 			const loader = new DefaultResourceLoader({
-				cwd: task.cwd,
+				cwd: childCwd,
 				agentDir: getAgentDir(),
 				noExtensions: true,
 				appendSystemPromptOverride: (base) => [
@@ -708,11 +732,11 @@ export class SubagentManager {
 				: [];
 
 			const created = await createAgentSession({
-				cwd: task.cwd,
+				cwd: childCwd,
 				agentDir: getAgentDir(),
 				modelRuntime: await createChildModelRuntime(ctx),
 				resourceLoader: loader,
-				sessionManager: SessionManager.create(task.cwd, undefined, { parentSession: getParentSessionFile(ctx) }),
+				sessionManager: SessionManager.create(childCwd, undefined, { parentSession: getParentSessionFile(ctx) }),
 				model,
 				thinkingLevel: thinking as ThinkingLevel | undefined,
 				tools,
@@ -790,6 +814,20 @@ export class SubagentManager {
 				truncateText((child.messages as AssistantMessage[]).map(getFirstText).filter(Boolean).at(-1) || "");
 			if (task.status !== "aborted") {
 				this.updateTask(run, task, { status: "completed", finalText, endedAt: Date.now() }, ctx, onUpdate);
+				if (wt) {
+					// Commit the child's changes, then report the branch + diff so the
+					// leader can review and merge (PR-style). The worktree dir stays
+					// until the branch is merged — cleanupMerged removes both then.
+					commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
+					const { stat, files } = branchDiff(wt);
+					this.updateTask(
+						run,
+						task,
+						{ branch: wt.branch, diffStat: stat || undefined, changedFiles: files.length ? files : undefined },
+						ctx,
+						onUpdate,
+					);
+				}
 			}
 		} catch (err) {
 			if (timeout) clearTimeout(timeout);
@@ -823,6 +861,12 @@ export class SubagentManager {
 			watchdog.dispose();
 			if (timeout) clearTimeout(timeout);
 			child?.dispose();
+			// Failed/aborted: the branch keeps any partial work for manual merging, the
+			// checkout dir is removed so it can't linger on disk.
+			if (wt && task.status !== "completed") {
+				this.updateTask(run, task, { branch: wt.branch }, ctx, onUpdate);
+				removeWorktree(wt);
+			}
 		}
 	}
 
@@ -986,6 +1030,13 @@ export class SubagentManager {
 		this.runControllers.delete(run.id);
 		for (const task of run.tasks) this.mailboxes.close(`${run.id}:${task.id}`);
 		this.persist(ctx);
+		// Branches merged by the leader since the run ended: drop worktree dir + branch.
+		for (const task of run.tasks) {
+			if (task.branch) {
+				const root = repoRoot(task.cwd);
+				if (root) cleanupMerged(root);
+			}
+		}
 	}
 
 	/** Spawn a run that keeps executing after this call returns. Every run is background. */
@@ -1062,6 +1113,7 @@ export class SubagentManager {
 			task.error = task.error || "Canceled by subagent_cancel"; // never overwrite a real error
 			task.endedAt = Date.now();
 			aborted += 1;
+			if (task.branch) removeByBranch(task.cwd, task.branch); // dir only; branch keeps partial work
 		}
 		run.status = "aborted";
 		run.endedAt = Date.now();
