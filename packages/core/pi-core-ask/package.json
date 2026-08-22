@@ -1,6 +1,6 @@
 {
   "name": "@arhen/pi-core-ask",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "type": "module",
   "description": "Minimalist pi questionnaire: ask_user_question tool with up to 4 structured questions (2-4 options, multiSelect, previews, type-something).",
   "license": "MIT",
