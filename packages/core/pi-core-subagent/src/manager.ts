@@ -47,21 +47,21 @@ import {
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
 /** No default wall-clock cap: a subagent runs until its task is done, it stalls, or the user aborts. */
-export const DEFAULT_RUNTIME_MS = 0;
-export const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
-export const READONLY_TOOLS = ["read", "grep", "find", "ls"];
-export const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+const DEFAULT_RUNTIME_MS = 0;
+const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
+const READONLY_TOOLS = ["read", "grep", "find", "ls"];
+const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 const WIDGET_THROTTLE_MS = 150;
 
 // ── helpers ──────────────────────────────────────────────────────────────
 
-export function newId(prefix: string): string {
+function newId(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
-export function emptyUsage(): UsageStats {
+function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
 }
-export function aggregateUsage(tasks: TaskSnapshot[]): UsageStats {
+function aggregateUsage(tasks: TaskSnapshot[]): UsageStats {
 	const total = emptyUsage();
 	for (const task of tasks) {
 		total.input += task.usage.input;
@@ -73,7 +73,7 @@ export function aggregateUsage(tasks: TaskSnapshot[]): UsageStats {
 	}
 	return total;
 }
-export function getParentSessionFile(ctx: ExtensionContext): string | undefined {
+function getParentSessionFile(ctx: ExtensionContext): string | undefined {
 	try {
 		return ctx.sessionManager.getSessionFile?.();
 	} catch {
@@ -92,7 +92,7 @@ export function classifyFailure(
 	if (stopReason === "aborted") return { status: "aborted", message: errorMessage || "Subagent was aborted." };
 	return { status: "failed", message: errorMessage || `Subagent ended with stopReason "${stopReason}".` };
 }
-export function lastAssistantFailure(
+function lastAssistantFailure(
 	messages: AssistantMessage[] | undefined,
 ): { status: "failed" | "aborted"; message: string } | undefined {
 	for (const message of [...(messages ?? [])].reverse()) {
@@ -101,12 +101,12 @@ export function lastAssistantFailure(
 	}
 	return undefined;
 }
-export function failureError(failure: { status: "failed" | "aborted"; message: string }): Error {
+function failureError(failure: { status: "failed" | "aborted"; message: string }): Error {
 	const error = new Error(failure.message);
 	(error as Error & { subagentStatus?: string }).subagentStatus = failure.status;
 	return error;
 }
-export function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): void {
+function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): void {
 	if (message?.role !== "assistant") return;
 	task.usage.turns += 1;
 	const usage = message.usage;
@@ -1080,7 +1080,6 @@ export class SubagentManager {
 		s(cloneRun(run));
 	}
 
-	/** Child→leader messages collected while the parent is parked in await_subagent. */
 	/** Child→leader messages collected while the parent is parked in await_subagent. */
 	private parked = new Map<string, { msgs: ParkedMsg[]; wake: () => void }>();
 

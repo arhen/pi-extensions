@@ -1,11 +1,11 @@
 /**
- * minimalist-subagents — pi extension.
+ * pi-core-subagent — in-process subagents.
  *
  * Fast in-process subagents (isolated AgentSessions, no process spawn).
  * Modes: single / parallel / chain. Background runs, cancel, intercom
  * (ask/notify/update the leader) and agent↔agent mailbox (send/poll).
  *
- * Context discipline: 6 slim parent tools, one-line catalog injected per
+ * Context discipline: 7 slim parent tools, one-line catalog injected per
  * request (cached), background completions notify with a 3-line summary
  * instead of full outputs, and run updates are throttled (no per-event
  * deep clones).

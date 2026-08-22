@@ -10,7 +10,7 @@
  * re-scanning, no divergence.
  */
 
-import { parseFrontmatter, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { parseFrontmatter, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 import { Type } from "typebox";
 
@@ -94,7 +94,7 @@ export default async function (pi: ExtensionAPI) {
 			parameters: Type.Object({
 				name: Type.String({ description: "The skill identifier from available_skills" }),
 			}),
-			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: unknown, _ctx: unknown): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
+			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: AgentToolUpdateCallback<unknown> | undefined, _ctx: ExtensionContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
 				const name = typeof params.name === "string" ? params.name : "";
 				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
 				if (!skill) {

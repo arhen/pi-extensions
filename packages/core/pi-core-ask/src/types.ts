@@ -13,7 +13,6 @@ export const MAX_LABEL_LENGTH = 60;
 
 /** Labels the model may not author — the runtime appends its own sentinels. */
 export const RESERVED_LABELS = ["Other", "Type something.", "Next"] as const;
-export type ReservedLabel = (typeof RESERVED_LABELS)[number];
 
 export const OptionSchema = Type.Object({
 	label: Type.String({
@@ -68,7 +67,6 @@ export const QuestionParamsSchema = Type.Object({
 	questions: QuestionsSchema,
 });
 
-export type OptionData = Static<typeof OptionSchema>;
 export type QuestionData = Static<typeof QuestionSchema>;
 export type QuestionParams = Static<typeof QuestionParamsSchema>;
 

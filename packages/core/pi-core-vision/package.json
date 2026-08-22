@@ -5,6 +5,9 @@
   "license": "MIT",
   "author": "arhen",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/arhen/pi-extensions",
@@ -31,8 +34,8 @@
     "LICENSE"
   ],
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "typebox": "^1.3.14"
   },
   "pi": {
     "extensions": [

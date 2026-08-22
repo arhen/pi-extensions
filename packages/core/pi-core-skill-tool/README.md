@@ -23,11 +23,11 @@ This extension does the same for pi.
 
 ## How it works
 
-1. `before_agent_start` → removes `<available_skills>...</available_skills>` from the system prompt
-2. Registers one `skill` tool; its description carries a compact catalog (name + truncated description, 100 chars/skill)
-3. Agent matches a task → calls `skill("name")` → gets the full SKILL.md content → follows instructions
+1. `before_agent_start` → reads the skill catalog from `event.systemPromptOptions.skills` (pi's own discovery — project, user, settings, CLI, and npm package skills) and strips the built-in `<available_skills>...</available_skills>` block from the system prompt
+2. Registers one lazy `skill` tool; its description carries a compact catalog (name + truncated description, 100 chars/skill)
+3. Agent matches a task → calls `skill("name")` → the tool reads that skill's SKILL.md body on demand and returns it → agent follows instructions
 
-Discoveries mirror pi's locations: `~/.pi/agent/skills`, `~/.agents/skills`, npm package `skills/` dirs. Symlinks are deduped via realpath.
+No filesystem discovery: the catalog comes entirely from pi via `systemPromptOptions` on `before_agent_start`, so it always matches what pi itself loads — no re-scanning, no divergence. SKILL.md bodies are read lazily only when the tool is called, saving ~4.5K tokens/session.
 
 ## Full comparison matrix
 

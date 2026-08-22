@@ -258,7 +258,6 @@ export class QuestionnaireComponent implements Component {
 		const row = (content: string): string => dim("│") + " " + content + " ".repeat(Math.max(0, boxWidth - visibleWidth(content) - 3)) + dim("│");
 
 		lines.push(pad(dim("╭" + "─".repeat(boxWidth - 2) + "╮")));
-		const answered = this.answers.filter((a) => a !== null).length;
 		lines.push(pad(row(`${this.theme.fg("accent", this.theme.bold("Questions"))} ${this.theme.fg("dim", `(${this.tab + 1}/${this.questions.length})`)}`)));
 		lines.push(pad(bar()));
 

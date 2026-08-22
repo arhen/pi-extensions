@@ -14,7 +14,6 @@ import {
 	hasSession,
 	schedulePersist,
 	getActiveRenderSession,
-	getRenderState,
 	getState,
 	restoreSession,
 	setActiveRenderSession,

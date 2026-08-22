@@ -37,12 +37,12 @@ import {
   cacheSet,
   configPath,
   describeBase64,
-  describeRawFile,
   isConfigComplete,
   loadConfig,
   maskKey,
   modelSupportsImages,
   parseArgs,
+  readRawImage,
   resetConfigCache,
   saveConfig,
 } from "./src/core.ts";
@@ -119,7 +119,10 @@ export default function (pi: ExtensionAPI) {
         if (!cfgReady || !MIME[extname(absolutePath).toLowerCase()]) return result;
         onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }] });
         try {
-          const { text, usage } = await describeRawFile(absolutePath, cfg, signal);
+          const { data, mimeType } = await readRawImage(absolutePath);
+          const { text, usage } = cfg.provider
+            ? await describeViaRegistry(data, mimeType, cfg, ctx)
+            : await describeBase64(data, mimeType, cfg, signal);
           return {
             content: [{ type: "text", text: untrustedImageText(cfg.model, text) }],
             details: { vision: true },

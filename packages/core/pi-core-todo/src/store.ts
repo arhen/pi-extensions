@@ -46,7 +46,6 @@ function loadFromDisk(): void {
 	}
 }
 
-/** Debounced write of the whole map. Called on every commit; cheap at this cadence. */
 /** Atomic write: tmp + rename so a crash mid-write can't corrupt the sidecar. */
 function writeDisk(): void {
 	try {
@@ -61,6 +60,7 @@ function writeDisk(): void {
 	}
 }
 
+/** Debounced write of the whole map. Called on every commit; cheap at this cadence. */
 export function schedulePersist(): void {
 	if (persistTimer) return;
 	persistTimer = setTimeout(() => {
@@ -75,22 +75,6 @@ export function getState(sessionId: string): TaskState {
 
 export function commitState(sessionId: string, state: TaskState): void {
 	sessions.set(sessionId, state);
-	schedulePersist();
-}
-
-export function replaceState(sessionId: string, state: TaskState): void {
-	sessions.set(sessionId, state);
-}
-
-export function evictSession(sessionId: string): void {
-	// Flush the session's final state BEFORE deleting it — a pending debounce
-	// would otherwise serialize the map without it and lose the data.
-	if (persistTimer) {
-		clearTimeout(persistTimer);
-		persistTimer = undefined;
-		writeDisk();
-	}
-	sessions.delete(sessionId);
 	schedulePersist();
 }
 
@@ -121,10 +105,3 @@ export function hasSession(sessionId: string): boolean {
 	return sessions.has(sessionId);
 }
 
-/** Test hook. */
-export function __resetState(): void {
-	sessions.clear();
-	activeRenderSession = "";
-	if (persistTimer) clearTimeout(persistTimer);
-	persistTimer = undefined;
-}

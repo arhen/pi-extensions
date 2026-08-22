@@ -9,7 +9,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true,
-    "types": ["bun-types"]
+    "types": ["bun"]
   },
   "include": ["src", "test"]
 }

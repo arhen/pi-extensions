@@ -18,7 +18,7 @@ export const MIME: Record<string, string> = {
 
 export const MAX_IMAGE_BYTES = 20 * 1024 * 1024; // guard for the raw fallback path
 
-export const DEFAULT_PROMPT = `Describe this image as text for a text-only LLM that must act on it. Compact but complete:
+const DEFAULT_PROMPT = `Describe this image as text for a text-only LLM that must act on it. Compact but complete:
 - What it is (screenshot, photo, diagram, chart, UI, terminal output)
 - ALL visible text verbatim (error messages, code, labels, values, button names)
 - Layout: sections, order, highlighted/selected/clickable elements, states (on/off, empty/full, enabled/disabled)
@@ -239,12 +239,11 @@ async function describeOnce(
   };
 }
 
-/** Raw fallback (no pi resize): read file, guard size, describe. Used when pi's image processing failed. */
-export async function describeRawFile(
-  path: string,
-  cfg: VisionConfig,
-  signal?: AbortSignal,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+/**
+ * Raw fallback (no pi resize): read an image file and base64-encode it,
+ * guarding file size. Used when pi's image processing failed.
+ */
+export async function readRawImage(path: string): Promise<{ data: string; mimeType: string }> {
   const mimeType = MIME[extname(path).toLowerCase()];
   if (!mimeType) throw new Error(`pi-vision: unsupported image type "${extname(path)}"`);
   // Stat first: bail on oversized files before reading them into memory.
@@ -260,7 +259,17 @@ export async function describeRawFile(
       `pi-vision: image too large (${(bytes.byteLength / 1048576).toFixed(1)}MB > 20MB). Downscale it first.`,
     );
   }
-  return describeBase64(Buffer.from(bytes).toString("base64"), mimeType, cfg, signal);
+  return { data: Buffer.from(bytes).toString("base64"), mimeType };
+}
+
+/** Raw fallback (no pi resize): read file, guard size, describe. Used when pi's image processing failed. */
+export async function describeRawFile(
+  path: string,
+  cfg: VisionConfig,
+  signal?: AbortSignal,
+): Promise<{ text: string; usage?: { input: number; output: number } }> {
+  const { data, mimeType } = await readRawImage(path);
+  return describeBase64(data, mimeType, cfg, signal);
 }
 
 export function maskKey(key: string): string {
@@ -337,7 +346,7 @@ export function isConfigComplete(cfg: VisionConfig): boolean {
 // lazily persisted to disk so repeat reads across sessions are instant.
 
 const CACHE_MAX = 200;
-export let cachePath = join(homedir(), ".pi", "pi-vision-cache.json");
+let cachePath = join(homedir(), ".pi", "pi-vision-cache.json");
 let cache = new Map<string, string>();
 let cacheLoaded = false;
 let persistTimer: ReturnType<typeof setTimeout> | null = null;

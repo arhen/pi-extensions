@@ -85,7 +85,7 @@ export function applyUpstream(task: string, needs: string[], outputs: Map<string
 	return `${blocks.join("\n\n")}\n\n---\n\n${body}`;
 }
 
-export async function mapWithConcurrency<T>(
+async function mapWithConcurrency<T>(
 	items: T[],
 	concurrency: number,
 	fn: (item: T, index: number) => Promise<void>,

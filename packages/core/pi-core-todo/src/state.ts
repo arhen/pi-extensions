@@ -131,7 +131,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			const idx = state.tasks.findIndex((t) => t.id === params.id);
 			if (idx === -1) return errorResult(state, `#${params.id} not found`);
 			const current = state.tasks[idx]!;
-			if (current.status === "deleted") return errorResult(state, `#${current.id} is deleted — use delete-free data: none; tombstones are immutable`);
+			if (current.status === "deleted") return errorResult(state, `task #${current.id} is deleted; tombstones are immutable`);
 
 			const hasMutation =
 				params.subject !== undefined ||

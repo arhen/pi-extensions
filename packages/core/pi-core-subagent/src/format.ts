@@ -15,7 +15,7 @@ import {
 } from "./types.ts";
 
 /** Cap on a single child's final output (and on full-run summaries). */
-export const FINAL_OUTPUT_CAP = 24 * 1024;
+const FINAL_OUTPUT_CAP = 24 * 1024;
 
 export function truncateText(text: string, max = FINAL_OUTPUT_CAP): string {
 	if (Buffer.byteLength(text, "utf8") <= max) return text;
@@ -29,7 +29,7 @@ export function getFirstText(message: AssistantMessage): string {
 	}
 	return "";
 }
-export function fmtTokens(n: number): string {
+function fmtTokens(n: number): string {
 	return n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k` : String(n);
 }
 export function formatUsage(usage: UsageStats): string {
@@ -48,18 +48,18 @@ export function statusIcon(status: TaskStatus | RunStatus): string {
 	if (status === "queued") return "○";
 	return "•";
 }
-export function fmtDuration(ms: number | undefined): string {
+function fmtDuration(ms: number | undefined): string {
 	if (ms === undefined || !Number.isFinite(ms)) return "–";
 	const s = Math.max(0, Math.round(ms / 1000));
 	return s >= 60 ? `${Math.floor(s / 60)}m${s % 60}s` : `${s}s`;
 }
-export function taskTimer(task: TaskSnapshot): string {
+function taskTimer(task: TaskSnapshot): string {
 	if (task.startedAt === undefined) return "–";
 	const end = task.endedAt ?? Date.now();
 	const running = !TERMINAL.includes(task.status);
 	return `${running ? "running " : ""}${fmtDuration(end - task.startedAt)}`;
 }
-export function taskStatsWithUsage(task: TaskSnapshot): string {
+function taskStatsWithUsage(task: TaskSnapshot): string {
 	const stats = `${task.toolCalls ?? 0} tools`;
 	const usage = formatUsage(task.usage);
 	return `${stats}${usage ? ` · ${usage}` : ""}`;
@@ -82,7 +82,7 @@ export function colorNums(text: string, theme: Theme): string {
  * Themed one-liner. Finished tasks dim entirely (stats included); live tasks
  * keep the agent name readable with themed numbers.
  */
-export function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""): string {
+function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""): string {
 	const tail = `${taskStatsWithUsage(task)} · ${taskTimer(task)}`;
 	// Queued task with unmet needs: show the gate it's waiting on instead of empty stats.
 	const gate =
@@ -101,7 +101,7 @@ export function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""):
  * unknown/custom tools then read fine too. Add a case only if one reads badly.
  */
 // Order matters: the most specific arg wins (grep's pattern beats its path).
-export const ARG_KEYS = [
+const ARG_KEYS = [
 	"pattern",
 	"query",
 	"command",
@@ -132,7 +132,7 @@ export function activitySnippet(text: string): string {
 }
 
 /** Mailbox/intercom tools — while one is the task's last activity, the agent is "talking". */
-export const TALK_TOOLS = ["poll_agent_messages", "send_agent_message", "ask_parent", "notify_parent"];
+const TALK_TOOLS = ["poll_agent_messages", "send_agent_message", "ask_parent", "notify_parent"];
 export function isTalking(task: TaskSnapshot): boolean {
 	const a = task.lastActivity?.toLowerCase() ?? "";
 	return TALK_TOOLS.some((t) => a.startsWith(t));
@@ -155,7 +155,7 @@ export function compactLines(run: RunSnapshot): string[] {
  *   └─ ✓ reviewer · 6 tools · 44s
  * Static icons (no animation); latest activity + tool count + runtime per agent.
  */
-export const WIDGET_MAX_LINES = 10;
+const WIDGET_MAX_LINES = 10;
 
 export class SubagentsWidget implements Component {
 	constructor(

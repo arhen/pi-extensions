@@ -22,9 +22,7 @@
 		"pi-package"
 	],
 	"peerDependencies": {
-		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*",
-		"@earendil-works/pi-tui": "*"
+		"@earendil-works/pi-coding-agent": "^0.84.2"
 	},
 	"publishConfig": {
 		"access": "public",
