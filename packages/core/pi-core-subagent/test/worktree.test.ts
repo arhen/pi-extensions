@@ -1,7 +1,7 @@
 /** Worktree isolation: create/commit/diff/cleanup against a real temp git repo. */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -9,6 +9,7 @@ import {
 	cleanupMerged,
 	commitWorktree,
 	createWorktree,
+	reapDeadWorktrees,
 	removeByBranch,
 	removeWorktree,
 	repoRoot,
@@ -108,6 +109,46 @@ describe("worktree", () => {
 		expect(existsSync(wt.path)).toBe(true); // worktree survives
 		expect(git(["branch", "--list", "subagents/run_6/task_6"]).replace(/^\+ /, "")).toBe("subagents/run_6/task_6");
 		removeWorktree(wt);
+	});
+
+	test("cleanupMerged honors skipBranches (branch owned by a live run)", () => {
+		const wt = createWorktree(repo, "run_7", "task_7")!;
+		removeWorktree(wt); // not checked out anymore, but the run still owns it
+		cleanupMerged(repo, { skipBranches: new Set([wt.branch]) });
+		expect(git(["branch", "--list", wt.branch])).toBe(wt.branch); // owned → survives
+		cleanupMerged(repo); // unowned now
+		expect(git(["branch", "--list", wt.branch])).toBe("");
+	});
+
+	test("commitWorktree: untracked node_modules symlink alone is not a commit", () => {
+		const wt = createWorktree(repo, "run_8", "task_8")!;
+		symlinkSync(join(repo, "a.txt"), join(wt.path, "node_modules")); // stand-in for the dep symlink
+		expect(() => commitWorktree(wt, "should be a no-op")).not.toThrow();
+		expect(git(["rev-parse", wt.branch])).toBe(git(["rev-parse", "HEAD"])); // no commit created
+		removeWorktree(wt);
+	});
+
+	test("reapDeadWorktrees commits a crashed child's work, keeps branch, drops dir", () => {
+		const wt = createWorktree(repo, "run_12", "task_12")!; // simulates a crash: registered, uncommitted
+		writeFileSync(join(wt.path, "crashed.txt"), "half-done\n");
+		expect(reapDeadWorktrees(repo)).toBe(1);
+		expect(existsSync(wt.path)).toBe(false); // dir gone
+		expect(git(["branch", "--list", wt.branch])).toBe(wt.branch); // branch kept
+		expect(git(["show", "--name-only", "--format=", wt.branch])).toContain("crashed.txt"); // work survived
+	});
+
+	test("sweepStale keeps a live worktree when the repo path contains a space", () => {
+		const spaced = mkdtempSync(join(tmpdir(), "wt repo-"));
+		const g = (args: string[]) => execFileSync("git", args, { cwd: spaced, encoding: "utf8" }).trim();
+		g(["init", "-q", "-b", "main"]);
+		writeFileSync(join(spaced, "a.txt"), "hello\n");
+		g(["add", "-A"]);
+		g(["commit", "-qm", "init"]);
+		const wt = createWorktree(spaced, "run_sp", "task_sp")!; // porcelain will C-quote this path
+		sweepStale(spaced);
+		expect(existsSync(wt.path)).toBe(true); // live checkout must survive
+		removeWorktree(wt);
+		rmSync(spaced, { recursive: true, force: true });
 	});
 
 	test("removeByBranch removes the worktree dir by branch name", () => {

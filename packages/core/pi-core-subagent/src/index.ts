@@ -30,7 +30,7 @@ import {
 	type SubagentParamsShape,
 } from "./schemas.ts";
 import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
-import { cleanupMerged, repoRoot, sweepStale } from "./worktree.ts";
+import { cleanupMerged, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
@@ -125,8 +125,16 @@ export default function (pi: ExtensionAPI) {
 			}
 		}
 		for (const root of roots) {
-			sweepStale(root);
-			cleanupMerged(root);
+			try {
+				// Nothing of ours can be live at session start: every registered subagent
+				// worktree is a crash leftover — commit its work, keep the branch, drop the
+				// dir. Then reap merged branches and dirs git no longer tracks.
+				reapDeadWorktrees(root);
+				cleanupMerged(root);
+				sweepStale(root);
+			} catch {
+				/* recovery is best-effort — never block session start */
+			}
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -170,18 +178,29 @@ export default function (pi: ExtensionAPI) {
 				// until terminal — but surface an ask_parent: the child is waiting on the
 				// leader, so break out, reply via reply_subagent, then await again.
 				let run = details.run;
-				let intercom: ParkedMsg[] = [];
+				// Each park gets a FRESH msgs array — accumulate, or every wake but the
+				// last is lost (they were consumed by the park, never sent as followUp).
+				const intercom: ParkedMsg[] = [];
 				while (!TERMINAL.includes(run.status)) {
 					const awaited = await manager.awaitRun(details.run.id);
 					if (!awaited) break; // run gone (session shutdown) — stop, no busy-spin
 					if (awaited.run) run = awaited.run;
-					intercom = awaited.intercom;
-					if (intercom.some((m) => m.kind === "ask")) break;
+					intercom.push(...awaited.intercom);
+					if (awaited.intercom.some((m) => m.kind === "ask")) break;
 				}
 				const asked = intercom.find((m) => m.kind === "ask");
-				const text = asked
-					? `${makeSummary(run)}\n\nA child is waiting for your answer (${asked.agent}, ${asked.taskId}): ${asked.text}\nReply with reply_subagent(runId: "${run.id}", taskId: "${asked.taskId}", message: ...), then await_subagent again for the result.`
-					: makeSummary(run);
+				const heard = intercom.filter((m) => m.kind !== "ask");
+				const text = [
+					makeSummary(run),
+					heard.length > 0
+						? `\nIntercom while waiting:\n${heard.map((m) => `- [${m.kind}] ${m.agent} (${m.taskId}): ${truncateText(m.text)}`).join("\n")}`
+						: "",
+					asked
+						? `\nA child is waiting for your answer (${asked.agent}, ${asked.taskId}): ${asked.text}\nReply with reply_subagent(runId: "${run.id}", taskId: "${asked.taskId}", message: ...), then await_subagent again for the result.`
+						: "",
+				]
+					.filter(Boolean)
+					.join("\n");
 				return { content: [{ type: "text", text }], details: { run } };
 			}
 			return {

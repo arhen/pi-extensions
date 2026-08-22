@@ -2,9 +2,12 @@
  *  Worktrees live inside `<repo>/.git/subagents/<runId>/<taskId>` so the child's
  *  ancestor walk still finds the project AGENTS.md chain. node_modules is
  *  symlinked from the main tree. The extension commits the child's changes on
- *  completion; the leader reviews and merges the branch manually; merged
- *  branches are cleaned automatically, crash leftovers are swept at session
- *  start (dir removed, branch kept — the work survives). */
+ *  completion; the leader reviews and merges the branch manually.
+ *
+ *  Cleanup, in order of trust: `reapDeadWorktrees` (session start — nothing can
+ *  be live yet, so every registered worktree is a crash leftover: commit its
+ *  work, drop the dir, keep the branch), `cleanupMerged` (merged branches, never
+ *  touching a checked-out one), `sweepStale` (dirs git no longer knows about). */
 
 import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
@@ -16,6 +19,8 @@ export interface Worktree {
 	branch: string; // subagents/<runId>/<taskId>
 	base: string; // SHA the branch was created from
 }
+
+const BRANCH_PREFIX = "subagents/";
 
 function git(root: string, args: string[]): string {
 	return execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
@@ -30,6 +35,25 @@ function gitOk(root: string, args: string[]): boolean {
 	try {
 		git(root, args);
 		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** git C-quotes porcelain paths containing spaces/specials — undo that. */
+function unquote(path: string): string {
+	if (!path.startsWith('"') || !path.endsWith('"')) return path;
+	return path
+		.slice(1, -1)
+		.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(Number.parseInt(o, 8)))
+		.replace(/\\(.)/g, (_, c) => ({ n: "\n", t: "\t", r: "\r" })[c as string] ?? c);
+}
+
+/** Compare paths through realpath so /var vs /private/var can't diverge. */
+function samePath(a: string, b: string): boolean {
+	if (a === b) return true;
+	try {
+		return realpathSync(a) === realpathSync(b);
 	} catch {
 		return false;
 	}
@@ -50,7 +74,7 @@ export function createWorktree(cwd: string, runId: string, taskId: string): Work
 	const root = repoRoot(cwd);
 	if (!root) return undefined;
 	const path = join(root, ".git", "subagents", runId, taskId);
-	const branch = `subagents/${runId}/${taskId}`;
+	const branch = `${BRANCH_PREFIX}${runId}/${taskId}`;
 	let base: string;
 	try {
 		base = git(root, ["rev-parse", "HEAD"]); // SHA — detached HEAD stays correct
@@ -71,11 +95,19 @@ export function createWorktree(cwd: string, runId: string, taskId: string): Work
 	return { root, path, branch, base };
 }
 
-/** Commit all child changes. No-op when the worktree is already clean. */
+/**
+ * Commit the child's changes. Stages first, then commits only when something is
+ * actually staged — an untracked node_modules symlink must not fake "dirty" and
+ * turn into a failed empty commit.
+ */
 export function commitWorktree(wt: Worktree, message: string): void {
-	if (gitIn(wt.path, ["status", "--porcelain"]).length === 0) return;
-	gitIn(wt.path, ["add", "-A", "--", ".", ":(exclude)node_modules"]); // never stage the dep symlink
-	gitIn(wt.path, ["commit", "-m", message, "--no-verify"]);
+	commitIn(wt.path, message);
+}
+
+function commitIn(dir: string, message: string): void {
+	gitIn(dir, ["add", "-A", "--", ".", ":(exclude)node_modules"]); // never stage the dep symlink
+	if (gitIn(dir, ["diff", "--cached", "--name-only"]).length === 0) return; // nothing to commit
+	gitIn(dir, ["commit", "-m", message, "--no-verify"]);
 }
 
 /** Diffstat + changed files of the branch vs its base SHA. */
@@ -89,23 +121,22 @@ export function branchDiff(wt: Worktree): { stat: string; files: string[] } {
 
 /** Remove the worktree dir. The branch is KEPT (the work survives for merging). */
 export function removeWorktree(wt: Worktree): void {
-	try {
-		git(wt.root, ["worktree", "remove", "--force", wt.path]);
-	} catch {
-		/* already gone */
-	}
-	prune(wt.root);
+	dropDir(wt.root, wt.path);
 }
 
 /** Remove a worktree dir by branch name (cancel paths that didn't keep a Worktree). */
 export function removeByBranch(cwd: string, branch: string): void {
+	if (!branch.startsWith(BRANCH_PREFIX)) return;
 	const root = repoRoot(cwd);
 	if (!root) return;
-	const path = join(root, ".git", "subagents", branch.slice("subagents/".length));
+	dropDir(root, join(root, ".git", "subagents", branch.slice(BRANCH_PREFIX.length)));
+}
+
+function dropDir(root: string, path: string): void {
 	try {
 		git(root, ["worktree", "remove", "--force", path]);
 	} catch {
-		/* already gone */
+		if (existsSync(path)) rmSync(path, { recursive: true, force: true });
 	}
 	prune(root);
 }
@@ -119,21 +150,30 @@ function prune(root: string): void {
 	}
 }
 
+/** Is this branch checked out in some worktree right now? Checked fresh, per call. */
+function isCheckedOut(root: string, branch: string): boolean {
+	return worktreeBranches(root).includes(branch);
+}
+
 /**
  * Delete branch + worktree for branches already merged into `target`.
- * SAFETY: branches checked out in a LIVE worktree (concurrent run) are skipped —
- * their tip equals the base until the child commits, so they look "merged".
+ * SAFETY: a branch checked out in a LIVE worktree is skipped — a fresh branch's
+ * tip equals its base until the child commits, so it looks "merged". The
+ * registration is re-checked immediately before each removal (a concurrent run
+ * may have created its worktree after the first listing).
  */
-export function cleanupMerged(root: string, target = "HEAD"): number {
+export function cleanupMerged(root: string, opts: { skipBranches?: Set<string>; target?: string } = {}): number {
 	root = realpathSync(root);
+	const target = opts.target ?? "HEAD";
 	const merged = git(root, ["branch", "--merged", target])
 		.split("\n")
 		.map((b) => b.trim().replace(/^[+*]\s*/, ""));
-	const live = new Set(worktreeBranches(root));
 	let cleaned = 0;
 	for (const branch of merged) {
-		if (!branch.startsWith("subagents/") || live.has(branch)) continue;
-		const path = join(root, ".git", "subagents", branch.slice("subagents/".length));
+		if (!branch.startsWith(BRANCH_PREFIX)) continue;
+		if (opts.skipBranches?.has(branch)) continue; // owned by a live run
+		if (isCheckedOut(root, branch)) continue; // fresh re-check, not a stale snapshot
+		const path = join(root, ".git", "subagents", branch.slice(BRANCH_PREFIX.length));
 		if (existsSync(path)) {
 			try {
 				git(root, ["worktree", "remove", "--force", path]);
@@ -160,25 +200,43 @@ function worktreeBranches(root: string): string[] {
 }
 
 /**
- * Remove worktree dirs that are NOT registered worktrees (crash leftovers).
- * A crash leaves the dir AND the branch, so branch-existence can't identify
- * leftovers — worktree registration can. Branches always survive.
+ * Session-start recovery: every registered subagent worktree is a crash leftover
+ * (nothing of ours can be live yet). Commit whatever the dead child left so the
+ * branch keeps it, then drop the dir. Branches always survive.
+ */
+export function reapDeadWorktrees(root: string): number {
+	root = realpathSync(root);
+	const sub = join(root, ".git", "subagents");
+	if (!existsSync(sub)) return 0;
+	let reaped = 0;
+	for (const path of worktreePaths(root)) {
+		if (!isInside(path, sub)) continue; // not ours
+		try {
+			commitIn(path, "subagent (recovered after interrupted session)");
+		} catch {
+			/* nothing committable */
+		}
+		dropDir(root, path);
+		reaped += 1;
+	}
+	return reaped;
+}
+
+/**
+ * Remove worktree dirs that git no longer knows about (partial-crash leftovers).
+ * Registered worktrees are never touched here — `reapDeadWorktrees` owns those,
+ * and a live child's checkout must survive.
  */
 export function sweepStale(root: string): void {
 	root = realpathSync(root);
 	const sub = join(root, ".git", "subagents");
 	if (!existsSync(sub)) return;
-	const registered = new Set(worktreePaths(root));
+	const registered = worktreePaths(root);
 	for (const runDir of readDirs(sub)) {
 		for (const taskDir of readDirs(join(sub, runDir))) {
 			const dir = join(sub, runDir, taskDir);
-			if (registered.has(dir)) continue; // live worktree
-			try {
-				git(root, ["worktree", "remove", "--force", dir]);
-			} catch {
-				// dir not a registered worktree (partial crash) — plain rm
-				rmSync(dir, { recursive: true, force: true });
-			}
+			if (registered.some((p) => samePath(p, dir))) continue; // live/registered worktree
+			rmSync(dir, { recursive: true, force: true });
 		}
 	}
 	prune(root);
@@ -189,9 +247,23 @@ function worktreePaths(root: string): string[] {
 		return git(root, ["worktree", "list", "--porcelain"])
 			.split("\n")
 			.filter((l) => l.startsWith("worktree "))
-			.map((l) => l.slice("worktree ".length).trim());
+			.map((l) => unquote(l.slice("worktree ".length).trim()));
 	} catch {
 		return [];
+	}
+}
+
+function isInside(path: string, dir: string): boolean {
+	const p = safeReal(path);
+	const d = safeReal(dir);
+	return p === d || p.startsWith(`${d}/`);
+}
+
+function safeReal(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
 	}
 }
 

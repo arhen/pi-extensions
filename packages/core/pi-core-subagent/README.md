@@ -147,7 +147,17 @@ On completion the extension commits the child's changes (the child is told not t
 git merge --no-ff subagents/<run>/<task>
 ```
 
-Merged branches + their worktree dirs are cleaned automatically after the run. Failed/canceled tasks keep the branch (partial work survives for manual merging) but drop the worktree dir. Crash leftovers are swept at session start — worktree dirs are removed, branches are kept. Non-git repos fall back to in-place edits.
+Isolation follows the toolset the child actually receives: explicit `tools: ["bash", "edit", "write"]` earns a worktree even without `write: true`, and an agent file that narrows the child to read-only gets no branch at all.
+
+Cleanup, in order of trust:
+
+| When | What |
+|---|---|
+| Session start | Registered worktrees can't be live yet — an interrupted child's uncommitted work is committed, the branch kept, the dir dropped. Then merged branches are reaped and dirs git no longer tracks are removed. |
+| After a run | Merged branches + their dirs, never touching a branch a live run owns (checkout state re-checked per branch). |
+| Task failed/canceled | Partial work is committed first, so the branch keeps it; the dir is dropped. |
+
+Non-git repos fall back to in-place edits.
 
 ## Graph mode — `needs`
 

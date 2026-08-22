@@ -1,5 +1,5 @@
 /** SubagentManager: run lifecycle, child sessions, intercom, persistence, widget plumbing. */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
@@ -48,10 +48,8 @@ import {
 	cleanupMerged,
 	commitWorktree,
 	createWorktree,
-	removeByBranch,
 	removeWorktree,
 	repoRoot,
-	sweepStale,
 	type Worktree,
 } from "./worktree.ts";
 
@@ -62,6 +60,8 @@ const DEFAULT_RUNTIME_MS = 0;
 const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
 const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+/** Tools that can mutate the tree — their presence is what earns a worktree. */
+const WRITE_CAPABLE = ["bash", "edit", "write"];
 /** Task ids become git refs + filesystem paths. */
 const SAFE_TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const WIDGET_THROTTLE_MS = 150;
@@ -85,6 +85,14 @@ function aggregateUsage(tasks: TaskSnapshot[]): UsageStats {
 		total.turns += task.usage.turns;
 	}
 	return total;
+}
+/** realpath when possible; the raw path otherwise (cwd may not exist yet). */
+function safeRealPath(path: string): string {
+	try {
+		return realpathSync(path);
+	} catch {
+		return path;
+	}
 }
 function getParentSessionFile(ctx: ExtensionContext): string | undefined {
 	try {
@@ -220,6 +228,9 @@ export class SubagentManager {
 		{ abort: () => void; dispose: () => void; touchWatchdog: () => void; steer: (message: string) => void }
 	>();
 	private mailboxes: Mailbox = createMailbox();
+	/** Live worktrees by `${runId}:${taskId}` — lets cancel drop dirs and keeps
+	 *  cleanup from touching a branch that a running child owns. */
+	private liveWorktrees = new Map<string, Worktree>();
 	private runControllers = new Map<string, AbortController>();
 	private widgetTimers = new Map<string, ReturnType<typeof setTimeout>>(); // per-run stream throttle
 	private widgetRuns: RunSnapshot[] = [];
@@ -502,7 +513,18 @@ export class SubagentManager {
 				// While the leader is parked in await_subagent, the question rides the wait
 				// instead of the steering queue — no boundary needed, no starvation.
 				if (this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
-					return "Your question was delivered to the parent (they're waiting on this run). Keep working; the answer arrives via the pending reply.";
+					// The parked leader gets the question inside its await result and answers
+					// with reply_subagent — so the pending entry MUST exist here too, or the
+					// reply lands nowhere and the child waits on an answer that never comes.
+					const keepAlive = setInterval(() => this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog(), 30_000);
+					try {
+						const reply = await this.awaitParentReply(run.id, task.id);
+						this.updateTask(run, task, { status: "running" }, ctx);
+						this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog();
+						return reply;
+					} finally {
+						clearInterval(keepAlive);
+					}
 				}
 				this.notifyParent(run, "asked", { taskId: task.id, question });
 				// M3: a waiting child is not stalled — keep the watchdog fed until the reply.
@@ -518,13 +540,13 @@ export class SubagentManager {
 			},
 			onNotifyParent: (_taskId, message, level) => {
 				this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message });
+				// Parked leader gets it through the wait; otherwise queue it. `awaited` must
+				// NOT gate this — between two parks the leader is awaited but listening.
 				if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text: message })) return;
-				if (!run.awaited) {
-					try {
-						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "followUp" });
-					} catch {
-						/* parent mid-stream */
-					}
+				try {
+					this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "followUp" });
+				} catch {
+					/* parent mid-stream */
 				}
 			},
 			onSendMessage: (_taskId, to, text) => {
@@ -537,12 +559,10 @@ export class SubagentManager {
 						message: text,
 					});
 					if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text })) return true;
-					if (!run.awaited) {
-						try {
-							this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "followUp" });
-						} catch {
-							/* parent mid-stream */
-						}
+					try {
+						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "followUp" });
+					} catch {
+						/* parent mid-stream */
 					}
 					return true;
 				}
@@ -657,9 +677,10 @@ export class SubagentManager {
 		const fileTools = file?.tools?.filter((t) => allowedTools.includes(t));
 		const baseTools = fileTools?.length ? fileTools : (input.tools ?? allowedTools);
 		const tools = [...baseTools, ...(run.allowIntercom ? CHILD_TALK_TOOLS : [])];
-		// Worktree whenever the child can write — whether the leader said write:true
-		// or a file granted write-capable tools.
-		const canWrite = input.write || (file?.tools?.some((t) => WRITE_TOOLS.includes(t)) ?? false);
+		// Isolation follows the DELIVERED toolset, never the raw request: explicit
+		// tools: [bash] without write:true still gets a worktree, and a file that
+		// narrowed the child to read-only never gets the commit/merge ceremony.
+		const canWrite = baseTools.some((t) => WRITE_CAPABLE.includes(t));
 
 		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
 		// non-git repos fall back to in-place. The worktree is created BEFORE session
@@ -673,11 +694,19 @@ export class SubagentManager {
 			}
 		}
 		// Map a per-task cwd subpath into the worktree so relative paths stay correct.
+		// If the mapping can't be trusted (cwd outside the repo via symlink), drop the
+		// worktree rather than run in the main tree while reporting a branch.
 		let childCwd = wt?.path ?? task.cwd;
 		if (wt) {
-			const rel = relative(wt.root, task.cwd);
-			if (rel && !rel.startsWith("..") && rel !== ".") childCwd = join(wt.path, rel);
+			const rel = relative(wt.root, safeRealPath(task.cwd));
+			if (rel.startsWith("..")) {
+				removeWorktree(wt);
+				wt = undefined;
+			} else if (rel && rel !== ".") {
+				childCwd = join(wt.path, rel);
+			}
 		}
+		if (wt) this.liveWorktrees.set(`${run.id}:${task.id}`, wt);
 
 		// Model + thinking resolve against the pi model registry; a bad request
 		// fails the TASK with a helpful message, not the whole run.
@@ -890,9 +919,12 @@ export class SubagentManager {
 			watchdog.dispose();
 			if (timeout) clearTimeout(timeout);
 			child?.dispose();
-			// Failed/aborted: commit whatever partial work exists FIRST (so the branch
-			// really keeps it), then drop the checkout dir.
+			this.liveWorktrees.delete(key);
+			// Failed/aborted: let the aborted child's last writes land (its tools may
+			// still be unwinding), commit whatever partial work exists so the branch
+			// really keeps it, then drop the checkout dir.
 			if (wt && task.status !== "completed") {
+				await new Promise((r) => setTimeout(r, 250));
 				try {
 					commitWorktree(wt, `subagent ${task.agent} (partial, ${task.status})`);
 				} catch {
@@ -1026,7 +1058,18 @@ export class SubagentManager {
 				// The scheduler passes the index into the FILTERED list — never use it
 				// against the unfiltered inputs. Look the input up by task id instead.
 				const input = inputById.get(task.id);
-				if (!input) return;
+				if (!input) {
+					// Impossible unless ids drift from inputs — fail loudly instead of
+					// leaving the task queued forever (hasActiveRun would never clear).
+					this.updateTask(
+						run,
+						task,
+						{ status: "failed", error: `No input for task ${task.id}`, endedAt: Date.now() },
+						ctx,
+						onUpdate,
+					);
+					return;
+				}
 				await this.runChild(
 					run,
 					task,
@@ -1082,12 +1125,24 @@ export class SubagentManager {
 		for (const task of run.tasks) this.mailboxes.close(`${run.id}:${task.id}`);
 		this.persist(ctx);
 		// Branches merged by the leader since the run ended: drop worktree dir + branch.
-		for (const task of run.tasks) {
-			if (task.branch) {
+		// Once per repo, never for a branch another live run owns, never fatal — a
+		// throw here would re-settle an already-finished run as failed.
+		try {
+			const roots = new Set<string>();
+			for (const task of run.tasks) {
+				if (!task.branch) continue;
 				const root = repoRoot(task.cwd);
-				if (root) cleanupMerged(root);
+				if (root) roots.add(root);
 			}
+			for (const root of roots) cleanupMerged(root, { skipBranches: this.liveBranches() });
+		} catch {
+			/* cleanup is best-effort; the run outcome must stand */
 		}
+	}
+
+	/** Branches owned by worktrees of still-running children. */
+	liveBranches(): Set<string> {
+		return new Set(Array.from(this.liveWorktrees.values(), (wt) => wt.branch));
 	}
 
 	/** Spawn a run that keeps executing after this call returns. Every run is background. */
@@ -1164,7 +1219,10 @@ export class SubagentManager {
 			task.error = task.error || "Canceled by subagent_cancel"; // never overwrite a real error
 			task.endedAt = Date.now();
 			aborted += 1;
-			if (task.branch) removeByBranch(task.cwd, task.branch); // dir only; branch keeps partial work
+			// The branch is recorded here so the leader can still merge partial work;
+			// runChild's finally commits + drops the dir (it owns the live worktree).
+			const wt = this.liveWorktrees.get(`${runId}:${task.id}`);
+			if (wt) task.branch = wt.branch;
 		}
 		run.status = "aborted";
 		run.endedAt = Date.now();
@@ -1219,7 +1277,7 @@ export class SubagentManager {
 			// IN the await result, no steering queue, no turn boundary needed.
 			this.parked.set(runId, { msgs, wake: () => resolve(cloneRun(run)) });
 		});
-		if (timeoutMs) {
+		if (timeoutMs !== undefined && timeoutMs > 0) {
 			return Promise.race([
 				settled.then((r) => {
 					finish();

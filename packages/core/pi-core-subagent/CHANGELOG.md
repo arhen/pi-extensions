@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Second review pass (re-review of the hardening commit) — fixes:
+  - **`canWrite` derived from the delivered toolset** (was: raw request). `tools: ["bash"]` without `write:true` now gets a worktree; a file that narrowed the child to read-only no longer gets a bogus branch/commit/merge ceremony.
+  - **Parked `ask_parent` now registers a pending reply** — previously the child was told "the answer arrives via the pending reply" while no entry existed, so `reply_subagent` failed with "No pending question" and the answer was lost.
+  - **`autoAwait` accumulates intercom across parks** (each park allocates a fresh buffer, so every wake but the last was dropped) and reports notifies alongside the summary.
+  - **`notify_parent` / `send_agent_message("leader")` no longer gated on `run.awaited`** — between two parks the leader was "awaited" but listening, and messages vanished.
+  - **Crash recovery actually works**: `reapDeadWorktrees` at session start commits an interrupted child's uncommitted work, keeps the branch, drops the dir. Registered-but-dead worktrees were previously skipped by both cleanup paths and leaked forever (incl. the model-resolution early return, which no longer leaks).
+  - **`sweepStale` path matching fixed**: git C-quotes porcelain paths, so a repo path containing a space bypassed the live-worktree guard and could delete a running child's checkout; paths are now unquoted and compared through realpath.
+  - **`cleanupMerged` re-checks checkout state per branch** (stale snapshot could delete a worktree created mid-loop) and accepts `skipBranches` — branches owned by live runs are never touched. It also runs once per repo, wrapped, so a cleanup error can't re-settle a finished run as failed.
+  - **Empty-commit bug**: the dirty check counted the untracked `node_modules` symlink, so a no-op task "failed" its commit and reported a branch with no commits. Staging is now checked instead.
+  - Failure path waits briefly for an aborted child's last writes before committing partial work; `cwd` outside the repo drops the worktree instead of silently writing in the main tree; `removeByBranch` requires the `subagents/` prefix; unreachable id lookup fails the task instead of leaving it queued forever; `timeoutMs: 0` no longer parks forever.
+- 4 new regression tests: `skipBranches` ownership, node_modules-only no-op commit, crash reaping, live worktree in a repo path with a space (80 total).
+
 - Review-driven hardening (external review of the worktree feature):
   - **C1/H1**: `cleanupMerged` never touches LIVE worktrees (concurrent-run safety — a fresh branch's tip equals its base so it looked "merged"); cleanup also runs at session start, so branches the leader merges manually get reaped.
   - **C2/C3**: `autoAwait` surfaces `ask_parent` instead of dropping it (returns the question, leader replies + re-awaits — no hang), and stops instead of busy-spinning when the run is gone (session shutdown).
