@@ -18,7 +18,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { compactLines, formatUsage, makeSummary, statusIcon, taskLine, truncateText } from "./format.ts";
 import { waveNotation } from "./graph.ts";
-import { cloneRun, SubagentManager } from "./manager.ts";
+import { cloneRun, type ParkedMsg, SubagentManager } from "./manager.ts";
 import { createPeekPane, type PeekTask } from "./peek.ts";
 import {
 	AwaitParam,
@@ -30,7 +30,7 @@ import {
 	type SubagentParamsShape,
 } from "./schemas.ts";
 import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
-import { repoRoot, sweepStale } from "./worktree.ts";
+import { cleanupMerged, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
@@ -111,14 +111,22 @@ export default function (pi: ExtensionAPI) {
 	pi.on("session_start", async (_event, ctx) => {
 		await manager.restoreFromSidecar(ctx);
 		// Crash leftovers: remove stale worktree dirs (branches survive for merging).
-		sweepStale(ctx.cwd);
+		// Also reap branches the leader merged in a previous session (H1: cleanup can't
+		// fire at run end — the leader merges after).
+		const roots = new Set<string>();
+		const cwdRoot = repoRoot(ctx.cwd);
+		if (cwdRoot) roots.add(cwdRoot);
 		for (const run of manager.listRuns()) {
 			for (const task of run.tasks) {
 				if (task.branch) {
 					const root = repoRoot(task.cwd);
-					if (root) sweepStale(root);
+					if (root) roots.add(root);
 				}
 			}
+		}
+		for (const root of roots) {
+			sweepStale(root);
+			cleanupMerged(root);
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
@@ -158,13 +166,23 @@ export default function (pi: ExtensionAPI) {
 			const typed = params as SubagentParamsShape;
 			const details = manager.startInBackground(typed, ctx);
 			if (typed.autoAwait) {
-				// awaitRun wakes on every child→leader message (ask/notify/done) — that's the
-				// slice-loop feature. autoAwait wants the final result: re-park until terminal.
+				// awaitRun wakes on every child→leader message (ask/notify/done). Re-park
+				// until terminal — but surface an ask_parent: the child is waiting on the
+				// leader, so break out, reply via reply_subagent, then await again.
 				let run = details.run;
+				let intercom: ParkedMsg[] = [];
 				while (!TERMINAL.includes(run.status)) {
-					run = (await manager.awaitRun(details.run.id))?.run ?? run;
+					const awaited = await manager.awaitRun(details.run.id);
+					if (!awaited) break; // run gone (session shutdown) — stop, no busy-spin
+					if (awaited.run) run = awaited.run;
+					intercom = awaited.intercom;
+					if (intercom.some((m) => m.kind === "ask")) break;
 				}
-				return { content: [{ type: "text", text: makeSummary(run) }], details: { run } };
+				const asked = intercom.find((m) => m.kind === "ask");
+				const text = asked
+					? `${makeSummary(run)}\n\nA child is waiting for your answer (${asked.agent}, ${asked.taskId}): ${asked.text}\nReply with reply_subagent(runId: "${run.id}", taskId: "${asked.taskId}", message: ...), then await_subagent again for the result.`
+					: makeSummary(run);
+				return { content: [{ type: "text", text }], details: { run } };
 			}
 			return {
 				content: [

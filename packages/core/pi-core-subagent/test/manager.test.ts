@@ -31,6 +31,25 @@ describe("createRun", () => {
 			),
 		).toThrow(/Duplicate task id/);
 	});
+	test("unsafe task ids are rejected (they become git refs + paths)", () => {
+		const m = makeManager();
+		expect(() => m.createRun({ tasks: [{ agent: "a", task: "t", id: "../evil" }] }, stubCtx)).toThrow(/Unsafe task id/);
+		expect(() => m.createRun({ tasks: [{ agent: "a", task: "t", id: "a/b" }] }, stubCtx)).toThrow(/Unsafe task id/);
+	});
+	test("generated ids collide with explicit ones → rejected, not silently misrouted", () => {
+		const m = makeManager();
+		expect(() =>
+			m.createRun(
+				{
+					tasks: [
+						{ agent: "a", task: "t", id: "task_2" },
+						{ agent: "b", task: "t2" },
+					],
+				},
+				stubCtx,
+			),
+		).toThrow(/collides/);
+	});
 });
 
 describe("cancel", () => {

@@ -41,7 +41,7 @@ describe("worktree", () => {
 		expect(wt).toBeDefined();
 		expect(existsSync(join(wt!.path, "a.txt"))).toBe(true);
 		expect(git(["branch", "--list", "subagents/run_1/task_1"]).replace(/^\+ /, "")).toBe("subagents/run_1/task_1");
-		expect(wt!.base).toBe("main");
+		expect(wt!.base).toBe(git(["rev-parse", "HEAD"])); // SHA, not branch name
 		removeWorktree(wt!);
 	});
 
@@ -97,6 +97,16 @@ describe("worktree", () => {
 		commitWorktree(wt, "live");
 		sweepStale(repo);
 		expect(existsSync(wt.path)).toBe(true);
+		removeWorktree(wt);
+	});
+
+	test("cleanupMerged never touches LIVE worktrees (concurrent-run safety)", () => {
+		const wt = createWorktree(repo, "run_6", "task_6")!; // fresh: tip == base, looks "merged"
+		expect(existsSync(wt.path)).toBe(true);
+		const cleaned = cleanupMerged(repo);
+		expect(cleaned).toBe(0);
+		expect(existsSync(wt.path)).toBe(true); // worktree survives
+		expect(git(["branch", "--list", "subagents/run_6/task_6"]).replace(/^\+ /, "")).toBe("subagents/run_6/task_6");
 		removeWorktree(wt);
 	});
 

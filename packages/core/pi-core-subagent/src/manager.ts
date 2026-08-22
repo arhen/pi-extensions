@@ -1,7 +1,7 @@
 /** SubagentManager: run lifecycle, child sessions, intercom, persistence, widget plumbing. */
 import { existsSync, readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
@@ -62,6 +62,8 @@ const DEFAULT_RUNTIME_MS = 0;
 const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
 const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+/** Task ids become git refs + filesystem paths. */
+const SAFE_TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const WIDGET_THROTTLE_MS = 150;
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -649,21 +651,33 @@ export class SubagentManager {
 		const file = resolveAgentFile(input.agent, input.task, task.cwd, getAgentDir());
 		const prompt = file?.body ?? input.prompt?.trim();
 		const thinking = input.thinking;
-		const baseTools = file?.tools ?? input.tools ?? (input.write ? WRITE_TOOLS : READONLY_TOOLS);
+		// Trust boundary: a file can NARROW the toolset (intersect with the leader's
+		// intent) but never widen it — a repo-planted agent file can't grant write.
+		const allowedTools = input.write ? WRITE_TOOLS : READONLY_TOOLS;
+		const fileTools = file?.tools?.filter((t) => allowedTools.includes(t));
+		const baseTools = fileTools?.length ? fileTools : (input.tools ?? allowedTools);
 		const tools = [...baseTools, ...(run.allowIntercom ? CHILD_TALK_TOOLS : [])];
+		// Worktree whenever the child can write — whether the leader said write:true
+		// or a file granted write-capable tools.
+		const canWrite = input.write || (file?.tools?.some((t) => WRITE_TOOLS.includes(t)) ?? false);
 
 		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
 		// non-git repos fall back to in-place. The worktree is created BEFORE session
 		// start so the child's cwd + AGENTS.md context chain are the worktree's.
 		let wt: Worktree | undefined;
-		if (input.write) {
+		if (canWrite) {
 			try {
 				wt = createWorktree(task.cwd, run.id, task.id);
 			} catch {
 				wt = undefined; // git failure → in-place
 			}
 		}
-		const childCwd = wt?.path ?? task.cwd;
+		// Map a per-task cwd subpath into the worktree so relative paths stay correct.
+		let childCwd = wt?.path ?? task.cwd;
+		if (wt) {
+			const rel = relative(wt.root, task.cwd);
+			if (rel && !rel.startsWith("..") && rel !== ".") childCwd = join(wt.path, rel);
+		}
 
 		// Model + thinking resolve against the pi model registry; a bad request
 		// fails the TASK with a helpful message, not the whole run.
@@ -818,15 +832,30 @@ export class SubagentManager {
 					// Commit the child's changes, then report the branch + diff so the
 					// leader can review and merge (PR-style). The worktree dir stays
 					// until the branch is merged — cleanupMerged removes both then.
-					commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
-					const { stat, files } = branchDiff(wt);
-					this.updateTask(
-						run,
-						task,
-						{ branch: wt.branch, diffStat: stat || undefined, changedFiles: files.length ? files : undefined },
-						ctx,
-						onUpdate,
-					);
+					// Commit/diff failures must NOT downgrade a completed task or destroy
+					// its work: the error is reported, the status stays completed.
+					try {
+						commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
+						const { stat, files } = branchDiff(wt);
+						this.updateTask(
+							run,
+							task,
+							{ branch: wt.branch, diffStat: stat || undefined, changedFiles: files.length ? files : undefined },
+							ctx,
+							onUpdate,
+						);
+					} catch (commitErr) {
+						this.updateTask(
+							run,
+							task,
+							{
+								branch: wt.branch,
+								error: `Worktree commit failed (changes remain in ${wt.path}): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
+							},
+							ctx,
+							onUpdate,
+						);
+					}
 				}
 			}
 		} catch (err) {
@@ -861,9 +890,14 @@ export class SubagentManager {
 			watchdog.dispose();
 			if (timeout) clearTimeout(timeout);
 			child?.dispose();
-			// Failed/aborted: the branch keeps any partial work for manual merging, the
-			// checkout dir is removed so it can't linger on disk.
+			// Failed/aborted: commit whatever partial work exists FIRST (so the branch
+			// really keeps it), then drop the checkout dir.
 			if (wt && task.status !== "completed") {
+				try {
+					commitWorktree(wt, `subagent ${task.agent} (partial, ${task.status})`);
+				} catch {
+					/* nothing to commit */
+				}
 				this.updateTask(run, task, { branch: wt.branch }, ctx, onUpdate);
 				removeWorktree(wt);
 			}
@@ -898,11 +932,23 @@ export class SubagentManager {
 				? params.tasks!
 				: params.chain!;
 		if (inputs.length > MAX_TASKS) throw new Error(`Too many subagent tasks (${inputs.length}). Max is ${MAX_TASKS}.`);
+		// Task ids become git refs + filesystem paths — refuse anything unsafe.
+		// Explicit ids are checked against each other; generated ones are checked
+		// against explicit ones so a collision can't silently fall back to in-place.
 		const ids = new Set<string>();
 		for (const input of inputs) {
 			if (input.id !== undefined) {
+				if (!SAFE_TASK_ID.test(input.id)) {
+					throw new Error(`Unsafe task id: "${input.id}" (allowed: letters, digits, _ and - only).`);
+				}
 				if (ids.has(input.id)) throw new Error(`Duplicate task id: ${input.id}`);
 				ids.add(input.id);
+			}
+		}
+		for (let i = 0; i < inputs.length; i++) {
+			const generated = `task_${i + 1}`;
+			if (inputs[i]?.id === undefined && ids.has(generated)) {
+				throw new Error(`Generated task id ${generated} collides with an explicit id — rename the explicit id.`);
 			}
 		}
 		const edges = resolveNeeds(inputs, mode);
@@ -968,14 +1014,19 @@ export class SubagentManager {
 		for (const task of run.tasks) {
 			if (TERMINAL.includes(task.status)) settled.add(task.id); // canceled before start
 		}
+		// id → input, immune to filtered-array index drift (C4).
+		const inputById = new Map(run.tasks.map((t, i) => [t.id, inputs[i]]));
 
 		const { skipped } = await runWaveScheduler(
 			run.tasks.filter((t) => !TERMINAL.includes(t.status)),
 			run.mode === "single" ? 1 : run.concurrency,
 			outputs,
 			settled,
-			async (task, index) => {
-				const input = inputs[index]!;
+			async (task) => {
+				// The scheduler passes the index into the FILTERED list — never use it
+				// against the unfiltered inputs. Look the input up by task id instead.
+				const input = inputById.get(task.id);
+				if (!input) return;
 				await this.runChild(
 					run,
 					task,
