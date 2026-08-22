@@ -102,4 +102,26 @@ describe("cancel", () => {
 		const snap = await m.awaitRun(run.id);
 		expect(snap?.run?.status).toBe("aborted");
 	});
+	test("every parked awaiter resolves on settle (no chain, no starvation)", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		const waits = [m.awaitRun(run.id), m.awaitRun(run.id), m.awaitRun(run.id)];
+		m.cancelRun(run.id);
+		const settled = await Promise.all(waits);
+		expect(settled.every((s) => s?.run?.status === "aborted")).toBe(true);
+	});
+	test("cancelRun releases a child parked on ask_parent", async () => {
+		const m = makeManager();
+		const { run } = m.createRun({ tasks: [{ agent: "a", task: "t1" }] }, stubCtx);
+		// Stand in for a child waiting in ask_parent.
+		const waiting = new Promise<string>((resolve) => {
+			(m as unknown as { pendingReplies: Map<string, { resolve: (m: string) => void }> }).pendingReplies.set(
+				`${run.id}:task_1`,
+				{ resolve },
+			);
+		});
+		m.cancelRun(run.id);
+		expect(await waiting).toContain("canceled");
+		expect(m.deliverReply(run.id, "task_1", "late answer")).toBe(false); // entry already gone
+	});
 });

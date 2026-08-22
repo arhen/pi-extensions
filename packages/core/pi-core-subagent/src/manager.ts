@@ -59,6 +59,8 @@ export const MAX_CONCURRENCY = 8;
 /** No default wall-clock cap: a subagent runs until its task is done, it stalls, or the user aborts. */
 const DEFAULT_RUNTIME_MS = 0;
 const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
+/** Cap on a child's wait for reply_subagent — an ignored question must not pin the run open forever. */
+const PARENT_REPLY_TIMEOUT_MS = 600_000; // 10 min
 const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
 /** Tools that can mutate the tree — their presence is what earns a worktree. */
@@ -222,7 +224,10 @@ export interface ParkedMsg {
 
 export class SubagentManager {
 	private runs = new Map<string, RunSnapshot>();
-	private settlers = new Map<string, (run: RunSnapshot) => void>();
+	/** Runs that are still settleable (presence = not yet settled). */
+	private settlers = new Map<string, true>();
+	/** Everyone parked on a run — a set, so re-parking can't build a closure chain. */
+	private settleWaiters = new Map<string, Set<(run: RunSnapshot) => void>>();
 	private pendingReplies = new Map<string, PendingReply>();
 	private liveChildren = new Map<
 		string,
@@ -302,6 +307,7 @@ export class SubagentManager {
 		this.liveWorktrees.clear();
 		this.runs.clear();
 		this.settlers.clear();
+		this.settleWaiters.clear();
 		this.pendingReplies.clear();
 		this.runControllers.clear();
 		this.mailboxes = createMailbox();
@@ -512,31 +518,24 @@ export class SubagentManager {
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
 		return {
 			onAskParent: async (_taskId, question) => {
+				const key = `${run.id}:${task.id}`;
 				this.updateTask(run, task, { status: "awaiting_parent" }, ctx);
-				this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog();
-				// While the leader is parked in await_subagent, the question rides the wait
-				// instead of the steering queue — no boundary needed, no starvation.
-				if (this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
-					// The parked leader gets the question inside its await result and answers
-					// with reply_subagent — so the pending entry MUST exist here too, or the
-					// reply lands nowhere and the child waits on an answer that never comes.
-					const keepAlive = setInterval(() => this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog(), 30_000);
-					try {
-						const reply = await this.awaitParentReply(run.id, task.id);
-						this.updateTask(run, task, { status: "running" }, ctx);
-						this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog();
-						return reply;
-					} finally {
-						clearInterval(keepAlive);
-					}
+				this.liveChildren.get(key)?.touchWatchdog();
+				// While the leader is parked in await_subagent the question rides the wait
+				// (no steering queue, no turn boundary); otherwise it goes out as a notice.
+				// Either way the pending reply entry must exist, or reply_subagent has
+				// nowhere to land and the child waits on an answer that never comes.
+				if (!this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
+					this.notifyParent(run, "asked", { taskId: task.id, question });
 				}
-				this.notifyParent(run, "asked", { taskId: task.id, question });
-				// M3: a waiting child is not stalled — keep the watchdog fed until the reply.
-				const keepAlive = setInterval(() => this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog(), 30_000);
+				// A waiting child is not stalled — keep the watchdog fed until the reply.
+				// But the wait is BOUNDED: an unanswered question would otherwise keep the
+				// run non-terminal forever (widget never clears, run never settles).
+				const keepAlive = setInterval(() => this.liveChildren.get(key)?.touchWatchdog(), 30_000);
 				try {
-					const reply = await this.awaitParentReply(run.id, task.id);
+					const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
 					this.updateTask(run, task, { status: "running" }, ctx);
-					this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog();
+					this.liveChildren.get(key)?.touchWatchdog();
 					return reply;
 				} finally {
 					clearInterval(keepAlive);
@@ -576,9 +575,24 @@ export class SubagentManager {
 			onPollMailbox: (taskId) => this.mailboxes.poll(`${run.id}:${taskId}`),
 		};
 	}
-	private awaitParentReply(runId: string, taskId: string): Promise<string> {
+	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Promise<string> {
+		const key = `${runId}:${taskId}`;
 		return new Promise<string>((resolve) => {
-			this.pendingReplies.set(`${runId}:${taskId}`, { resolve });
+			const timer =
+				timeoutMs > 0
+					? setTimeout(() => {
+							this.pendingReplies.delete(key);
+							resolve(
+								"The parent did not answer in time. Proceed autonomously with your best judgment and state the assumption you made in your final answer.",
+							);
+						}, timeoutMs)
+					: undefined;
+			this.pendingReplies.set(key, {
+				resolve: (message) => {
+					if (timer) clearTimeout(timer);
+					resolve(message);
+				},
+			});
 		});
 	}
 	deliverReply(runId: string, taskId: string, message: string): boolean {
@@ -1041,7 +1055,7 @@ export class SubagentManager {
 		});
 		this.turnActivity = true;
 		this.runs.set(run.id, run);
-		this.settlers.set(run.id, () => {});
+		this.settlers.set(run.id, true);
 		this.runControllers.set(run.id, new AbortController());
 		for (const task of run.tasks) this.mailboxes.open(`${run.id}:${task.id}`);
 		this.emit("subagent:run-created", { run: cloneRun(run) });
@@ -1216,6 +1230,8 @@ export class SubagentManager {
 		task.status = "aborted";
 		task.error = task.error || "Canceled from peek";
 		task.endedAt = Date.now();
+		this.pendingReplies.get(`${runId}:${taskId}`)?.resolve("(task canceled by the parent — stop work now)");
+		this.pendingReplies.delete(`${runId}:${taskId}`);
 		this.liveChildren.get(`${runId}:${taskId}`)?.abort();
 		this.mailboxes.close(`${runId}:${taskId}`);
 		if (ctx) this.flushWidget(run, ctx);
@@ -1229,6 +1245,14 @@ export class SubagentManager {
 		if (TERMINAL.includes(run.status)) return { aborted: 0 }; // never corrupt a finished run
 		let aborted = 0;
 		this.runControllers.get(runId)?.abort();
+		// Release children parked in ask_parent first — an unresolved wait would keep
+		// the child alive past the abort.
+		for (const [key, pending] of this.pendingReplies) {
+			if (key.startsWith(`${runId}:`)) {
+				this.pendingReplies.delete(key);
+				pending.resolve("(run canceled by the parent — stop work and return what you have)");
+			}
+		}
 		for (const [key, child] of this.liveChildren) {
 			if (key.startsWith(`${runId}:`)) {
 				child.abort();
@@ -1254,12 +1278,15 @@ export class SubagentManager {
 		return { aborted };
 	}
 
-	/** Settle-and-delete: awaiters resolve once; no leak, no closure chain. */
+	/** Settle-and-delete: every awaiter resolves once, then the set is dropped. */
 	private settleRun(runId: string, run: RunSnapshot): void {
-		const s = this.settlers.get(runId);
-		if (!s) return;
+		if (!this.settlers.has(runId)) return;
 		this.settlers.delete(runId);
-		s(cloneRun(run));
+		const waiters = this.settleWaiters.get(runId);
+		this.settleWaiters.delete(runId);
+		if (!waiters) return;
+		const snapshot = cloneRun(run);
+		for (const waiter of waiters) waiter(snapshot);
 	}
 
 	/** Child→leader messages collected while the parent is parked in await_subagent. */
@@ -1289,14 +1316,22 @@ export class SubagentManager {
 		}
 		const msgs: ParkedMsg[] = [];
 		const settled = new Promise<RunSnapshot | undefined>((resolve) => {
-			const prev = this.settlers.get(runId);
-			this.settlers.set(runId, (r) => {
-				prev?.(r);
+			// Waiters are a SET, not a chain: the autoAwait loop re-parks on every
+			// child message, and wrapping the previous settler each time grew an
+			// unbounded closure chain (each holding a snapshot clone).
+			const waiter = (r: RunSnapshot) => {
+				this.settleWaiters.get(runId)?.delete(waiter);
 				resolve(r);
-			});
+			};
+			let waiters = this.settleWaiters.get(runId);
+			if (!waiters) {
+				waiters = new Set();
+				this.settleWaiters.set(runId, waiters);
+			}
+			waiters.add(waiter);
 			// A child→leader message while parked wakes the wait: the leader gets it
 			// IN the await result, no steering queue, no turn boundary needed.
-			this.parked.set(runId, { msgs, wake: () => resolve(cloneRun(run)) });
+			this.parked.set(runId, { msgs, wake: () => waiter(cloneRun(run)) });
 		});
 		if (timeoutMs !== undefined && timeoutMs > 0) {
 			return Promise.race([

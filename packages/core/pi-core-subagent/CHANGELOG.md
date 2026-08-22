@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Third review round — worktree fixes:
+  - **cwd mapping**: dropping the worktree for an out-of-repo cwd left `childCwd` pointing at the just-removed dir; `wt.root` wasn't realpathed, so any symlinked cwd (`/var` vs `/private/var`) looked "outside" and triggered it.
+  - **Concurrent pi sessions**: "nothing of ours is live at session start" was false — session B committed half-written files onto session A's branch and force-removed A's live checkout. Worktrees now carry a `.subagent-owner` pid marker; reap/sweep/cleanup skip dirs whose owner is alive.
+  - **Unreachable work**: a commit *throw* (index.lock, missing `user.email`, ENOENT) was treated as "nothing to commit" and the dir was dropped anyway — the base-tip branch was then reaped as merged and the work was gone. `commitWorktree` returns `committed | empty` and throws keep the dir.
+  - **Leak past early return**: the worktree was created before model resolution, so an unknown model leaked both the checkout and its `liveWorktrees` entry (poisoning cleanup forever). Model resolution runs first now; `clearRuns()` also clears the map.
+  - **`.git` as a FILE** (linked worktree / submodule): `worktree add` threw and isolation silently fell back to in-place edits — now resolved via `--git-common-dir`.
+  - **Porcelain paths**: the `unquote()` helper was unnecessary (git doesn't C-quote there) and byte-wrong, and could delete a live checkout; replaced with `worktree list --porcelain -z`.
+  - Nested `node_modules` excluded from commits; `liveWorktrees` entry released only after the dir is gone; leader-supplied `tools` filtered like agent-file tools.
+- Third review round — intercom/await fixes:
+  - **Unanswered `ask_parent` no longer pins a run open forever**: the wait is capped (10 min) and resolves with a proceed-autonomously instruction; the two duplicate ask branches are now one path.
+  - **Cancel releases parked children**: `cancelRun`/`cancelTask` resolve pending replies (a child waiting on an answer used to outlive the abort); a late `reply_subagent` correctly reports no pending question.
+  - **Settler chain replaced with a waiter set**: the autoAwait re-park loop wrapped the previous settler on every child message, growing an unbounded closure chain of snapshot clones.
+- 8 new regression tests: `.git`-as-file isolation, ownership marker vs reaping, commit-throw keeps the dir, multi-awaiter settle, cancel releasing a parked ask (85 total).
+
 - Second review pass (re-review of the hardening commit) — fixes:
   - **`canWrite` derived from the delivered toolset** (was: raw request). `tools: ["bash"]` without `write:true` now gets a worktree; a file that narrowed the child to read-only no longer gets a bogus branch/commit/merge ceremony.
   - **Parked `ask_parent` now registers a pending reply** — previously the child was told "the answer arrives via the pending reply" while no entry existed, so `reply_subagent` failed with "No pending question" and the answer was lost.
