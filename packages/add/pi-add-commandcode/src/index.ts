@@ -5,12 +5,12 @@
  * - Two endpoints on one base: Claude ids go to `/provider/v1/messages`
  *   (Anthropic Messages), everything else to `/provider/v1/chat/completions`.
  *   Calling the wrong one is a hard 400 `unsupported_model`.
- * - Models: fetched live from `GET /provider/v1/models`. The catalog carries only
- *   id / name / context_length — pricing and vision/reasoning caps are not exposed.
- *   Claude ids reuse pi's built-in Anthropic metadata (same rates, plus adaptive
- *   thinking + temperature flags); the rest come from CATALOG below.
- * - Claude ids absent from pi's catalog fall through to CATALOG, so a newly listed
- *   Claude model still registers (it just misses the adaptive-thinking flags).
+ * - Models are fetched in the extension factory, not on session_start: pi awaits
+ *   the factory, so the catalog is present for interactive startup and for
+ *   `pi --list-models` (docs/custom-provider.md, "Register New Provider").
+ * - `GET /provider/v1/models` returns only id/name/context_length, so pricing and
+ *   caps come from pi's built-in Anthropic catalog (Claude ids, verified identical
+ *   rates plus the adaptive-thinking flags) or CATALOG below (everything else).
  * - ZDR: `/commandcode zdr on` sends `x-cmd-zdr: 1`; models with no ZDR upstream
  *   then fail 422 `cmd_zdr_no_providers` (no silent non-ZDR fallback).
  *
@@ -23,26 +23,23 @@ import type {
   ProviderConfig,
   ProviderModelConfig,
 } from "@earendil-works/pi-coding-agent";
-import {
-  getAgentDir,
-  readStoredCredential,
-} from "@earendil-works/pi-coding-agent";
+import { getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+// pi's extension loader aliases only the pi-ai root, /compat, /oauth, and
+// /providers/all. Deeper paths (e.g. providers/anthropic.models) fail to resolve at
+// runtime and take the whole extension down, so use /compat, which is also typed.
+import { getModels } from "@earendil-works/pi-ai/compat";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-// providers/all is one of the few pi-ai subpaths pi's extension loader aliases;
-// deeper paths like providers/anthropic.models fail to resolve at runtime.
-import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 const BASE_URL = "https://api.commandcode.ai/provider/v1";
 // The Anthropic SDK posts to `<baseUrl>/v1/messages`, so Claude models drop the /v1.
 const ANTHROPIC_BASE_URL = "https://api.commandcode.ai/provider";
-// ponytail: gateway accepts up to 393216 on deepseek, but the cap is per-upstream and
-// undocumented. 32k fits reasoning+answer everywhere; raise per model if a run truncates.
-// Claude ids use pi's real per-model cap instead.
+// ponytail: the gateway accepts up to 393216 on deepseek, but the cap is per-upstream
+// and undocumented. 32k fits reasoning+answer everywhere; Claude ids use pi's real cap.
 const MAX_OUTPUT = 32768;
-// reasoning_effort accepts low|medium|high|xhigh|max — "none" is a 400, so off is
-// unsupported (null) and pi omits the field entirely instead.
+// reasoning_effort accepts low|medium|high|xhigh|max — "none" is a 400, so thinking-off
+// is unsupported (null) and pi omits the field entirely.
 const THINKING_MAP = {
   off: null,
   minimal: "low",
@@ -55,8 +52,7 @@ const THINKING_MAP = {
 
 // [input, output, cacheRead, cacheWrite, vision, reasoning] — USD per 1M tokens,
 // standard (non-long-context) tier. Source: https://commandcode.ai/docs/resources/pricing-limits
-// The /models endpoint publishes no pricing or caps; refresh this table when the docs move.
-// Claude ids are absent on purpose — ANTHROPIC_MODELS already has them, verified identical.
+// Claude ids are absent on purpose: pi's own catalog has them, verified identical.
 type Row = [number, number, number, number, 0 | 1, 0 | 1];
 const CATALOG: Record<string, Row> = {
   "gpt-5.6-sol": [5, 30, 0.5, 6.25, 1, 1],
@@ -133,25 +129,31 @@ async function saveState() {
   await writeFile(stateFile, JSON.stringify({ zdr: zdrOn }));
 }
 
-const isClaude = (id: string) => id.startsWith("claude-");
+function commandcodeKey(): string | undefined {
+  const cred = readStoredCredential("commandcode");
+  return (
+    (cred?.type === "api_key" ? cred.key : undefined) ??
+    process.env.COMMANDCODE_API_KEY
+  );
+}
 
-// `persist` stores full Model objects, so the provider tag has to be on each entry.
+// `persist` stores whole Model objects, so each entry carries its own provider tag.
 type MappedModel = ProviderModelConfig & {
   provider: string;
   baseUrl: string;
   api: "anthropic-messages" | "openai-completions";
 };
 
-const BUILTIN_CLAUDE = new Map<string, MappedModel>(
-  getBuiltinModels("anthropic").map((m) => [m.id, m as unknown as MappedModel]),
+const builtinClaude = new Map<string, MappedModel>(
+  getModels("anthropic").map((m) => [m.id, m as unknown as MappedModel]),
 );
 
 function mapModel(m: ModelCard): MappedModel {
-  const builtin = BUILTIN_CLAUDE.get(m.id);
-  if (isClaude(m.id) && builtin) {
-    // Reuse pi's Anthropic metadata wholesale: rates match the Command Code docs,
-    // and it carries forceAdaptiveThinking / supportsTemperature, which a
-    // hand-written entry would silently drop.
+  const builtin = builtinClaude.get(m.id);
+  if (builtin) {
+    // Reuse pi's Anthropic entry wholesale: rates match the Command Code docs and it
+    // carries forceAdaptiveThinking / supportsTemperature, which Opus 4.7+ and
+    // Sonnet 4.6 need and a hand-written entry would silently drop.
     return {
       ...builtin,
       provider: "commandcode",
@@ -179,55 +181,77 @@ function mapModel(m: ModelCard): MappedModel {
   };
 }
 
-function commandcodeKey(): string | undefined {
-  const cred = readStoredCredential("commandcode");
-  return (
-    (cred?.type === "api_key" ? cred.key : undefined) ??
-    process.env.COMMANDCODE_API_KEY
-  );
-}
-
-async function refreshModels(
-  context: RefreshModelsContext,
-): Promise<ProviderModelConfig[]> {
-  if (context.allowNetwork === false) return [...(context.stored?.models ?? [])];
+async function fetchCatalog(
+  signal?: AbortSignal,
+  etag?: string,
+): Promise<{ models: MappedModel[]; etag?: string } | "not-modified" | undefined> {
+  const key = commandcodeKey();
   const headers: Record<string, string> = { Accept: "application/json" };
-  const key = context.credential?.key ?? commandcodeKey();
   if (key) headers.Authorization = `Bearer ${key}`;
-  if (context.stored?.etag) headers["If-None-Match"] = context.stored.etag;
+  if (etag) headers["If-None-Match"] = etag;
   let res: Response;
   try {
-    res = await fetch(`${BASE_URL}/models`, { headers, signal: context.signal });
+    res = await fetch(`${BASE_URL}/models`, { headers, signal });
   } catch (err) {
     if ((err as Error).name === "AbortError") throw err;
-    return [...(context.stored?.models ?? [])]; // offline: keep last-known catalog
+    return undefined; // offline
   }
-  if (res.status === 304) {
-    await context.publish({ persist: context.stored });
-    return [...(context.stored?.models ?? [])];
-  }
+  if (res.status === 304) return "not-modified";
   if (!res.ok) {
     console.error(
       `[commandcode] models fetch failed: ${res.status} ${res.statusText}`,
     );
-    return [...(context.stored?.models ?? [])];
+    return undefined;
   }
   const data = (await res.json()) as { data?: ModelCard[] };
-  const models = (data.data ?? []).map(mapModel);
-  await context.publish({
-    persist: {
-      models,
-      etag: res.headers.get("etag") ?? undefined,
-      lastModified:
-        Date.parse(res.headers.get("last-modified") ?? "") || undefined,
-      checkedAt: Date.now(),
-    },
-  });
-  return models;
+  return {
+    models: (data.data ?? []).map(mapModel),
+    etag: res.headers.get("etag") ?? undefined,
+  };
+}
+
+// The return value REPLACES the provider's models, so every path must fall back to
+// the factory's catalog. Returning `context.stored` alone wipes it: the first refresh
+// runs before anything is persisted, so stored is empty and the 58 models vanish.
+function makeRefreshModels(factoryModels: MappedModel[]) {
+  return async function refreshModels(
+    context: RefreshModelsContext,
+  ): Promise<ProviderModelConfig[]> {
+    const fallback = context.stored?.models?.length
+      ? [...context.stored.models]
+      : factoryModels;
+    if (context.allowNetwork === false) return fallback;
+    let result: Awaited<ReturnType<typeof fetchCatalog>>;
+    try {
+      result = await fetchCatalog(context.signal, context.stored?.etag);
+    } catch {
+      return fallback; // aborted
+    }
+    if (result === undefined) return fallback; // offline or HTTP error
+    if (result === "not-modified") {
+      await context.publish({ persist: context.stored });
+      return fallback;
+    }
+    await context.publish({
+      persist: {
+        models: result.models,
+        etag: result.etag,
+        checkedAt: Date.now(),
+      },
+    });
+    return result.models;
+  };
 }
 
 export default async function (pi: ExtensionAPI) {
   await loadState();
+
+  // Fetched here rather than in session_start so pi has the catalog before startup
+  // finishes — that is what makes the models visible to `pi --list-models`.
+  const initial = await fetchCatalog().catch(() => undefined);
+  const models =
+    initial && initial !== "not-modified" ? initial.models : undefined;
+  const refreshModels = makeRefreshModels(models ?? []);
 
   const registerProvider = () => {
     const config: ProviderConfig = {
@@ -237,6 +261,9 @@ export default async function (pi: ExtensionAPI) {
       apiKey: "$COMMANDCODE_API_KEY",
       authHeader: true,
       headers: zdrOn ? { "x-cmd-zdr": "1" } : undefined,
+      // Omit `models` when the fetch failed: passing [] would wipe the catalog,
+      // while omitting it leaves the last-known models in place.
+      ...(models ? { models } : {}),
       refreshModels,
     };
     pi.registerProvider("commandcode", config);
@@ -251,13 +278,8 @@ export default async function (pi: ExtensionAPI) {
     ctx.ui.setStatus("commandcode", on ? "ZDR" : undefined);
   };
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", (_event, ctx) => {
     syncStatus(ctx, ctx.model);
-    if (commandcodeKey()) {
-      void ctx.modelRegistry
-        .refresh({ providers: ["commandcode"] })
-        .catch(() => {});
-    }
   });
 
   pi.on("model_select", (event, ctx) => {
@@ -266,36 +288,37 @@ export default async function (pi: ExtensionAPI) {
 
   pi.registerCommand("commandcode", {
     description: "Command Code: status / zdr [on|off]",
+    getArgumentCompletions: (prefix: string) => {
+      const items = ["zdr on", "zdr off"]
+        .filter((v) => v.startsWith(prefix))
+        .map((v) => ({ value: v, label: v }));
+      return items.length > 0 ? items : null;
+    },
     handler: async (args, ctx) => {
       const [cmd, ...rest] = (args ?? "").trim().split(/\s+/);
-      switch (cmd) {
-        case "zdr": {
-          zdrOn = rest[0] === "on" ? true : rest[0] === "off" ? false : !zdrOn;
-          await saveState();
-          registerProvider(); // re-register so the ZDR header change takes effect
-          syncStatus(ctx, ctx.model);
-          ctx.ui.notify(
-            `Command Code ZDR ${zdrOn ? "ON" : "off"} — ${
-              zdrOn
-                ? "requests send x-cmd-zdr: 1; models with no ZDR upstream fail with 422 cmd_zdr_no_providers"
-                : "requests may route to any upstream"
-            }`,
-            zdrOn ? "warning" : "info",
-          );
-          return;
-        }
-        default: {
-          const n =
-            ctx.modelRegistry.getProvider("commandcode")?.getModels().length ??
-            0;
-          ctx.ui.notify(
-            `Command Code: ${commandcodeKey() ? "logged in" : "no key (/login → Command Code or COMMANDCODE_API_KEY)"} · ` +
-              `${n} models · ZDR ${zdrOn ? "on" : "off"}\n` +
-              `Subcommand: /commandcode zdr [on|off]`,
-            "info",
-          );
-        }
+      if (cmd === "zdr") {
+        zdrOn = rest[0] === "on" ? true : rest[0] === "off" ? false : !zdrOn;
+        await saveState();
+        registerProvider(); // re-register so the ZDR header change takes effect
+        syncStatus(ctx, ctx.model);
+        ctx.ui.notify(
+          `Command Code ZDR ${zdrOn ? "ON" : "off"} — ${
+            zdrOn
+              ? "requests send x-cmd-zdr: 1; models with no ZDR upstream fail with 422 cmd_zdr_no_providers"
+              : "requests may route to any upstream"
+          }`,
+          zdrOn ? "warning" : "info",
+        );
+        return;
       }
+      const n =
+        ctx.modelRegistry.getProvider("commandcode")?.getModels().length ?? 0;
+      ctx.ui.notify(
+        `Command Code: ${commandcodeKey() ? "logged in" : "no key (/login → Command Code or COMMANDCODE_API_KEY)"} · ` +
+          `${n} models · ZDR ${zdrOn ? "on" : "off"}\n` +
+          `Subcommand: /commandcode zdr [on|off]`,
+        "info",
+      );
     },
   });
 }

@@ -28,6 +28,8 @@ The API is two endpoints on one base, and using the wrong one is a hard `400`:
 
 Routing is per model, so `/model` just works — pick any id and the right shape is sent.
 
+Models are fetched in the extension factory, which pi awaits before startup finishes, so the catalog is ready for interactive startup and `/model`. Fetching in `session_start` instead leaves the provider empty on first paint.
+
 ## Model metadata
 
 `GET /provider/v1/models` returns only `id`, `name`, and `context_length` — no pricing, no capability flags. So metadata comes from two sources:
@@ -36,10 +38,10 @@ Routing is per model, so `/model` just works — pick any id and the right shape
 - **Everything else** reads the `CATALOG` table in `src/index.ts`, transcribed from [pricing & limits](https://commandcode.ai/docs/resources/pricing-limits).
 
 ```sh
-npx tsx src/index.test.ts   # asserts every live model resolves to one source
+npx tsx src/index.test.ts   # runs the real factory against a stub API
 ```
 
-Run that after Command Code adds models. A model in neither source still registers, but bills as free and shows `reasoning: true` — the test fails rather than letting that ship.
+The test asserts every live model resolves to exactly one source, that Claude ids route to Messages with a `/v1`-less baseUrl, and that an offline refresh preserves the catalog rather than emptying it. Run it after Command Code adds models: a model in neither source still registers, but bills as free and claims `reasoning: true`, so the test fails rather than letting that ship.
 
 ## Zero Data Retention
 
