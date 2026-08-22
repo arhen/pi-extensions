@@ -1,9 +1,9 @@
 // Run: npx tsx src/index.test.ts   (hits the live public /models endpoint)
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 
-const builtin = ANTHROPIC_MODELS as Record<string, unknown>;
+const builtin = new Set(getBuiltinModels("anthropic").map((m) => m.id));
 const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const priced = [...src.matchAll(/^ {2}"([^"]+)": \[/gmu)].map((m) => m[1]);
 assert.equal(new Set(priced).size, priced.length, "duplicate id in CATALOG");
@@ -20,7 +20,7 @@ const claude = live.filter((id) => id.startsWith("claude-"));
 const rest = live.filter((id) => !id.startsWith("claude-"));
 assert.ok(claude.length > 0 && rest.length > 0, "endpoint split untested");
 
-const noMeta = claude.filter((id) => !builtin[id]);
+const noMeta = claude.filter((id) => !builtin.has(id));
 assert.deepEqual(noMeta, [], `claude ids absent from pi's catalog: ${noMeta}`);
 
 const unpriced = rest.filter((id) => !priced.includes(id));

@@ -9,6 +9,8 @@
  *   id / name / context_length — pricing and vision/reasoning caps are not exposed.
  *   Claude ids reuse pi's built-in Anthropic metadata (same rates, plus adaptive
  *   thinking + temperature flags); the rest come from CATALOG below.
+ * - Claude ids absent from pi's catalog fall through to CATALOG, so a newly listed
+ *   Claude model still registers (it just misses the adaptive-thinking flags).
  * - ZDR: `/commandcode zdr on` sends `x-cmd-zdr: 1`; models with no ZDR upstream
  *   then fail 422 `cmd_zdr_no_providers` (no silent non-ZDR fallback).
  *
@@ -26,7 +28,9 @@ import {
   readStoredCredential,
 } from "@earendil-works/pi-coding-agent";
 import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
+// providers/all is one of the few pi-ai subpaths pi's extension loader aliases;
+// deeper paths like providers/anthropic.models fail to resolve at runtime.
+import { getBuiltinModels } from "@earendil-works/pi-ai/providers/all";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
@@ -138,11 +142,12 @@ type MappedModel = ProviderModelConfig & {
   api: "anthropic-messages" | "openai-completions";
 };
 
-// ANTHROPIC_MODELS is a literal-keyed catalog; we look up ids that come from the wire.
-const BUILTIN_CLAUDE = ANTHROPIC_MODELS as Record<string, MappedModel | undefined>;
+const BUILTIN_CLAUDE = new Map<string, MappedModel>(
+  getBuiltinModels("anthropic").map((m) => [m.id, m as unknown as MappedModel]),
+);
 
 function mapModel(m: ModelCard): MappedModel {
-  const builtin = BUILTIN_CLAUDE[m.id];
+  const builtin = BUILTIN_CLAUDE.get(m.id);
   if (isClaude(m.id) && builtin) {
     // Reuse pi's Anthropic metadata wholesale: rates match the Command Code docs,
     // and it carries forceAdaptiveThinking / supportsTemperature, which a
