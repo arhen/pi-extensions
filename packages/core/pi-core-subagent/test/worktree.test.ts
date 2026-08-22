@@ -1,14 +1,25 @@
 /** Worktree isolation: create/commit/diff/cleanup against a real temp git repo. */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	branchDiff,
+	claimWorktree,
 	cleanupMerged,
 	commitWorktree,
 	createWorktree,
+	ownerAlive,
 	reapDeadWorktrees,
 	removeByBranch,
 	removeWorktree,
@@ -149,6 +160,44 @@ describe("worktree", () => {
 		expect(existsSync(wt.path)).toBe(true); // live checkout must survive
 		removeWorktree(wt);
 		rmSync(spaced, { recursive: true, force: true });
+	});
+
+	test("works when .git is a FILE (repo checked out as a linked worktree)", () => {
+		// A worktree of the temp repo: inside it, .git is a file, not a directory.
+		const host = createWorktree(repo, "run_host", "task_host")!;
+		expect(statSync(join(host.path, ".git")).isFile()).toBe(true);
+		const inner = createWorktree(host.path, "run_in", "task_in");
+		expect(inner).toBeDefined(); // used to throw → silent in-place fallback
+		expect(existsSync(join(inner!.path, "a.txt"))).toBe(true);
+		removeWorktree(inner!);
+		removeWorktree(host);
+	});
+
+	test("ownership marker protects another session's live checkout from reaping", () => {
+		const wt = createWorktree(repo, "run_own", "task_own")!;
+		claimWorktree(wt);
+		expect(ownerAlive(wt.path)).toBe(true); // this pid
+		writeFileSync(join(wt.path, "live.txt"), "in progress\n");
+		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(0); // owner alive → untouched
+		expect(existsSync(wt.path)).toBe(true);
+		// Dead owner: marker points at a pid that cannot exist.
+		writeFileSync(join(wt.path, ".subagent-owner"), "2147483647");
+		expect(ownerAlive(wt.path)).toBe(false);
+		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(1);
+		expect(existsSync(wt.path)).toBe(false);
+		expect(git(["show", "--name-only", "--format=", wt.branch])).toContain("live.txt");
+	});
+
+	test("reapDeadWorktrees keeps the dir when the commit fails (work must stay reachable)", () => {
+		const wt = createWorktree(repo, "run_lock", "task_lock")!;
+		writeFileSync(join(wt.path, "wip.txt"), "unsaved\n");
+		// index.lock makes every git write in this worktree fail.
+		const lock = join(repo, ".git", "worktrees", "task_lock", "index.lock");
+		writeFileSync(lock, "");
+		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(0);
+		expect(existsSync(wt.path)).toBe(true); // dir survives — work isn't on the branch yet
+		rmSync(lock, { force: true });
+		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(1); // now it can be committed + dropped
 	});
 
 	test("removeByBranch removes the worktree dir by branch name", () => {

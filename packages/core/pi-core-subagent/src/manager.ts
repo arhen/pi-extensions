@@ -45,6 +45,7 @@ import {
 } from "./types.ts";
 import {
 	branchDiff,
+	claimWorktree,
 	cleanupMerged,
 	commitWorktree,
 	createWorktree,
@@ -296,6 +297,9 @@ export class SubagentManager {
 			child.dispose();
 		}
 		this.liveChildren.clear();
+		// Ownership markers stay on disk; the next session reaps those dirs (commit,
+		// keep branch, drop dir) once this pid is gone.
+		this.liveWorktrees.clear();
 		this.runs.clear();
 		this.settlers.clear();
 		this.pendingReplies.clear();
@@ -683,33 +687,9 @@ export class SubagentManager {
 		const canWrite = baseTools.some((t) => WRITE_CAPABLE.includes(t));
 
 		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
-		// non-git repos fall back to in-place. The worktree is created BEFORE session
-		// start so the child's cwd + AGENTS.md context chain are the worktree's.
-		let wt: Worktree | undefined;
-		if (canWrite) {
-			try {
-				wt = createWorktree(task.cwd, run.id, task.id);
-			} catch {
-				wt = undefined; // git failure → in-place
-			}
-		}
-		// Map a per-task cwd subpath into the worktree so relative paths stay correct.
-		// If the mapping can't be trusted (cwd outside the repo via symlink), drop the
-		// worktree rather than run in the main tree while reporting a branch.
-		let childCwd = wt?.path ?? task.cwd;
-		if (wt) {
-			const rel = relative(wt.root, safeRealPath(task.cwd));
-			if (rel.startsWith("..")) {
-				removeWorktree(wt);
-				wt = undefined;
-			} else if (rel && rel !== ".") {
-				childCwd = join(wt.path, rel);
-			}
-		}
-		if (wt) this.liveWorktrees.set(`${run.id}:${task.id}`, wt);
-
-		// Model + thinking resolve against the pi model registry; a bad request
-		// fails the TASK with a helpful message, not the whole run.
+		// Model + thinking resolve against the pi model registry BEFORE any worktree
+		// exists — a bad request fails the TASK with a helpful message and can't leak a
+		// checkout past this early return.
 		let model: Model<Api> | undefined;
 		try {
 			model = resolveChildModel(ctx, file?.model ?? input.model);
@@ -729,6 +709,37 @@ export class SubagentManager {
 			return;
 		}
 
+		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
+		// non-git repos fall back to in-place. Created BEFORE session start so the
+		// child's cwd + AGENTS.md context chain are the worktree's.
+		let wt: Worktree | undefined;
+		if (canWrite) {
+			try {
+				wt = createWorktree(task.cwd, run.id, task.id);
+			} catch {
+				wt = undefined; // git failure → in-place
+			}
+		}
+		// Map a per-task cwd subpath into the worktree so relative paths stay correct.
+		// Both sides go through realpath — a symlinked root would otherwise look
+		// "outside" the repo. If the mapping can't be trusted, drop the worktree AND
+		// reset the cwd (never point the child at a dir that was just removed).
+		let childCwd = wt?.path ?? task.cwd;
+		if (wt) {
+			const rel = relative(safeRealPath(wt.root), safeRealPath(task.cwd));
+			if (rel.startsWith("..")) {
+				removeWorktree(wt);
+				wt = undefined;
+				childCwd = task.cwd;
+			} else if (rel && rel !== ".") {
+				childCwd = join(wt.path, rel);
+			}
+		}
+		if (wt) {
+			claimWorktree(wt); // pid marker: another pi session must not reap this
+			this.liveWorktrees.set(`${run.id}:${task.id}`, wt);
+		}
+
 		this.updateTask(
 			run,
 			task,
@@ -746,6 +757,9 @@ export class SubagentManager {
 			onUpdate,
 		);
 
+		// Set once the dir must outlive this call: committed work awaiting the
+		// leader's merge, or a commit failure whose work exists ONLY in the dir.
+		let keepWorktreeDir = false;
 		let child: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -865,6 +879,7 @@ export class SubagentManager {
 					// its work: the error is reported, the status stays completed.
 					try {
 						commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
+						keepWorktreeDir = true; // committed — dir stays until the leader merges
 						const { stat, files } = branchDiff(wt);
 						this.updateTask(
 							run,
@@ -874,12 +889,15 @@ export class SubagentManager {
 							onUpdate,
 						);
 					} catch (commitErr) {
+						// Never drop a checkout whose work isn't on the branch — it would be
+						// unreachable once the base-tip branch is reaped as "merged".
+						keepWorktreeDir = true;
 						this.updateTask(
 							run,
 							task,
 							{
 								branch: wt.branch,
-								error: `Worktree commit failed (changes remain in ${wt.path}): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
+								error: `Worktree commit failed (uncommitted changes remain in ${wt.path}): ${commitErr instanceof Error ? commitErr.message : String(commitErr)}`,
 							},
 							ctx,
 							onUpdate,
@@ -919,20 +937,23 @@ export class SubagentManager {
 			watchdog.dispose();
 			if (timeout) clearTimeout(timeout);
 			child?.dispose();
-			this.liveWorktrees.delete(key);
 			// Failed/aborted: let the aborted child's last writes land (its tools may
 			// still be unwinding), commit whatever partial work exists so the branch
-			// really keeps it, then drop the checkout dir.
+			// really keeps it, then drop the checkout dir. A commit FAILURE keeps the
+			// dir — dropping it would make the work unreachable.
 			if (wt && task.status !== "completed") {
 				await new Promise((r) => setTimeout(r, 250));
 				try {
 					commitWorktree(wt, `subagent ${task.agent} (partial, ${task.status})`);
 				} catch {
-					/* nothing to commit */
+					keepWorktreeDir = true;
 				}
 				this.updateTask(run, task, { branch: wt.branch }, ctx, onUpdate);
-				removeWorktree(wt);
 			}
+			if (wt && !keepWorktreeDir) removeWorktree(wt);
+			// Released only after the dir is gone: while it exists, the branch must stay
+			// in liveBranches() so cleanup can't reap it.
+			this.liveWorktrees.delete(key);
 		}
 	}
 

@@ -30,7 +30,7 @@ import {
 	type SubagentParamsShape,
 } from "./schemas.ts";
 import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
-import { cleanupMerged, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
+import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
@@ -126,11 +126,11 @@ export default function (pi: ExtensionAPI) {
 		}
 		for (const root of roots) {
 			try {
-				// Nothing of ours can be live at session start: every registered subagent
-				// worktree is a crash leftover — commit its work, keep the branch, drop the
-				// dir. Then reap merged branches and dirs git no longer tracks.
-				reapDeadWorktrees(root);
-				cleanupMerged(root);
+				// A registered subagent worktree is a crash leftover UNLESS another pi
+				// session still owns it (pid marker) — commit its work, keep the branch,
+				// drop the dir. Then reap merged branches and dirs git no longer tracks.
+				reapDeadWorktrees(root, ownerAlive);
+				cleanupMerged(root, { skipBranches: manager.liveBranches() });
 				sweepStale(root);
 			} catch {
 				/* recovery is best-effort — never block session start */

@@ -10,7 +10,7 @@
  *  touching a checked-out one), `sweepStale` (dirs git no longer knows about). */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export interface Worktree {
@@ -40,15 +40,6 @@ function gitOk(root: string, args: string[]): boolean {
 	}
 }
 
-/** git C-quotes porcelain paths containing spaces/specials — undo that. */
-function unquote(path: string): string {
-	if (!path.startsWith('"') || !path.endsWith('"')) return path;
-	return path
-		.slice(1, -1)
-		.replace(/\\([0-7]{3})/g, (_, o) => String.fromCharCode(Number.parseInt(o, 8)))
-		.replace(/\\(.)/g, (_, c) => ({ n: "\n", t: "\t", r: "\r" })[c as string] ?? c);
-}
-
 /** Compare paths through realpath so /var vs /private/var can't diverge. */
 function samePath(a: string, b: string): boolean {
 	if (a === b) return true;
@@ -73,14 +64,20 @@ export function repoRoot(cwd: string): string | undefined {
 export function createWorktree(cwd: string, runId: string, taskId: string): Worktree | undefined {
 	const root = repoRoot(cwd);
 	if (!root) return undefined;
-	const path = join(root, ".git", "subagents", runId, taskId);
-	const branch = `${BRANCH_PREFIX}${runId}/${taskId}`;
+	// --git-common-dir, not "<root>/.git": inside a linked worktree or a submodule
+	// `.git` is a FILE, and joining it would make `worktree add` fail (silently
+	// dropping isolation).
+	let container: string;
 	let base: string;
 	try {
+		const common = git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+		container = join(common, "subagents");
 		base = git(root, ["rev-parse", "HEAD"]); // SHA — detached HEAD stays correct
 	} catch {
 		return undefined; // broken repo — fall back to in-place
 	}
+	const path = join(container, runId, taskId);
+	const branch = `${BRANCH_PREFIX}${runId}/${taskId}`;
 	git(root, ["worktree", "add", "-b", branch, path, "HEAD"]);
 	// Deps follow the child into the worktree; anything else the task needs is
 	// project content already checked out there.
@@ -98,16 +95,20 @@ export function createWorktree(cwd: string, runId: string, taskId: string): Work
 /**
  * Commit the child's changes. Stages first, then commits only when something is
  * actually staged — an untracked node_modules symlink must not fake "dirty" and
- * turn into a failed empty commit.
+ * turn into a failed empty commit. Returns "committed" | "empty"; a real git
+ * failure THROWS, and callers must not delete the checkout in that case (the
+ * work would become unreachable once the base-tip branch is reaped as merged).
  */
-export function commitWorktree(wt: Worktree, message: string): void {
-	commitIn(wt.path, message);
+export function commitWorktree(wt: Worktree, message: string): "committed" | "empty" {
+	return commitIn(wt.path, message);
 }
 
-function commitIn(dir: string, message: string): void {
-	gitIn(dir, ["add", "-A", "--", ".", ":(exclude)node_modules"]); // never stage the dep symlink
-	if (gitIn(dir, ["diff", "--cached", "--name-only"]).length === 0) return; // nothing to commit
+function commitIn(dir: string, message: string): "committed" | "empty" {
+	// Exclude the root dep symlink and any nested node_modules the child created.
+	gitIn(dir, ["add", "-A", "--", ".", ":(exclude)node_modules", ":(exclude,glob)**/node_modules/**"]);
+	if (gitIn(dir, ["diff", "--cached", "--name-only"]).length === 0) return "empty";
 	gitIn(dir, ["commit", "-m", message, "--no-verify"]);
+	return "committed";
 }
 
 /** Diffstat + changed files of the branch vs its base SHA. */
@@ -129,7 +130,17 @@ export function removeByBranch(cwd: string, branch: string): void {
 	if (!branch.startsWith(BRANCH_PREFIX)) return;
 	const root = repoRoot(cwd);
 	if (!root) return;
-	dropDir(root, join(root, ".git", "subagents", branch.slice(BRANCH_PREFIX.length)));
+	const container = subagentsDir(root);
+	if (container) dropDir(root, join(container, branch.slice(BRANCH_PREFIX.length)));
+}
+
+/** `<git-common-dir>/subagents` — where our worktrees live for this repo. */
+function subagentsDir(root: string): string | undefined {
+	try {
+		return join(git(root, ["rev-parse", "--path-format=absolute", "--git-common-dir"]), "subagents");
+	} catch {
+		return undefined;
+	}
 }
 
 function dropDir(root: string, path: string): void {
@@ -169,11 +180,13 @@ export function cleanupMerged(root: string, opts: { skipBranches?: Set<string>; 
 		.split("\n")
 		.map((b) => b.trim().replace(/^[+*]\s*/, ""));
 	let cleaned = 0;
+	const container = subagentsDir(root);
 	for (const branch of merged) {
-		if (!branch.startsWith(BRANCH_PREFIX)) continue;
+		if (!branch.startsWith(BRANCH_PREFIX) || !container) continue;
 		if (opts.skipBranches?.has(branch)) continue; // owned by a live run
 		if (isCheckedOut(root, branch)) continue; // fresh re-check, not a stale snapshot
-		const path = join(root, ".git", "subagents", branch.slice(BRANCH_PREFIX.length));
+		const path = join(container, branch.slice(BRANCH_PREFIX.length));
+		if (existsSync(path) && ownerAlive(path)) continue; // another session's live checkout
 		if (existsSync(path)) {
 			try {
 				git(root, ["worktree", "remove", "--force", path]);
@@ -190,10 +203,10 @@ export function cleanupMerged(root: string, opts: { skipBranches?: Set<string>; 
 /** Branch names currently checked out in any worktree (incl. the main one). */
 function worktreeBranches(root: string): string[] {
 	try {
-		return git(root, ["worktree", "list", "--porcelain"])
-			.split("\n")
+		return git(root, ["worktree", "list", "--porcelain", "-z"])
+			.split("\0")
 			.filter((l) => l.startsWith("branch "))
-			.map((l) => l.slice("branch refs/heads/".length).trim());
+			.map((l) => l.slice("branch refs/heads/".length));
 	} catch {
 		return [];
 	}
@@ -204,22 +217,48 @@ function worktreeBranches(root: string): string[] {
  * (nothing of ours can be live yet). Commit whatever the dead child left so the
  * branch keeps it, then drop the dir. Branches always survive.
  */
-export function reapDeadWorktrees(root: string): number {
+export function reapDeadWorktrees(root: string, isLive: (path: string) => boolean = () => false): number {
 	root = realpathSync(root);
-	const sub = join(root, ".git", "subagents");
-	if (!existsSync(sub)) return 0;
+	const sub = subagentsDir(root);
+	if (!sub || !existsSync(sub)) return 0;
 	let reaped = 0;
 	for (const path of worktreePaths(root)) {
 		if (!isInside(path, sub)) continue; // not ours
+		if (isLive(path)) continue; // another pi session owns it
 		try {
 			commitIn(path, "subagent (recovered after interrupted session)");
 		} catch {
-			/* nothing committable */
+			continue; // git failed — never drop a dir whose work isn't on the branch
 		}
 		dropDir(root, path);
 		reaped += 1;
 	}
 	return reaped;
+}
+
+/**
+ * Ownership marker: a live worktree gets `<dir>/.subagent-owner` holding the
+ * owning pid. Another pi session must not reap a checkout whose owner is alive.
+ */
+export function claimWorktree(wt: Worktree): void {
+	try {
+		writeFileSync(join(wt.path, ".subagent-owner"), String(process.pid));
+	} catch {
+		/* best-effort: worst case another session reaps it after a crash */
+	}
+}
+
+/** True when the worktree dir is claimed by a process that still exists. */
+export function ownerAlive(path: string): boolean {
+	try {
+		const pid = Number.parseInt(readFileSync(join(path, ".subagent-owner"), "utf8").trim(), 10);
+		if (!Number.isFinite(pid) || pid <= 0) return false;
+		if (pid === process.pid) return true;
+		process.kill(pid, 0); // throws ESRCH when the owner is gone
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -229,25 +268,27 @@ export function reapDeadWorktrees(root: string): number {
  */
 export function sweepStale(root: string): void {
 	root = realpathSync(root);
-	const sub = join(root, ".git", "subagents");
-	if (!existsSync(sub)) return;
+	const sub = subagentsDir(root);
+	if (!sub || !existsSync(sub)) return;
 	const registered = worktreePaths(root);
 	for (const runDir of readDirs(sub)) {
 		for (const taskDir of readDirs(join(sub, runDir))) {
 			const dir = join(sub, runDir, taskDir);
 			if (registered.some((p) => samePath(p, dir))) continue; // live/registered worktree
+			if (ownerAlive(dir)) continue; // claimed by a running session
 			rmSync(dir, { recursive: true, force: true });
 		}
 	}
 	prune(root);
 }
 
+/** Registered worktree paths. `-z` keeps paths verbatim (no C-quoting to undo). */
 function worktreePaths(root: string): string[] {
 	try {
-		return git(root, ["worktree", "list", "--porcelain"])
-			.split("\n")
+		return git(root, ["worktree", "list", "--porcelain", "-z"])
+			.split("\0")
 			.filter((l) => l.startsWith("worktree "))
-			.map((l) => unquote(l.slice("worktree ".length).trim()));
+			.map((l) => l.slice("worktree ".length));
 	} catch {
 		return [];
 	}
