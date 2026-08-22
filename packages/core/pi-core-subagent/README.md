@@ -238,7 +238,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 | Tool | Purpose |
 |---|---|
-| `subagent` | single / `tasks` (parallel or graph via `needs`) / `chain` (`{previous}`); background is the default (`background:false` for inline result in this turn); `allowIntercom:true` enables child talk tools; `notifyPerTask` (default true) wakes you as each task completes (background runs only) |
+| `subagent` | single / `tasks` (parallel or graph via `needs`) / `chain` (`{previous}`); every run is background — returns a runId, completion notifies you; `autoAwait:true` parks the call until the run finishes and returns the final result inline; `allowIntercom:true` enables child talk tools; `notifyPerTask` (default true) wakes you as each task completes |
 | `subagent_status` | live per-task snapshot (non-blocking), including each child's session file path |
 | `subagent_result` | full output of a run or one task |
 | `await_subagent` | block until a run finishes (optional `timeoutMs`) |
@@ -248,7 +248,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 ### Per-task fields
 
-`agent` (name you invent — required), `task` (required), `prompt` (system prompt, optional — minimal default used), `write` (toolset, default read-only), plus optional `model` (`provider/model-id`), `thinking` (validated enum: `off|minimal|low|medium|high|xhigh|max`), `tools` (explicit allowlist), `cwd`, `maxRuntimeMs`, `id`, `needs` (dependency edges — see [Graph mode](#graph-mode--needs)). Top-level only: `background`, `notifyPerTask`, `allowIntercom`, `concurrency`.
+`agent` (name you invent — required), `task` (required), `prompt` (system prompt, optional — minimal default used), `write` (toolset, default read-only), plus optional `model` (`provider/model-id`), `thinking` (validated enum: `off|minimal|low|medium|high|xhigh|max`), `tools` (explicit allowlist), `cwd`, `maxRuntimeMs`, `id`, `needs` (dependency edges — see [Graph mode](#graph-mode--needs)). Top-level only: `autoAwait`, `notifyPerTask`, `allowIntercom`, `concurrency`.
 
 ### Child talk tools (when `allowIntercom: true`)
 
@@ -259,13 +259,12 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 | `send_agent_message` | message to a sibling subagent's mailbox (`to` = its task id, or `"leader"`) |
 | `poll_agent_messages` | drain this subagent's mailbox |
 
-> **Intercom anti-deadlock:** children are told to never block indefinitely on intercom replies — `ask_parent` keeps the stall watchdog fed while awaiting a parent reply (background runs), and sibling polls are capped (~5 tries) with a proceed-with-best-judgment fallback. Gated siblings (later waves) may not be running yet — waiting on them is the top stall cause, so children are instructed not to.
+> **Intercom anti-deadlock:** children are told to never block indefinitely on intercom replies — `ask_parent` keeps the stall watchdog fed while awaiting a parent reply, and sibling polls are capped (~5 tries) with a proceed-with-best-judgment fallback. Gated siblings (later waves) may not be running yet — waiting on them is the top stall cause, so children are instructed not to.
 
 ## Commands
 
 - `/subagents` — list runs; `/subagents peek` (or `ctrl+shift+a`) — browsable pane
-- `/subagents auto-bg on|off` — toggle background-by-default for subagent calls (persists to `~/.pi/agent/subagents-config.json`; default on). `off` makes calls block until the run finishes, result inline in the same turn. Bare `/subagents auto-bg` shows the current state.
-- `/subagents auto-limit on|off` — toggle leader-imposed `maxRuntimeMs` caps (persists to the same config; default on). `off` strips ALL task timeouts: tasks run unlimited until done, stalled, or aborted — only for runs where a hard bound is genuinely required is a cap kept (none, when off). Bare `/subagents auto-limit` shows the current state.
+- `/subagents auto-limit on|off` — toggle leader-imposed `maxRuntimeMs` caps (persists to `~/.pi/agent/subagents-config.json`; default on). `off` strips ALL task timeouts: tasks run unlimited until done, stalled, or aborted — only for runs where a hard bound is genuinely required is a cap kept (none, when off). Bare `/subagents auto-limit` shows the current state.
 
 ## Peek — `/subagents peek` or `ctrl+shift+a`
 

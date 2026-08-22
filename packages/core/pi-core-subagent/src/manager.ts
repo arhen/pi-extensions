@@ -211,9 +211,6 @@ export class SubagentManager {
 	private widgetRuns: RunSnapshot[] = [];
 	private eventSeq = 0;
 
-	/** Default for `background` when the agent doesn't say — toggle via `/subagents auto-bg on|off`. */
-	private autoBg = true;
-
 	/** When false, strip leader-imposed maxRuntimeMs so tasks run unlimited — toggle via `/subagents auto-limit on|off`. */
 	private autoLimit = true;
 
@@ -222,35 +219,19 @@ export class SubagentManager {
 	constructor(private readonly pi: ExtensionAPI) {
 		try {
 			const cfg = JSON.parse(readFileSync(join(getAgentDir(), "subagents-config.json"), "utf8"));
-			if (typeof cfg.autoBg === "boolean") this.autoBg = cfg.autoBg;
 			if (typeof cfg.autoLimit === "boolean") this.autoLimit = cfg.autoLimit;
 		} catch {
 			/* no config yet — defaults */
 		}
 	}
 
-	/** Flip the background-by-default flag; persists to the agent dir. Returns the new value. */
-	setAutoBg(on: boolean): boolean {
-		this.autoBg = on;
-		void writeFile(
-			join(getAgentDir(), "subagents-config.json"),
-			JSON.stringify({ autoBg: on, autoLimit: this.autoLimit }, null, 2),
-		).catch(() => {});
-		return on;
-	}
-
 	/** Flip the auto-limit flag; persists to the agent dir. Returns the new value. */
 	setAutoLimit(on: boolean): boolean {
 		this.autoLimit = on;
-		void writeFile(
-			join(getAgentDir(), "subagents-config.json"),
-			JSON.stringify({ autoBg: this.autoBg, autoLimit: on }, null, 2),
-		).catch(() => {});
+		void writeFile(join(getAgentDir(), "subagents-config.json"), JSON.stringify({ autoLimit: on }, null, 2)).catch(
+			() => {},
+		);
 		return on;
-	}
-
-	get autoBgOn(): boolean {
-		return this.autoBg;
 	}
 
 	get autoLimitOn(): boolean {
@@ -392,7 +373,7 @@ export class SubagentManager {
 		if (kind !== "asked" && run.awaited) return; // parent already got the result via await_subagent
 		const body =
 			kind === "asked"
-				? `A background subagent is asking you a question (task ${extra?.taskId}): ${extra?.question ?? ""}\nReply with reply_subagent(runId: "${run.id}", taskId: "${extra?.taskId}", message: ...).`
+				? `A subagent is asking you a question (task ${extra?.taskId}): ${extra?.question ?? ""}\nReply with reply_subagent(runId: "${run.id}", taskId: "${extra?.taskId}", message: ...).`
 				: makeNotice(run, kind);
 		try {
 			this.pi.sendUserMessage(body, { deliverAs: "followUp" });
@@ -508,13 +489,6 @@ export class SubagentManager {
 				// instead of the steering queue — no boundary needed, no starvation.
 				if (this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
 					return "Your question was delivered to the parent (they're waiting on this run). Keep working; the answer arrives via the pending reply.";
-				}
-				// A blocking run's parent can't reply mid-tool (followUp only fires after the
-				// tool returns) — only background runs can truly wait for the answer.
-				if (!run.background) {
-					this.updateTask(run, task, { status: "running" }, ctx);
-					this.liveChildren.get(`${run.id}:${task.id}`)?.touchWatchdog();
-					return "Parent cannot answer while this run is blocking. Continue autonomously with your best judgment.";
 				}
 				this.notifyParent(run, "asked", { taskId: task.id, question });
 				// M3: a waiting child is not stalled — keep the watchdog fed until the reply.
@@ -890,7 +864,6 @@ export class SubagentManager {
 			id: newId("run"),
 			mode,
 			status: "queued",
-			background: params.background ?? this.autoBg,
 			allowIntercom: Boolean(params.allowIntercom),
 			notifyPerTask: params.notifyPerTask ?? true,
 			createdAt: Date.now(),
@@ -965,7 +938,7 @@ export class SubagentManager {
 					onUpdate,
 				);
 				if (task.status === "completed") outputs.set(task.id, task.finalText ?? "");
-				if (run.notifyPerTask && run.background && TERMINAL.includes(task.status)) {
+				if (run.notifyPerTask && TERMINAL.includes(task.status)) {
 					this.notifyTask(run, task, task.status as "completed" | "failed" | "aborted");
 				}
 			},
@@ -1012,17 +985,7 @@ export class SubagentManager {
 		this.persist(ctx);
 	}
 
-	async runBlocking(
-		params: SubagentParamsShape,
-		signal: AbortSignal | undefined,
-		onUpdate: ((partial: any) => void) | undefined,
-		ctx: ExtensionContext,
-	): Promise<RunDetails> {
-		const { run, inputs } = this.createRun(params, ctx);
-		await this.executeTasks(run, inputs, ctx, signal, onUpdate);
-		return { run: cloneRun(run) };
-	}
-
+	/** Spawn a run that keeps executing after this call returns. Every run is background. */
 	startInBackground(params: SubagentParamsShape, ctx: ExtensionContext): RunDetails {
 		const { run, inputs } = this.createRun(params, ctx);
 		void this.executeTasks(run, inputs, ctx, undefined, undefined)
@@ -1050,7 +1013,7 @@ export class SubagentManager {
 				this.notifyParent(run, "failed");
 				this.persist(ctx);
 			});
-		return { run: cloneRun(run), background: true };
+		return { run: cloneRun(run) };
 	}
 
 	/** Push a steering message into a live child's session. Returns false when unknown or not running. */

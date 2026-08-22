@@ -16,15 +16,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import {
-	compactLines,
-	formatUsage,
-	makeSummary,
-	statusIcon,
-	taskLine,
-	themedTaskLine,
-	truncateText,
-} from "./format.ts";
+import { compactLines, formatUsage, makeSummary, statusIcon, taskLine, truncateText } from "./format.ts";
 import { waveNotation } from "./graph.ts";
 import { cloneRun, SubagentManager } from "./manager.ts";
 import { createPeekPane, type PeekTask } from "./peek.ts";
@@ -77,8 +69,7 @@ export default function (pi: ExtensionAPI) {
 		);
 	};
 	pi.registerCommand("subagents", {
-		description:
-			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents auto-bg on|off` toggles background-by-default.",
+		description: "List subagent runs. `/subagents peek` opens the browsable pane.",
 		handler: async (args, ctx) => {
 			const arg = String(args ?? "")
 				.trim()
@@ -95,22 +86,6 @@ export default function (pi: ExtensionAPI) {
 				} else {
 					ctx.ui.notify(
 						`auto-limit is ${manager.autoLimitOn ? "on" : "off"} — use \`/subagents auto-limit on|off\` (off = tasks run unlimited until done).`,
-						"info",
-					);
-				}
-				return;
-			}
-			if (arg === "auto-bg" || arg.startsWith("auto-bg ")) {
-				const value = arg.split(/\s+/)[1];
-				if (value === "on" || value === "off") {
-					const next = manager.setAutoBg(value === "on");
-					ctx.ui.notify(
-						`auto-bg ${next ? "on" : "off"} — subagent calls default to ${next ? "background" : "blocking (inline result)"}.`,
-						"info",
-					);
-				} else {
-					ctx.ui.notify(
-						`auto-bg is ${manager.autoBgOn ? "on" : "off"} — use \`/subagents auto-bg on|off\` to change it.`,
 						"info",
 					);
 				}
@@ -152,7 +127,7 @@ export default function (pi: ExtensionAPI) {
 		// ponytail: this string is billed on every request. No example block — an example
 		// biases the model toward one shape; guidelines + JSON schema describe all of them.
 		description:
-			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. background is the default (returns a runId immediately; toggle via `/subagents auto-bg off`); set background:false when you need the result inline in this turn. allowIntercom:true lets children talk to you and each other.",
+			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. Every run is background: the call returns a runId immediately and completion notifies you. Set autoAwait:true when you need the result before your next step — the call parks until the run finishes and returns runId + final result in one response. allowIntercom:true lets children talk to you and each other.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
 			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
@@ -161,28 +136,33 @@ export default function (pi: ExtensionAPI) {
 			"Prefer flat `tasks` (plain parallel) unless a real dependency exists — only add `needs` edges when ordering genuinely matters.",
 			"End each task with a runnable check, e.g. 'Verify: npx tsc --noEmit && bun test'. A subagent's claim of success is not evidence.",
 			"Define each agent yourself: invented name, focused system prompt, and read-only (default) or write:true. Prefer read-only.",
-			"Prefer blocking (background:false) whenever the run's result is something you must wait for before your next step — do not default to background for work you depend on inline. When a background run is active, settle its pending results and task dependencies (await_subagent / subagent_result, then continue dependent work) before starting unrelated work.",
-			"For long multi-task runs, don't park the whole turn on one blocking call: start it in the background, then loop await_subagent with short timeoutMs slices (e.g. 20s), processing whichever tasks completed in each slice while the rest keep running. You get incremental results instead of one big blocking wait.",
+			"When you need a run's result before your next step, spawn with autoAwait:true — the call returns runId + final result in one response. Otherwise spawn background and settle results (await_subagent / subagent_result) before continuing dependent work.",
+			"For long multi-task runs, don't autoAwait the whole run: spawn background, then loop await_subagent with short timeoutMs slices (e.g. 20s), processing whichever tasks completed in each slice while the rest keep running. You get incremental results instead of one big wait.",
 			"allowIntercom:true only when a child may need to ask you something.",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel", // sibling subagent calls run concurrently, not serialized
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const typed = params as SubagentParamsShape;
-			if ((typed.background ?? manager.autoBgOn) && typed.background !== false) {
-				const details = manager.startInBackground(typed, ctx);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Background run started: ${details.run.id} (${details.run.mode}, ${details.run.tasks.length} task${details.run.tasks.length > 1 ? "s" : ""}).\nUse subagent_status / subagent_result / await_subagent / reply_subagent / subagent_cancel to interact.`,
-						},
-					],
-					details,
-				};
+			const details = manager.startInBackground(typed, ctx);
+			if (typed.autoAwait) {
+				// awaitRun wakes on every child→leader message (ask/notify/done) — that's the
+				// slice-loop feature. autoAwait wants the final result: re-park until terminal.
+				let run = details.run;
+				while (!TERMINAL.includes(run.status)) {
+					run = (await manager.awaitRun(details.run.id))?.run ?? run;
+				}
+				return { content: [{ type: "text", text: makeSummary(run) }], details: { run } };
 			}
-			const details = await manager.runBlocking(typed, signal, onUpdate, ctx);
-			return { content: [{ type: "text", text: makeSummary(details.run) }], details };
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Background run started: ${details.run.id} (${details.run.mode}, ${details.run.tasks.length} task${details.run.tasks.length > 1 ? "s" : ""}).\nUse subagent_status / subagent_result / await_subagent / reply_subagent / subagent_cancel to interact.`,
+					},
+				],
+				details,
+			};
 		},
 		renderCall(args, theme) {
 			// ponytail: args stream in partially, so mode is unknowable until JSON closes. Show "preparing…" instead of a wrong "single ?".
@@ -194,9 +174,7 @@ export default function (pi: ExtensionAPI) {
 					: args.agent
 						? `single ${args.agent}`
 						: "preparing…";
-			const flags = [(args.background ?? manager.autoBgOn) ? "bg" : "blocking", args.allowIntercom ? "a2a" : ""]
-				.filter(Boolean)
-				.join(" · ");
+			const flags = [args.autoAwait ? "await" : "bg", args.allowIntercom ? "a2a" : ""].filter(Boolean).join(" · ");
 			// Params used, dimmed: model, thinking, toolset, per-task write count.
 			const tasks = args.tasks ?? args.chain ?? [];
 			const writeCount = tasks.filter((t) => t.write).length;
@@ -237,18 +215,12 @@ export default function (pi: ExtensionAPI) {
 			const run = result.details?.run;
 			if (!run) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0);
 			// ponytail: mode/count already shown on the call line above; result header only adds progress + status.
-			const header = `${statusIcon(run.status)} ${theme.fg("accent", `${run.tasks.filter((t) => t.status === "completed").length}/${run.tasks.length} done`)}${run.background ? ` ${theme.fg("muted", "(background)")}` : ""} ${theme.fg("muted", run.status)}`;
+			const header = `${statusIcon(run.status)} ${theme.fg("accent", `${run.tasks.filter((t) => t.status === "completed").length}/${run.tasks.length} done`)} ${theme.fg("muted", run.status)}`;
 			if (!expanded) {
-				// Background: the spawn snapshot is always "0 tools" noise and the footer widget
-				// already shows live per-task state — keep the card to the header only.
-				if (run.background) {
-					const usage = formatUsage(run.aggregateUsage);
-					return new Text(usage ? `${header}\n${theme.fg("dim", usage)}` : header, 0, 0);
-				}
-				const lines = [header, ...run.tasks.map((task) => `  ${themedTaskLine(task, theme)}`)];
+				// Every run is background: the spawn snapshot is always "0 tools" noise and the footer
+				// widget already shows live per-task state — keep the card to the header only.
 				const usage = formatUsage(run.aggregateUsage);
-				if (usage) lines.push(theme.fg("dim", usage));
-				return new Text(lines.join("\n"), 0, 0);
+				return new Text(usage ? `${header}\n${theme.fg("dim", usage)}` : header, 0, 0);
 			}
 			const lines = [header];
 			for (const task of run.tasks) {

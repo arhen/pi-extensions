@@ -55,17 +55,15 @@ export const SubagentParams = Type.Object({
 				"Per-task timeout, ms. Omit for no cap (default): tasks run until done, stalled, or user-aborted. Do not add arbitrary caps — only set when a hard bound is genuinely required.",
 		}),
 	),
-	background: Type.Optional(
+	autoAwait: Type.Optional(
 		Type.Boolean({
 			description:
-				"Fire-and-forget: return immediately with a runId; you'll be notified on completion. Default true — set false when you need the result inline in this turn.",
-			default: true,
+				"Start the run in the background, then park this tool call until it finishes and return the final result inline (runId + summary in one response). Default false.",
 		}),
 	),
 	notifyPerTask: Type.Optional(
 		Type.Boolean({
-			description:
-				"Wake you (queued follow-up turn) as each task completes — background runs only, since blocking runs can't be woken mid-tool. Default true.",
+			description: "Wake you (queued follow-up turn) as each task completes. Default true.",
 			default: true,
 		}),
 	),

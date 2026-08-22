@@ -47,7 +47,6 @@ export interface RunSnapshot {
 	id: string;
 	mode: RunMode;
 	status: RunStatus;
-	background: boolean;
 	allowIntercom: boolean;
 	notifyPerTask: boolean;
 	createdAt: number;
@@ -62,7 +61,6 @@ export interface RunSnapshot {
 
 export interface RunDetails {
 	run: RunSnapshot;
-	background?: boolean;
 }
 
 export interface PendingReply {

@@ -213,7 +213,7 @@ export function makeSummary(run: RunSnapshot): string {
 	const aborted = run.tasks.filter((t) => t.status === "aborted").length;
 	const done = TERMINAL.includes(run.status) ? "finished" : "running";
 	const lines = [
-		`Run ${run.id}: Subagents ${run.mode}${run.background ? " (background)" : ""} ${done}: ${succeeded}/${run.tasks.length} succeeded${failed ? `, ${failed} failed` : ""}${aborted ? `, ${aborted} aborted` : ""}.`,
+		`Run ${run.id}: Subagents ${run.mode} ${done}: ${succeeded}/${run.tasks.length} succeeded${failed ? `, ${failed} failed` : ""}${aborted ? `, ${aborted} aborted` : ""}.`,
 	];
 	const usage = formatUsage(run.aggregateUsage);
 	if (usage) lines.push(`Usage: ${usage}`);
