@@ -241,9 +241,13 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 	const wt = task.branch
 		? ` · branch ${task.branch}${task.changedFiles?.length ? `, ${task.changedFiles.length} file(s)` : ""}`
 		: "";
+	// A matched agent file overrides prompt AND model — on a failure (bad model,
+	// 403, wrong persona) that override is the likeliest cause, so it has to be
+	// in the notice, not only in the run summary the leader may never read.
+	const src = task.agentFile ? `\nAgent file: ${task.agentFile}${task.model ? ` (model ${task.model})` : ""}` : "";
 	return [
 		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}${wt}`,
-		`Goal: ${goal}`,
+		`Goal: ${goal}${src}`,
 		`Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,
 	].join("\n");
 }

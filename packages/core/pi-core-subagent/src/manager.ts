@@ -755,6 +755,10 @@ export class SubagentManager {
 		try {
 			model = resolveChildModel(ctx, file?.model ?? input.model);
 			validateThinking(model, thinking);
+			// Record the model ACTUALLY used — an agent file's `model:` overrides the
+			// requested one, and showing the request in the widget hides that entirely
+			// (a 403 then names a model the leader never asked for).
+			if (model) this.updateTask(run, task, { model: model.id }, ctx, onUpdate);
 		} catch (err) {
 			this.updateTask(
 				run,

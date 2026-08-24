@@ -44,11 +44,40 @@ const STOP = new Set([
 	"how",
 	"what",
 	"who",
+	// Generic connectors/verbs that carry no routing signal. Two of these shared
+	// used to be enough to bind a task to an unrelated agent file (a "release
+	// audit" landing on a PRD writer via "from" + "user").
+	"from",
+	"into",
+	"user",
+	"note",
+	"creat",
+	"create",
+	"make",
+	"use",
+	"work",
+	"run",
+	"new",
+	"other",
+	"single",
+	"formal",
+	"description",
+	"this",
+	"that",
+	"it",
+	"all",
+	"any",
+	"per",
+	"via",
 ]);
 
 /** A body becomes the child's ENTIRE system prompt — an oversized reference file
  *  would blow the context window and kill the session with a cryptic error. */
 const MAX_BODY_CHARS = 64_000;
+/** A file takes over the prompt AND the model, so a weak match is expensive.
+ *  Both gates must pass: distinct shared terms, and share of the description. */
+const MIN_SHARED_TERMS = 2;
+const MIN_DESC_COVERAGE = 0.2;
 
 /** Per-cwd memo of the ancestor walk (project dirs then home), since the files
  *  can't meaningfully change within one run and the walk costs 3 sync stats per
@@ -72,10 +101,25 @@ function tokens(text: string): string[] {
 		});
 }
 
+/**
+ * Overlap between the spawn goal and a file's description.
+ *
+ * Absolute count alone is a bad signal: two shared filler words bound unrelated
+ * tasks to whichever agent file happened to share them, and the file then
+ * overrode the model too (403s on a plan without that model). Require BOTH a
+ * floor of distinct shared terms AND meaningful coverage of the description,
+ * so a match means "this file is about that", not "these strings brushed past
+ * each other".
+ */
 function score(query: string[], desc: string[]): number {
-	let shared = 0;
-	for (const t of query) if (desc.includes(t)) shared += 1;
-	return shared >= 2 ? shared : 0;
+	if (desc.length === 0) return 0;
+	const q = new Set(query);
+	const shared = new Set<string>();
+	for (const t of desc) if (q.has(t)) shared.add(t);
+	if (shared.size < MIN_SHARED_TERMS) return 0;
+	const uniqueDesc = new Set(desc);
+	if (shared.size / uniqueDesc.size < MIN_DESC_COVERAGE) return 0;
+	return shared.size;
 }
 
 function readAgentFile(dir: string): AgentFileInfo[] {

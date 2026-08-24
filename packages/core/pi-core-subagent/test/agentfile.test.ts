@@ -96,6 +96,30 @@ describe("resolveAgentFile (description matching)", () => {
 		expect(hit2?.model).toBe("gemma");
 	});
 
+	test("filler-word overlap does not bind unrelated goals (real frndos false positives)", () => {
+		// A file overrides prompt AND model, so a weak match cost real 403s: these
+		// four goals all bound to a PRD writer via junk tokens like "from"/"user".
+		write(
+			".claude/agents/frndos-prd.md",
+			"---\ndescription: Creates formal PRDs from Lark notes or user descriptions\nmodel: claude-opus-5\n---\nPRD writer.",
+		);
+		clearAgentFileCache();
+		const agentDir = join(home, ".pi/agent");
+		const goals: [string, string][] = [
+			["web-editor", "Analyze web changes from 687ef3c7b to 09d7036f7. Find top end-user facing changes"],
+			["release-audit", "Audit the release: verify version bumps and changelog entries"],
+			["code-archaeologist", "Trace the history of this module and describe how it evolved"],
+			["git-statistics", "Compute commit counts and churn per author"],
+		];
+		for (const [name, task] of goals) {
+			expect(resolveAgentFile(name, task, root, agentDir)?.body).not.toBe("PRD writer.");
+		}
+		// ...while a genuine PRD goal still lands on it.
+		expect(resolveAgentFile("writer", "write the formal PRD from the Lark notes", root, agentDir)?.body).toBe(
+			"PRD writer.",
+		);
+	});
+
 	test("nearest ancestor wins over a farther one", () => {
 		write(
 			"packages/core/.claude/agents/near.md",

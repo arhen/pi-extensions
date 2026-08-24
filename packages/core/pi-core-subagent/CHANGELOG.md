@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Agent-file matching bound unrelated tasks to the wrong file — and the wrong model.** A ≥ 2 shared-token score with a thin stopword list let filler words decide routing: in a real project four unrelated spawns (`web-editor`, `release-audit`, `code-archaeologist`, `git-statistics`) all matched a PRD-writer file (`web-editor` bound on `from` + `user`). Because a matched file is authoritative it also forced that file's `model: claude-opus-5`, so every child died on turn 1 with `403 MODEL_NOT_IN_PLAN` for a model the leader never requested. Scoring now needs distinct shared terms AND ≥20% coverage of the description, and the stopword list drops generic connectors/verbs.
+- **The widget showed the requested model, not the one actually used.** `task.model` kept the leader's request while the agent file's `model:` silently won, so a 403 named a model that appeared nowhere in the UI. The resolved model is now recorded as soon as it resolves.
+- **A matched agent file is now named in the per-task notice**, not only in the run summary — a failing task never reaches the summary, which is exactly when knowing "a file overrode your prompt and model" matters most.
+
 - **`tasks: [...]` calls no longer die on leftover top-level `agent`/`task`.** The mode check counted single/tasks/chain and demanded exactly one, so a well-formed 3-task parallel call that still carried a stray `agent`+`task` (models routinely leave them in place when switching shapes) was rejected with "Provide exactly one subagent mode" — after the widget had already rendered the 3 tasks, making it look like a valid call that died. An array mode now wins over the stray single; only `tasks` AND `chain` together is still refused, and the no-mode error lists all three shapes.
 
 - Fifth review round (regression pass on the round-4 fixes + first review of the never-touched modules):
