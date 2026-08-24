@@ -154,6 +154,7 @@ export function cloneRun(run: RunSnapshot): RunSnapshot {
 export function resolveChildModel(ctx: ExtensionContext, explicit: string | undefined) {
 	if (!explicit?.trim()) return ctx.model; // inherit the parent's active model
 	const ref = explicit.trim();
+	if (!ctx.modelRegistry) return ctx.model; // no registry to check against (tests, headless)
 	const available = ctx.modelRegistry.getAvailable();
 	// Model ids can contain slashes (e.g. 9router/cc/claude-opus-5), so a bare id
 	// match and every provider/id split point must be tried, not just the first.
@@ -1119,6 +1120,26 @@ export class SubagentManager {
 			}
 		}
 		const edges = resolveNeeds(inputs, mode);
+		// Pre-flight every task's model BEFORE the run exists. A matched agent file
+		// overrides the requested model, so an unresolvable one is the leader's
+		// mistake to see NOW — not N children dying one by one on their first turn
+		// with an error naming a model the leader never asked for.
+		for (let i = 0; i < inputs.length; i++) {
+			const input = inputs[i] as TaskInput;
+			const cwd = input.cwd ?? ctx.cwd;
+			const file = resolveAgentFile(input.agent, input.task, cwd, getAgentDir());
+			const requested = file?.model ?? input.model;
+			try {
+				validateThinking(resolveChildModel(ctx, requested), input.thinking);
+			} catch (err) {
+				const where = file?.model
+					? ` (from agent file ${file.path}, which overrides the requested model${input.model ? ` "${input.model}"` : ""})`
+					: "";
+				throw new Error(
+					`Task ${input.id ?? `task_${i + 1}`} (${input.agent}): ${err instanceof Error ? err.message : String(err)}${where}`,
+				);
+			}
+		}
 
 		const run: RunSnapshot = {
 			id: newId("run"),

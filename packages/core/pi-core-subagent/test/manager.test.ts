@@ -27,6 +27,41 @@ describe("createRun", () => {
 		const m = makeManager();
 		expect(() => m.createRun({ agent: "a" }, stubCtx)).toThrow(/agent\+task \(single\)/);
 	});
+	test("an unresolvable model refuses the SPAWN, no run is created", () => {
+		const m = makeManager();
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			modelRegistry: { getAvailable: () => [], find: () => undefined },
+		} as unknown as ExtensionContext;
+		expect(() => m.createRun({ tasks: [{ agent: "a", task: "t", model: "nope/not-a-model" }] }, ctx)).toThrow(
+			/Model not found: nope\/not-a-model/,
+		);
+		expect(m.listRuns()).toHaveLength(0); // nothing half-created
+	});
+	test("a bad model in ONE task refuses the whole spawn, naming that task", () => {
+		const m = makeManager();
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			modelRegistry: {
+				getAvailable: () => [{ id: "good", provider: "p" }],
+				find: () => undefined,
+			},
+		} as unknown as ExtensionContext;
+		expect(() =>
+			m.createRun(
+				{
+					tasks: [
+						{ id: "ok", agent: "a", task: "t1", model: "good" },
+						{ id: "bad", agent: "b", task: "t2", model: "missing" },
+					],
+				},
+				ctx,
+			),
+		).toThrow(/Task bad \(b\): Model not found: missing/);
+		expect(m.listRuns()).toHaveLength(0);
+	});
 	test("duplicate ids rejected", () => {
 		const m = makeManager();
 		expect(() =>
