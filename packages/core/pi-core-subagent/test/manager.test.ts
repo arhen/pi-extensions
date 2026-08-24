@@ -11,11 +11,21 @@ function makeManager(): SubagentManager {
 }
 
 describe("createRun", () => {
-	test("mode validation rejects ambiguous params", () => {
+	test("tasks[] wins over leftover top-level agent/task (models forget to drop them)", () => {
 		const m = makeManager();
-		expect(() => m.createRun({ agent: "a", task: "t", tasks: [{ agent: "b", task: "t2" }] }, stubCtx)).toThrow(
-			/exactly one/,
-		);
+		const { run, inputs } = m.createRun({ agent: "a", task: "t", tasks: [{ agent: "b", task: "t2" }] }, stubCtx);
+		expect(run.mode).toBe("parallel");
+		expect(inputs.map((i) => i.agent)).toEqual(["b"]); // the stray single is ignored, not merged
+	});
+	test("tasks + chain together is still refused (genuinely ambiguous)", () => {
+		const m = makeManager();
+		expect(() =>
+			m.createRun({ tasks: [{ agent: "a", task: "t" }], chain: [{ agent: "b", task: "t2" }] }, stubCtx),
+		).toThrow(/not both/);
+	});
+	test("no mode at all is refused with the full list of shapes", () => {
+		const m = makeManager();
+		expect(() => m.createRun({ agent: "a" }, stubCtx)).toThrow(/agent\+task \(single\)/);
 	});
 	test("duplicate ids rejected", () => {
 		const m = makeManager();

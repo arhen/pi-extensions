@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **`tasks: [...]` calls no longer die on leftover top-level `agent`/`task`.** The mode check counted single/tasks/chain and demanded exactly one, so a well-formed 3-task parallel call that still carried a stray `agent`+`task` (models routinely leave them in place when switching shapes) was rejected with "Provide exactly one subagent mode" — after the widget had already rendered the 3 tasks, making it look like a valid call that died. An array mode now wins over the stray single; only `tasks` AND `chain` together is still refused, and the no-mode error lists all three shapes.
+
 - Fifth review round (regression pass on the round-4 fixes + first review of the never-touched modules):
   - **CRITICAL: `bootId()` floored wall time and uptime separately.** `Math.floor(Date.now()/1000) - Math.floor(uptime())` flips by ±1 around integer seconds, so a marker written at second N could read as dead on a read at second N+1. A second pi session opening the same repo then **mid-committed a live, running child's half-finished state and `worktree remove --force`d the checkout under it**. Single floor over expressed seconds.
   - `clearRuns` could resurrect a run after it was cleared: resolving a pending reply made the resumed `onAskParent` closure flip a still-`awaiting_parent` task back to `running` and **re-insert the run into `runs` after `runs.clear()`** — a ghost run the widget re-armed on and persisted forever. All non-terminal tasks are now aborted before pending replies resolve.

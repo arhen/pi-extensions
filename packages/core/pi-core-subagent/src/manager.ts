@@ -1062,9 +1062,18 @@ export class SubagentManager {
 	createRun(params: SubagentParamsShape, ctx: ExtensionContext): { run: RunSnapshot; inputs: TaskInput[] } {
 		const hasChain = (params.chain?.length ?? 0) > 0;
 		const hasTasks = (params.tasks?.length ?? 0) > 0;
-		const hasSingle = Boolean(params.agent && params.task);
-		if (Number(hasChain) + Number(hasTasks) + Number(hasSingle) !== 1) {
-			throw new Error(`Provide exactly one subagent mode (single, tasks, or chain).`);
+		// An array mode wins over stray top-level agent/task: models routinely leave
+		// those in place when switching to tasks:[...], and the intent is not
+		// ambiguous — rejecting a well-formed 3-task call over leftovers is worse
+		// than ignoring them. Genuine ambiguity (tasks AND chain) is still refused.
+		const hasSingle = !hasChain && !hasTasks && Boolean(params.agent && params.task);
+		if (hasChain && hasTasks) {
+			throw new Error(`Provide either tasks (parallel) or chain (sequential), not both.`);
+		}
+		if (!hasChain && !hasTasks && !hasSingle) {
+			throw new Error(
+				`Provide one subagent mode: agent+task (single), tasks: [...] (parallel), or chain: [...] (sequential).`,
+			);
 		}
 
 		const mode: RunMode = hasChain ? "chain" : hasTasks ? "parallel" : "single";
