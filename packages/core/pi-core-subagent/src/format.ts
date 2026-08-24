@@ -226,8 +226,9 @@ export function makeSummary(run: RunSnapshot): string {
 	for (const task of run.tasks) {
 		// Edges are named so the leader can compare what it delegated against what came back.
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
+		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
 		lines.push(
-			`\n## ${task.agent}${edge} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task)}`,
+			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task)}`,
 		);
 	}
 	// Ceiling on the WHOLE summary — 16 tasks × 24KB would otherwise flood the parent context.

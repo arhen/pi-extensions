@@ -13,6 +13,8 @@ export interface AgentFileInfo {
 	model?: string;
 	tools?: string[];
 	description?: string;
+	/** The matched file path — surfaced so the leader can audit which file won. */
+	path?: string;
 }
 
 const AGENT_DIRS = [".agents/agents", ".claude/agents", ".pi/agents"] as const;
@@ -41,9 +43,22 @@ const STOP = new Set([
 	"as",
 	"how",
 	"what",
-	"when",
 	"who",
 ]);
+
+/** A body becomes the child's ENTIRE system prompt — an oversized reference file
+ *  would blow the context window and kill the session with a cryptic error. */
+const MAX_BODY_CHARS = 64_000;
+
+/** Per-cwd memo of the ancestor walk (project dirs then home), since the files
+ *  can't meaningfully change within one run and the walk costs 3 sync stats per
+ *  ancestor dir per task otherwise. Keyed per (agentDir + cwd). */
+const walkCache = new Map<string, AgentFileInfo[]>();
+
+/** Test/diagnostic hook: flush the walk cache (files changed mid-session). */
+export function clearAgentFileCache(): void {
+	walkCache.clear();
+}
 
 /** Lowercase, split, drop stopwords, strip plural -s/-es. */
 function tokens(text: string): string[] {
@@ -68,65 +83,67 @@ function readAgentFile(dir: string): AgentFileInfo[] {
 	const out: AgentFileInfo[] = [];
 	for (const entry of readdirSync(dir)) {
 		if (!entry.endsWith(".md")) continue;
-		const { frontmatter, body } = parseFrontmatter(readFileSync(join(dir, entry), "utf8"));
+		const path = join(dir, entry);
+		const { frontmatter, body } = parseFrontmatter(readFileSync(path, "utf8"));
+		let trimmed = body;
+		if (trimmed.length > MAX_BODY_CHARS) {
+			trimmed = `${trimmed.slice(0, MAX_BODY_CHARS)}\n\n[truncated: agent file exceeded ${MAX_BODY_CHARS} chars — slim it down]`;
+		}
+		const toolsF = frontmatter.tools;
 		const tools =
-			typeof frontmatter.tools === "string"
-				? frontmatter.tools
+			typeof toolsF === "string"
+				? toolsF
 						.split(",")
 						.map((t) => t.trim())
 						.filter(Boolean)
-				: Array.isArray(frontmatter.tools)
-					? frontmatter.tools.map(String)
+				: Array.isArray(toolsF)
+					? toolsF.map(String)
 					: undefined;
 		out.push({
-			body,
+			body: trimmed,
 			model: typeof frontmatter.model === "string" ? frontmatter.model : undefined,
 			tools: tools?.length ? tools : undefined,
 			description: typeof frontmatter.description === "string" ? frontmatter.description : undefined,
+			path,
 		});
 	}
 	return out;
 }
 
-/**
- * Best agent-file match for a spawn goal. Order: `.agents/agents` (single
- * source) → `.claude/agents` → `.pi/agents` per cwd ancestor (nearest first),
- * then home (`~/.agents` → `~/.claude` → `~/.pi`). Within a dir, highest
- * description-overlap score wins; the first dir with a match is returned.
- * `agentDir` is the pi agent dir (`~/.pi/agent`); home is derived from it.
- */
-export function resolveAgentFile(name: string, task: string, cwd: string, agentDir: string): AgentFileInfo | undefined {
-	const query = tokens(`${name} ${task}`);
+/** Walk cwd's ancestors, then home, returning files in priority order (nearest
+ *  first, each dir's 3 subdirs in AGENT_DIRS order). */
+function allAgentFiles(cwd: string, agentDir: string): AgentFileInfo[] {
+	const out: AgentFileInfo[] = [];
 	let dir = cwd;
 	while (true) {
-		for (const sub of AGENT_DIRS) {
-			let best: AgentFileInfo | undefined;
-			let bestScore = 0;
-			for (const file of readAgentFile(join(dir, sub))) {
-				const s = score(query, tokens(file.description ?? ""));
-				if (s > bestScore) {
-					best = file;
-					bestScore = s;
-				}
-			}
-			if (best) return best; // first dir with any match wins (priority over score)
-		}
+		for (const sub of AGENT_DIRS) out.push(...readAgentFile(join(dir, sub)));
 		const parent = dirname(dir);
 		if (parent === dir) break;
 		dir = parent;
 	}
 	const home = dirname(dirname(agentDir)); // ~/.pi/agent → ~
-	for (const sub of AGENT_DIRS) {
-		let best: AgentFileInfo | undefined;
-		let bestScore = 0;
-		for (const file of readAgentFile(join(home, sub))) {
-			const s = score(query, tokens(file.description ?? ""));
-			if (s > bestScore) {
-				best = file;
-				bestScore = s;
-			}
-		}
-		if (best) return best;
+	for (const sub of AGENT_DIRS) out.push(...readAgentFile(join(home, sub)));
+	return out;
+}
+
+/** Best agent-file match for a spawn goal. Caches per (agentDir, cwd). */
+export function resolveAgentFile(name: string, task: string, cwd: string, agentDir: string): AgentFileInfo | undefined {
+	const query = tokens(`${name} ${task}`);
+	const cacheKey = `${agentDir}${cwd}`;
+	let files = walkCache.get(cacheKey);
+	if (!files) {
+		files = allAgentFiles(cwd, agentDir);
+		if (walkCache.size >= 512) walkCache.clear();
+		walkCache.set(cacheKey, files);
 	}
-	return undefined;
+	let best: AgentFileInfo | undefined;
+	let bestScore = 0;
+	for (const file of files) {
+		const s = score(query, tokens(file.description ?? ""));
+		if (s > 0 && s > bestScore) {
+			best = file;
+			bestScore = s;
+		}
+	}
+	return best;
 }

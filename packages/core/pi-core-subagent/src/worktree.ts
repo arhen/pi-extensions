@@ -278,7 +278,21 @@ export function reapDeadWorktrees(root: string, isLive: (path: string) => boolea
 		try {
 			commitIn(path, "subagent (recovered after interrupted session)");
 		} catch {
-			continue; // git failed — never drop a dir whose work isn't on the branch
+			// A dir git refuses to read (half-created by a timed-out worktree add,
+			// or corrupted) holds no recoverable work — drop it instead of retrying
+			// forever. The "never drop uncommitted work" rule protects readable dirs.
+			try {
+				execFileSync("git", ["-C", path, "rev-parse", "--git-dir"], {
+					encoding: "utf8",
+					timeout: GIT_TIMEOUT_MS,
+					maxBuffer: GIT_MAX_BUFFER,
+				});
+				continue; // git still reads it — legitimate work, keep
+			} catch {
+				dropDir(root, path);
+				reaped += 1;
+			}
+			continue;
 		}
 		dropDir(root, path);
 		reaped += 1;
@@ -326,9 +340,12 @@ export function ownerAlive(path: string): boolean {
 	}
 }
 
-/** Stable per-boot id, so a recycled pid from before a reboot can't look alive. */
+/** Stable per-boot id, so a recycled pid from before a reboot can't look alive.
+ *  Compute ONE floor on the expressed seconds, not two — separate floors of
+ *  walltime and uptime flip by ±1 around integer boundaries and would read a
+ *  live marker as dead on a cross-second read. */
 function bootId(): string {
-	return String(Math.floor(Date.now() / 1000 - Math.floor(uptime())));
+	return String(Math.floor((Date.now() - uptime() * 1000) / 1000));
 }
 
 /**
@@ -344,6 +361,16 @@ export function sweepStale(root: string): void {
 	// Unknown registration = every dir might be live. Deleting here would be the
 	// single most destructive thing this module can do; bail instead.
 	if (!registered) return;
+	// Empty run dirs are litter — a run dir holds nothing but its task dirs.
+	for (const runDir of readdirSync(sub, { withFileTypes: true })) {
+		if (!runDir.isDirectory()) continue;
+		const runPath = join(sub, runDir.name);
+		try {
+			if (readdirSync(runPath).length === 0) rmSync(runPath, { recursive: true, force: true });
+		} catch {
+			/* skip */
+		}
+	}
 	for (const runDir of readDirs(sub)) {
 		for (const taskDir of readDirs(join(sub, runDir))) {
 			const dir = join(sub, runDir, taskDir);

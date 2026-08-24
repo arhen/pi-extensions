@@ -174,6 +174,20 @@ describe("worktree", () => {
 		removeWorktree(host);
 	});
 
+	test("boot-id marker stays stable around a second boundary (no self-misread)", () => {
+		// The old two-floor formula (floor(T) - floor(U)) flips by ±1 around integer
+		// seconds; the own worktree would read as dead on the very next read.
+		const wt = createWorktree(repo, "run_boot", "task_boot")!;
+		claimWorktree(wt);
+		// Claim, then read twice with a sleep crossing the integer-second line.
+		const before = Date.now();
+		while (Date.now() - before < 1_100) {
+			/* spin past the integer-second boundary */
+		}
+		expect(ownerAlive(wt.path)).toBe(true); // marker must survive the window
+		removeWorktree(wt);
+	});
+
 	test("ownership marker protects another session's live checkout from reaping", () => {
 		const wt = createWorktree(repo, "run_own", "task_own")!;
 		claimWorktree(wt);

@@ -1,9 +1,9 @@
 /** Agent-file resolution: description matching, dir priority, frontmatter. */
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { resolveAgentFile } from "../src/agentfile.ts";
+import { clearAgentFileCache, resolveAgentFile } from "../src/agentfile.ts";
 
 let root: string;
 let home: string;
@@ -11,8 +11,10 @@ let home: string;
 beforeAll(() => {
 	root = mkdtempSync(join(tmpdir(), "agentfile-"));
 	home = mkdtempSync(join(tmpdir(), "agentfile-home-"));
+	clearAgentFileCache(); // per-suite baseline — cache is session-scoped
 });
 afterAll(() => {
+	clearAgentFileCache();
 	rmSync(root, { recursive: true, force: true });
 	rmSync(home, { recursive: true, force: true });
 });
@@ -31,6 +33,10 @@ const BRAINSTORM =
 	"---\nname: frndos-brainstorm\ndescription: Multi-choice brainstorming grounded in latest service state — sharpens scope before PRD\n---\nYou are the brainstormer.";
 
 describe("resolveAgentFile (description matching)", () => {
+	beforeEach(() => {
+		clearAgentFileCache(); // files are written inside the tests — no stale walk
+	});
+
 	beforeAll(() => {
 		write(".claude/agents/frndos-architect.md", ARCHITECT);
 		write(".claude/agents/frndos-engineer.md", ENGINEER);
@@ -80,10 +86,12 @@ describe("resolveAgentFile (description matching)", () => {
 
 	test(".agents/agents beats .claude/agents (single source), same description", () => {
 		write(".agents/agents/frndos-architect.md", ARCHITECT);
+		clearAgentFileCache(); // the file was written after the suite-level walk was cached
 		const hit = resolveAgentFile("whatever", "review how services work together", root, join(home, ".pi/agent"));
 		expect(hit?.body).toBe("You are the architect.");
 		// and the .agents copy is the one used — verify by model difference
 		write(".agents/agents/frndos-architect.md", ARCHITECT.replace("claude-opus-4-6", "gemma"));
+		clearAgentFileCache(); // refresh before re-reading after the second write
 		const hit2 = resolveAgentFile("whatever", "review how services work together", root, join(home, ".pi/agent"));
 		expect(hit2?.model).toBe("gemma");
 	});
@@ -118,9 +126,11 @@ describe("resolveAgentFile (description matching)", () => {
 	});
 
 	test("project beats home", () => {
+		clearAgentFileCache(); // make sure the earlier home-only walk is dropped
 		const hit = resolveAgentFile("n", "audit the npm publish token scope", root, join(home, ".pi/agent"));
 		expect(hit?.body).toBe("G-agents."); // project has no match → home still wins
 		write(".pi/agents/local.md", "---\ndescription: audits npm publish credentials and token scopes\n---\nP.");
+		clearAgentFileCache(); // refresh before re-reading with the new project file
 		const hit2 = resolveAgentFile("n", "audit the npm publish token scope", root, join(home, ".pi/agent"));
 		expect(hit2?.body).toBe("P.");
 	});

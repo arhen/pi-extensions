@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fifth review round (regression pass on the round-4 fixes + first review of the never-touched modules):
+  - **CRITICAL: `bootId()` floored wall time and uptime separately.** `Math.floor(Date.now()/1000) - Math.floor(uptime())` flips by ±1 around integer seconds, so a marker written at second N could read as dead on a read at second N+1. A second pi session opening the same repo then **mid-committed a live, running child's half-finished state and `worktree remove --force`d the checkout under it**. Single floor over expressed seconds.
+  - `clearRuns` could resurrect a run after it was cleared: resolving a pending reply made the resumed `onAskParent` closure flip a still-`awaiting_parent` task back to `running` and **re-insert the run into `runs` after `runs.clear()`** — a ghost run the widget re-armed on and persisted forever. All non-terminal tasks are now aborted before pending replies resolve.
+  - `reapDeadWorktrees` now drops git-unreadable half-created worktree dirs (timed-out `worktree add`) instead of retrying them forever; `sweepStale` reaps empty run dirs and their stray `.owner` markers.
+  - `collectParked` cap eviction: drop the **oldest non-ask** before overwriting the tail, so two asks on a capped entry don't hang the earlier asker.
+- First external review of the never-touched modules:
+  - `agentfile.ts`: added `MAX_BODY_CHARS` (64K) — an oversized agent file no longer blows the child's context with a cryptic error; added `path` to the match and surfaced it in the run summary so the leader can audit which file won; per-cwd walk memoization (the 3-sync-stats × ancestors × tasks cost).
+  - `manager.ts` `persist()`: write-then-rename instead of a plain `writeFile` (a crash mid-write silently dropped the whole run history on next read).
+- 1 new test (boot-id marker stability), 9 agentfile tests unblocked by a shared-session cache clear hook (90 total).
+
 - Fourth review round (both halves reviewed externally; the intercom layer for the first time) — worktree fixes:
   - **The ownership marker was being committed into every branch**: `.subagent-owner` lived inside the checkout, so `add -A` staged it — `"empty"` could never be returned, `changedFiles`/diffstat were polluted, and merging carried the pid file into `main`. The marker now lives beside the checkout (`<dir>.owner`).
   - **A failed `worktree list` meant "nothing is registered"**, so `sweepStale` deleted every subagent dir — live ones included — and `cleanupMerged` lost its live-checkout guard. The listing now returns `undefined` on failure and both callers bail out; `-z` falls back to the newline form for git < 2.36.

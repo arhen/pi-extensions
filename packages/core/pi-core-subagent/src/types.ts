@@ -41,6 +41,10 @@ export interface TaskSnapshot {
 	usage: UsageStats;
 	/** Sibling addresses for intercom tools (send_agent_message targets). */
 	roster?: string;
+	/** Path of the agent file that drove this child (inline definition otherwise).
+	 *  Surfaced so the leader can audit which file took over — a description-only
+	 *  match must never be invisible. */
+	agentFile?: string;
 	/** Git worktree isolation (write agents): branch + diff of the child's changes. */
 	branch?: string;
 	diffStat?: string;

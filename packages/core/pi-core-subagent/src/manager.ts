@@ -1,6 +1,6 @@
 /** SubagentManager: run lifecycle, child sessions, intercom, persistence, widget plumbing. */
 import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
+import { rename, writeFile } from "node:fs/promises";
 import { join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
@@ -304,6 +304,18 @@ export class SubagentManager {
 			child.dispose();
 		}
 		this.liveChildren.clear();
+		// Mark every non-terminal task aborted BEFORE resolving pendingReplies: the
+		// resumed onAskParent closure re-checks status, and a still-awaiting task
+		// would flip back to "running" and re-insert the run after the maps clear —
+		// a ghost run that widgets re-arm on and persist forever.
+		for (const run of this.runs.values()) {
+			for (const task of run.tasks) {
+				if (!TERMINAL.includes(task.status)) {
+					task.status = "aborted";
+					task.error = task.error ?? "(session ended)";
+				}
+			}
+		}
 		// Release anyone parked on a run before the maps go — dropping waiters would
 		// leave their promises pending forever (autoAwait / await_subagent hang).
 		for (const [runId, waiters] of this.settleWaiters) {
@@ -383,7 +395,13 @@ export class SubagentManager {
 			const parentFile = getParentSessionFile(ctx);
 			if (!parentFile) return;
 			const sidecar = parentFile.replace(/\.jsonl$/, ".subagents.json");
-			void writeFile(sidecar, JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2)).catch(() => {}); // never surface as an unhandled rejection
+			// Write-then-rename: a plain writeFile can tear on crash and silently drop
+			// ALL run history for the session on the next read.
+			const tmp = `${sidecar}.tmp`;
+			const payload = JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2);
+			void writeFile(tmp, payload)
+				.then(() => rename(tmp, sidecar))
+				.catch(() => {}); // never surface as an unhandled rejection
 		} catch {
 			/* ignore */
 		}
@@ -715,6 +733,7 @@ export class SubagentManager {
 		// is authoritative — body = system prompt, frontmatter model/tools win over
 		// inline. No match → inline on-demand definition as usual.
 		const file = resolveAgentFile(input.agent, input.task, task.cwd, getAgentDir());
+		if (file?.path) task.agentFile = file.path; // recorded for audit — which file won
 		const prompt = file?.body ?? input.prompt?.trim();
 		const thinking = input.thinking;
 		// Trust boundary: a file can NARROW the toolset (intersect with the leader's
@@ -1387,8 +1406,15 @@ export class SubagentManager {
 				delivered = true;
 			} else if (msg.kind === "ask") {
 				// An unanswered ask blocks a child for 10 minutes — it must never be the
-				// message that gets dropped by the cap.
-				p.msgs[p.msgs.length - 1] = msg;
+				// message that gets dropped by the cap. Evict the oldest NON-ask first
+				// (asks already block children; displacing one hangs the earlier asker).
+				const drop = p.msgs.findIndex((m) => m.kind !== "ask");
+				if (drop !== -1) {
+					p.msgs.splice(drop, 1);
+					p.msgs.push(msg);
+				} else {
+					p.msgs[p.msgs.length - 1] = msg; // all asks — overwrite the oldest ask
+				}
 				delivered = true;
 			}
 			p.wake(); // resolve the parked await early — the leader breathes on every message
