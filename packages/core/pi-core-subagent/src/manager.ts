@@ -1,7 +1,7 @@
 /** SubagentManager: run lifecycle, child sessions, intercom, persistence, widget plumbing. */
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
-import { rename, writeFile } from "node:fs/promises";
-import { join, relative, sep } from "node:path";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
@@ -58,7 +58,11 @@ export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
 /** No default wall-clock cap: a subagent runs until its task is done, it stalls, or the user aborts. */
 const DEFAULT_RUNTIME_MS = 0;
-const DEFAULT_STALL_MS = 180_000; // 3 min: long model thinking streams emit no events, but they're not stalled.
+/** Last-resort hang detector, not a latency budget. A healthy child can be
+ *  silent for minutes (big-context upload, non-streamed reasoning, provider
+ *  retry backoff), so this is deliberately far above any normal quiet window —
+ *  killing a working child is much worse than waiting out a dead one. */
+const DEFAULT_STALL_MS = 900_000; // 15 min
 /** Cap on a child's wait for reply_subagent — an ignored question must not pin the run open forever. */
 const PARENT_REPLY_TIMEOUT_MS = 600_000; // 10 min
 /** Intercom messages buffered per park before the followUp path takes over. */
@@ -244,6 +248,11 @@ export class SubagentManager {
 	private widgetTimers = new Map<string, ReturnType<typeof setTimeout>>(); // per-run stream throttle
 	private widgetRuns: RunSnapshot[] = [];
 	private eventSeq = 0;
+	/** Sidecar write ordering: unique tmp names + last-writer-wins by sequence. */
+	private persistSeq = 0;
+	private persistedSeq = 0;
+	/** Set by clearRuns — blocks late persists from erasing the sidecar. */
+	private cleared = false;
 
 	/** When false, strip leader-imposed maxRuntimeMs so tasks run unlimited — toggle via `/subagents auto-limit on|off`. */
 	private autoLimit = true;
@@ -335,6 +344,7 @@ export class SubagentManager {
 		this.settleWaiters.clear();
 		this.pendingReplies.clear();
 		this.runControllers.clear();
+		this.cleared = true; // any persist after this point would write an empty sidecar
 		this.mailboxes = createMailbox();
 		this.widgetTui = null; // force re-registration on the next session
 		if (this.pulseTimer) {
@@ -348,10 +358,21 @@ export class SubagentManager {
 
 	// ── persistence (sidecar per parent session) ────────────────────────
 	async restoreFromSidecar(ctx: ExtensionContext): Promise<void> {
+		this.cleared = false; // a new session may persist again
 		const parentFile = getParentSessionFile(ctx);
 		if (!parentFile) return;
 		const sidecar = parentFile.replace(/\.jsonl$/, ".subagents.json");
 		let runs: RunSnapshot[];
+		// Sweep tmp files a crash left between write and rename (one per dead session).
+		try {
+			const dir = dirname(sidecar);
+			const prefix = `${basename(sidecar)}.`;
+			for (const entry of readdirSync(dir)) {
+				if (entry.startsWith(prefix) && entry.endsWith(".tmp")) rmSync(join(dir, entry), { force: true });
+			}
+		} catch {
+			/* best-effort */
+		}
 		try {
 			if (!existsSync(sidecar)) return;
 			const raw = JSON.parse(readFileSync(sidecar, "utf-8"));
@@ -392,17 +413,30 @@ export class SubagentManager {
 		}
 	}
 	private persist(ctx: ExtensionContext): void {
+		// After clearRuns the map is empty by design; a late persist (e.g. the
+		// background rejection handler firing after session_shutdown) would write
+		// `[]` over a good sidecar and erase the session's history.
+		if (this.cleared) return;
 		try {
 			const parentFile = getParentSessionFile(ctx);
 			if (!parentFile) return;
 			const sidecar = parentFile.replace(/\.jsonl$/, ".subagents.json");
 			// Write-then-rename: a plain writeFile can tear on crash and silently drop
-			// ALL run history for the session on the next read.
-			const tmp = `${sidecar}.tmp`;
+			// ALL run history for the session on the next read. The tmp name must be
+			// UNIQUE per write — a shared one lets two concurrent persists interleave
+			// their bytes (unparseable sidecar) or rename an older snapshot last.
+			const tmp = `${sidecar}.${process.pid}.${this.persistSeq++}.tmp`;
 			const payload = JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2);
+			const seq = this.persistSeq;
 			void writeFile(tmp, payload)
-				.then(() => rename(tmp, sidecar))
-				.catch(() => {}); // never surface as an unhandled rejection
+				.then(async () => {
+					// Drop a snapshot that a newer persist already superseded, so a slow
+					// write can't rename stale data over fresh data.
+					if (seq < this.persistedSeq) return rm(tmp, { force: true });
+					this.persistedSeq = seq;
+					return rename(tmp, sidecar);
+				})
+				.catch(() => rm(tmp, { force: true }).catch(() => {})); // never leak a tmp, never throw
 		} catch {
 			/* ignore */
 		}
@@ -663,6 +697,11 @@ export class SubagentManager {
 		watchdog: Watchdog,
 		state: ChildEventState,
 	): void {
+		// ANY event is proof of life. The old allowlist ignored message_start,
+		// turn_start/end, compaction and auto-retry, so a child was killed during
+		// silent-but-healthy windows — context upload, a provider that doesn't
+		// stream reasoning, retry backoff — and surfaced as "Error: terminated".
+		watchdog.touch();
 		const active =
 			event.type === "message_update" ||
 			event.type === "message_end" ||
@@ -672,7 +711,6 @@ export class SubagentManager {
 			event.type === "bash_execution_update" ||
 			event.type === "agent_settled";
 		if (active) {
-			watchdog.touch();
 			this.emit("subagent:session-event", {
 				runId: run.id,
 				taskId: task.id,
@@ -724,6 +762,8 @@ export class SubagentManager {
 		run: RunSnapshot,
 		task: TaskSnapshot,
 		input: TaskInput,
+		/** The task text as WRITTEN, before upstream outputs were spliced in. */
+		routingTask: string,
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
 		onUpdate?: (partial: any) => void,
@@ -733,7 +773,10 @@ export class SubagentManager {
 		// Matched user agent file (`.agents/agents` etc., by description): the file
 		// is authoritative — body = system prompt, frontmatter model/tools win over
 		// inline. No match → inline on-demand definition as usual.
-		const file = resolveAgentFile(input.agent, input.task, task.cwd, getAgentDir());
+		// Route on the task as written, never on the upstream output spliced into
+		// it: a chain step would otherwise match a different file (and a different
+		// model) at runtime than the one createRun pre-flighted.
+		const file = resolveAgentFile(input.agent, routingTask, task.cwd, getAgentDir());
 		if (file?.path) task.agentFile = file.path; // recorded for audit — which file won
 		const prompt = file?.body ?? input.prompt?.trim();
 		const thinking = input.thinking;
@@ -832,7 +875,9 @@ export class SubagentManager {
 				// Upstream outputs were spliced in by the scheduler; the snapshot must show
 				// the prompt the child actually receives.
 				task: input.task,
-				model: input.model,
+				// RESOLVED model, not the request — an agent file's `model:` overrides it,
+				// and this patch used to clobber the resolved id recorded above.
+				model: model?.id ?? input.model,
 				thinking,
 				tools,
 			},
@@ -952,7 +997,10 @@ export class SubagentManager {
 			const finalText =
 				task.finalText ||
 				truncateText((child.messages as AssistantMessage[]).map(getFirstText).filter(Boolean).at(-1) || "");
-			if (task.status !== "aborted") {
+			// TERMINAL, not just "aborted": a cancel/timeout that landed while the
+			// final text was being assembled must not be overwritten with "completed"
+			// (which would also skip the partial commit and drop the child's work).
+			if (!TERMINAL.includes(task.status)) {
 				this.updateTask(run, task, { status: "completed", finalText, endedAt: Date.now() }, ctx, onUpdate);
 				if (wt) {
 					// Commit the child's changes, then report the branch + diff so the
@@ -1033,6 +1081,9 @@ export class SubagentManager {
 			);
 		} finally {
 			this.liveChildren.delete(key);
+			// Resolve, don't just delete: a bare delete strands the 10-minute reply
+			// timer and leaves the child's await unsettled.
+			this.pendingReplies.get(key)?.resolve("(task ended — stop work now)");
 			this.pendingReplies.delete(key);
 			abortListener?.();
 			unsubscribe?.();
@@ -1079,6 +1130,19 @@ export class SubagentManager {
 			throw new Error(
 				`Provide one subagent mode: agent+task (single), tasks: [...] (parallel), or chain: [...] (sequential).`,
 			);
+		}
+		// Single-mode-only fields alongside an array mode are silently dropped
+		// otherwise: `write: true` next to tasks:[...] produced read-only children
+		// that reported they "cannot edit files", with nothing explaining why.
+		if (hasChain || hasTasks) {
+			const stray = (["write", "prompt", "tools", "model", "thinking", "cwd", "maxRuntimeMs"] as const).filter(
+				(k) => params[k] !== undefined,
+			);
+			if (stray.length > 0) {
+				throw new Error(
+					`${stray.join(", ")} ${stray.length > 1 ? "are" : "is"} only read in single mode. Set ${stray.length > 1 ? "them" : "it"} on each item of ${hasChain ? "chain" : "tasks"} instead.`,
+				);
+			}
 		}
 
 		const mode: RunMode = hasChain ? "chain" : hasTasks ? "parallel" : "single";
@@ -1230,6 +1294,7 @@ export class SubagentManager {
 					run,
 					task,
 					{ ...input, task: applyUpstream(input.task, task.needs ?? [], outputs) },
+					input.task,
 					ctx,
 					signal,
 					onUpdate,

@@ -120,6 +120,31 @@ describe("resolveAgentFile (description matching)", () => {
 		);
 	});
 
+	test("-e nouns survive the plural stemmer (services/service, files/file)", () => {
+		// `es`-stripping mangled every -e noun: services→servic vs service→service
+		// never shared a token, silently breaking the most common routing words.
+		write(
+			".claude/agents/svc.md",
+			"---\ndescription: Audits services and their config files across packages\n---\nSvc.",
+		);
+		clearAgentFileCache();
+		expect(
+			resolveAgentFile("a", "audit the service config file in this package", root, join(home, ".pi/agent"))?.body,
+		).toBe("Svc.");
+	});
+
+	test("a detailed description is not harder to match than a lazy one", () => {
+		// Normalizing by the description's length made better docs route worse.
+		write(
+			".claude/agents/detailed-reviewer.md",
+			"---\ndescription: Reviews TypeScript pull requests for correctness, performance, security, style; checks test coverage, flags breaking API changes, suggests refactors across monorepo packages\n---\nDetailed.",
+		);
+		clearAgentFileCache();
+		expect(resolveAgentFile("reviewer", "review the pull request", root, join(home, ".pi/agent"))?.body).toBe(
+			"Detailed.",
+		);
+	});
+
 	test("nearest ancestor wins over a farther one", () => {
 		write(
 			"packages/core/.claude/agents/near.md",

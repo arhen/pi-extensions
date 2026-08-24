@@ -1,5 +1,8 @@
 /** Manager state transitions with a stubbed pi API — no child sessions spawned. */
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { SubagentManager } from "../src/manager.ts";
 
@@ -61,6 +64,23 @@ describe("createRun", () => {
 			),
 		).toThrow(/Task bad \(b\): Model not found: missing/);
 		expect(m.listRuns()).toHaveLength(0);
+	});
+	test("single-mode-only fields beside tasks[] are refused, not silently dropped", () => {
+		const m = makeManager();
+		// write:true next to tasks[] produced read-only children that reported they
+		// "cannot edit files", with nothing explaining why.
+		expect(() => m.createRun({ write: true, tasks: [{ agent: "b", task: "t" }] }, stubCtx)).toThrow(
+			/write is only read in single mode/,
+		);
+		expect(() => m.createRun({ prompt: "p", tools: ["read"], tasks: [{ agent: "b", task: "t" }] }, stubCtx)).toThrow(
+			/prompt, tools are only read in single mode/,
+		);
+		// Per-item is the correct shape and still works.
+		expect(m.createRun({ tasks: [{ agent: "b", task: "t", write: true }] }, stubCtx).run.mode).toBe("parallel");
+		// Leftover agent/task stay tolerated — they carry no capability.
+		expect(m.createRun({ agent: "a", task: "t", tasks: [{ agent: "b", task: "t2" }] }, stubCtx).run.mode).toBe(
+			"parallel",
+		);
 	});
 	test("duplicate ids rejected", () => {
 		const m = makeManager();
@@ -154,6 +174,25 @@ describe("cancel", () => {
 		m.cancelRun(run.id);
 		const settled = await Promise.all(waits);
 		expect(settled.every((s) => s?.run?.status === "aborted")).toBe(true);
+	});
+	test("a late persist after clearRuns cannot erase the sidecar", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "sidecar-"));
+		const sessionFile = join(dir, "s.jsonl");
+		const sidecar = join(dir, "s.subagents.json");
+		writeFileSync(sessionFile, "");
+		const ctx = { cwd: dir, hasUI: false, sessionFile } as unknown as ExtensionContext;
+		const m = makeManager();
+		m.createRun({ tasks: [{ agent: "a", task: "keep me" }] }, ctx);
+		(m as unknown as { persist: (c: ExtensionContext) => void }).persist(ctx);
+		await new Promise((r) => setTimeout(r, 50));
+		const saved = existsSync(sidecar) ? readFileSync(sidecar, "utf8") : "";
+		m.clearRuns();
+		// The deferred background rejection handler fires after shutdown.
+		(m as unknown as { persist: (c: ExtensionContext) => void }).persist(ctx);
+		await new Promise((r) => setTimeout(r, 50));
+		if (saved) expect(readFileSync(sidecar, "utf8")).toBe(saved); // not overwritten with []
+		expect(readdirSync(dir).filter((f) => f.endsWith(".tmp"))).toHaveLength(0); // no tmp leak
+		rmSync(dir, { recursive: true, force: true });
 	});
 	test("a delivered reply is consumed once (identity-tagged entry clears itself)", async () => {
 		const m = makeManager();

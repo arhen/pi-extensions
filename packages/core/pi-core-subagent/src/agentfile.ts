@@ -44,24 +44,12 @@ const STOP = new Set([
 	"how",
 	"what",
 	"who",
-	// Generic connectors/verbs that carry no routing signal. Two of these shared
-	// used to be enough to bind a task to an unrelated agent file (a "release
-	// audit" landing on a PRD writer via "from" + "user").
+	// Pure connectors only. Words like create/user/work/run were stopped here to
+	// kill one false positive and took real routing signal with them (a
+	// scaffolder agent is legitimately "creates", a research agent "user") — the
+	// coverage gate handles weak matches without blinding whole categories.
 	"from",
 	"into",
-	"user",
-	"note",
-	"creat",
-	"create",
-	"make",
-	"use",
-	"work",
-	"run",
-	"new",
-	"other",
-	"single",
-	"formal",
-	"description",
 	"this",
 	"that",
 	"it",
@@ -69,6 +57,7 @@ const STOP = new Set([
 	"any",
 	"per",
 	"via",
+	"other",
 ]);
 
 /** A body becomes the child's ENTIRE system prompt — an oversized reference file
@@ -77,7 +66,7 @@ const MAX_BODY_CHARS = 64_000;
 /** A file takes over the prompt AND the model, so a weak match is expensive.
  *  Both gates must pass: distinct shared terms, and share of the description. */
 const MIN_SHARED_TERMS = 2;
-const MIN_DESC_COVERAGE = 0.2;
+const MIN_COVERAGE = 0.4;
 
 /** Per-cwd memo of the ancestor walk (project dirs then home), since the files
  *  can't meaningfully change within one run and the walk costs 3 sync stats per
@@ -95,8 +84,11 @@ function tokens(text: string): string[] {
 		.filter((t) => !STOP.has(t) && t.length > 1)
 		.map((t) => {
 			if (t.endsWith("ing") && t.length > 5) t = t.slice(0, -3);
-			if (t.endsWith("es") && t.length > 4) t = t.slice(0, -2);
-			else if (t.endsWith("s") && t.length > 3) t = t.slice(0, -1);
+			// Only -es after a sibilant is a two-char plural (batches, boxes). Blindly
+			// stripping "es" mangles every -e noun — services→servic vs service→service
+			// never matched, silently breaking the most common routing words.
+			if (/(?:ch|sh|ss|x|z|s)es$/.test(t) && t.length > 4) t = t.slice(0, -2);
+			else if (t.endsWith("s") && !t.endsWith("ss") && t.length > 3) t = t.slice(0, -1);
 			return t;
 		});
 }
@@ -117,8 +109,12 @@ function score(query: string[], desc: string[]): number {
 	const shared = new Set<string>();
 	for (const t of desc) if (q.has(t)) shared.add(t);
 	if (shared.size < MIN_SHARED_TERMS) return 0;
-	const uniqueDesc = new Set(desc);
-	if (shared.size / uniqueDesc.size < MIN_DESC_COVERAGE) return 0;
+	// Normalize by the SMALLER side. Dividing by the description's length alone
+	// punished well-written descriptions: a 20-token description needed 4 shared
+	// terms while a lazy 3-token one needed 2, so better docs routed worse — and
+	// a 2-word goal could never match a detailed description at all.
+	const denom = Math.min(new Set(desc).size, q.size);
+	if (denom === 0 || shared.size / denom < MIN_COVERAGE) return 0;
 	return shared.size;
 }
 
