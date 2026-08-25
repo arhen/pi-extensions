@@ -38,49 +38,117 @@ function readTail(path: string): string {
 	}
 }
 
+/** Reasoning markup is the model talking to itself, and empty `<think></think>`
+ *  pairs are the commonest single line in a transcript — they filled the pane with
+ *  rows carrying no information at all. */
+function stripThinking(text: string): string {
+	return text
+		.replace(/<think>[\s\S]*?<\/think>/g, " ")
+		.replace(/<\/?(?:think|thinking|reasoning)>/g, " ")
+		.trim();
+}
+
+// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping real terminal escapes is the point
+const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: same
+const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g;
+
+/** Tool output is terminal output: it carries colour escapes and carriage returns
+ *  that corrupt the pane's own styling (stray `[0m` mid-row, cursor jumps). */
 function clip(text: string, max: number): string {
-	const flat = text.replace(/\s+/g, " ").trim();
+	const flat = text.replace(ANSI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
-/** One session-file line → one display line: [gutter, text]. Irrelevant → null. */
-function eventLine(raw: string): [string, string] | null {
+/** Long absolute paths are almost entirely prefix. The tail is what identifies
+ *  the file, so shorten from the left and keep the last segments. */
+function shortenPath(text: string): string {
+	return text.replace(/(?:\/[\w.@+-]+){3,}/g, (path) => {
+		const parts = path.split("/").filter(Boolean);
+		return parts.length <= 3 ? path : `…/${parts.slice(-3).join("/")}`;
+	});
+}
+
+const PATH_ARGS = ["path", "file", "filePath", "command", "pattern", "query", "url", "task", "subject"];
+
+/** The argument that says WHAT a call does. Object.values() order is insertion
+ *  order, so the old "first string wins" picked `oldText` blobs over `path`. */
+function callSummary(args: Record<string, unknown> | undefined): string {
+	for (const key of PATH_ARGS) {
+		const value = args?.[key];
+		if (typeof value === "string" && value.trim()) return value;
+	}
+	const first = Object.values(args ?? {}).find((v) => typeof v === "string" && v.trim() !== "");
+	return typeof first === "string" ? first : "";
+}
+
+export type PeekLine = { gutter: string; text: string; kind: "call" | "result" | "error" | "say" };
+
+/** One session-file entry → display lines. A turn with 4 tool calls is 4 lines:
+ *  keeping only the first hid the parallel calls that explain what the child did. */
+function eventLines(raw: string): PeekLine[] {
 	let entry: any;
 	try {
 		entry = JSON.parse(raw);
 	} catch {
-		return null;
+		return [];
 	}
 	const msg = entry?.message;
-	if (!msg) return null;
-	const out: [string, string][] = [];
-	for (const block of msg.content ?? []) {
+	if (!msg) return [];
+	const out: PeekLine[] = [];
+	const isResult = msg.role === "toolResult";
+	for (const block of Array.isArray(msg.content) ? msg.content : []) {
 		if (block.type === "toolCall") {
-			const arg = Object.values(block.arguments ?? {}).find((v) => typeof v === "string" && v.trim() !== "") as
-				| string
-				| undefined;
-			out.push(["→", `${block.name}${arg ? ` ${clip(arg, 120)}` : ""}`]);
-		} else if (block.type === "text" && block.text?.trim()) {
-			out.push([msg.role === "toolResult" ? "←" : "·", clip(block.text, 160)]);
+			const arg = callSummary(block.arguments);
+			out.push({ gutter: "→", kind: "call", text: `${block.name}${arg ? ` ${shortenPath(clip(arg, 110))}` : ""}` });
+		} else if (block.type === "text") {
+			const text = stripThinking(block.text ?? "");
+			if (!text) continue; // a turn that was pure reasoning has nothing to show
+			if (isResult) {
+				const kind = msg.isError ? "error" : "result";
+				const name = msg.toolName ? `${msg.toolName}: ` : "";
+				out.push({ gutter: msg.isError ? "✗" : "←", kind, text: `${name}${shortenPath(clip(text, 150))}` });
+			} else {
+				out.push({ gutter: "·", kind: "say", text: clip(text, 150) });
+			}
 		}
 	}
-	return out[0] ?? null;
+	return out;
 }
 
-function tailLines(path: string, max: number): [string, string][] {
+function tailLines(path: string, max: number): PeekLine[] {
 	let text: string;
 	try {
 		text = readTail(path);
 	} catch {
-		return [["·", "(session file not readable yet)"]];
+		return [{ gutter: "·", kind: "say", text: "(session file not readable yet)" }];
 	}
-	const lines: [string, string][] = [];
+	const lines: PeekLine[] = [];
 	// First line of a mid-file read is usually a fragment — drop it.
-	for (const raw of text.split("\n").slice(1)) {
-		const line = eventLine(raw);
-		if (line) lines.push(line);
-	}
+	for (const raw of text.split("\n").slice(1)) lines.push(...eventLines(raw));
 	return lines.slice(-max);
+}
+
+/** Gutter colour carries the line's role, so the eye can skip to failures without
+ *  reading: → call, ← result, ✗ error, · the child speaking. */
+function renderLine(line: PeekLine, theme: Theme): string {
+	if (line.kind === "error") return `${theme.fg("error", line.gutter)} ${theme.fg("error", line.text)}`;
+	if (line.kind === "call") {
+		const space = line.text.indexOf(" ");
+		const name = space === -1 ? line.text : line.text.slice(0, space);
+		const arg = space === -1 ? "" : line.text.slice(space + 1);
+		return `${theme.fg("accent", line.gutter)} ${theme.fg("toolTitle", name)}${arg ? ` ${theme.fg("muted", arg)}` : ""}`;
+	}
+	if (line.kind === "result") return `${theme.fg("dim", line.gutter)} ${theme.fg("dim", line.text)}`;
+	return `${theme.fg("dim", line.gutter)} ${line.text}`;
+}
+
+/** Status as a coloured word, the way pi marks tool state. */
+function statusTag(status: string, theme: Theme): string {
+	if (status === "failed") return theme.fg("error", status);
+	if (status === "completed") return theme.fg("success", status);
+	if (status === "aborted") return theme.fg("warning", status);
+	return theme.fg("muted", status);
 }
 
 export interface PeekPane {
@@ -128,8 +196,14 @@ export function createPeekPane(
 			const hint = confirming
 				? theme.fg("error", `abort ${task.agent}?  y / n`)
 				: theme.fg("dim", tailing ? "esc back · x abort" : "shift+↑↓ / jk move · enter tail · x abort · esc close");
-			const title = `${theme.fg("accent", theme.bold(tailing ? task.agent : "Subagents"))} ${theme.fg("muted", `${selected + 1}/${tasks.length}`)}`;
-			const lines = [row("", width), row(title, width), row(hint, width), row("", width)];
+			// Breadcrumb, not a bare name: while tailing, WHERE you are is the thing you
+			// lose track of first, and the child's status belongs next to its name.
+			const crumb = tailing
+				? `${theme.fg("muted", "Subagents")}${theme.fg("dim", " › ")}${theme.fg("accent", theme.bold(task.agent))} ${statusTag(task.status, theme)}`
+				: theme.fg("accent", theme.bold("Subagents"));
+			const title = `${crumb} ${theme.fg("muted", `${selected + 1}/${tasks.length}`)}`;
+			const rule = theme.fg("borderMuted", "─".repeat(Math.max(0, width - 4)));
+			const lines = [row("", width), row(title, width), row(hint, width), row(rule, width)];
 
 			if (!tailing) {
 				for (const [i, t] of tasks.entries()) {
@@ -140,9 +214,9 @@ export function createPeekPane(
 				lines.push(row(theme.fg("dim", "(no session file — agent has not started yet)"), width));
 			} else {
 				// ponytail: re-reads the tail each render (700ms poll). A watcher only pays off for files far bigger than a child session.
-				for (const [gutter, text] of tailLines(task.sessionFile, TAIL_ROWS)) {
-					lines.push(row(`${theme.fg("dim", gutter)} ${gutter === "←" ? theme.fg("dim", text) : text}`, width));
-				}
+				const tail = tailLines(task.sessionFile, TAIL_ROWS);
+				if (tail.length === 0) lines.push(row(theme.fg("dim", "(no activity yet)"), width));
+				for (const line of tail) lines.push(row(renderLine(line, theme), width));
 			}
 			lines.push(row("", width));
 			return lines;

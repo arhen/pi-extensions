@@ -124,3 +124,98 @@ test("peek rows are full-width so the transcript can't bleed through", () => {
 	for (const line of pane.render(80)) expect(line.length).toBe(80);
 	pane.dispose();
 });
+
+/** Render a tail from a synthetic child session file and return plain-text rows. */
+function tailRows(entries: unknown[], width = 120): string[] {
+	const dir = mkdtempSync(join(tmpdir(), "peek-tail-"));
+	const file = join(dir, "child.jsonl");
+	// A mid-file read drops its first line as a fragment, so lead with a discard.
+	writeFileSync(file, ["", ...entries.map((e) => JSON.stringify(e))].join("\n"));
+	const tasks: PeekTask[] = [
+		{ runId: "r", taskId: "t", agent: "a", status: "running", running: true, sessionFile: file, line: "• a" },
+	];
+	const pane = createPeekPane(
+		() => tasks,
+		theme,
+		() => {},
+		() => {},
+		() => {},
+	);
+	pane.handleInput("\r"); // enter → tail view
+	const rows = pane.render(width).map((l) => l.trim());
+	pane.dispose();
+	return rows;
+}
+
+test("empty <think></think> turns are dropped, not rendered as blank rows", () => {
+	const rows = tailRows([
+		{ message: { role: "assistant", content: [{ type: "text", text: "<think></think>" }] } },
+		{ message: { role: "assistant", content: [{ type: "text", text: "<think>hidden</think>real answer" }] } },
+	]);
+	expect(rows.some((r) => r.includes("<think>"))).toBe(false);
+	expect(rows.some((r) => r.includes("hidden"))).toBe(false);
+	expect(rows.some((r) => r.includes("real answer"))).toBe(true);
+});
+
+test("every tool call in a turn is shown, not only the first", () => {
+	const rows = tailRows([
+		{
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "text", text: "<think></think>" },
+					{ type: "toolCall", name: "read", arguments: { path: "one.ts" } },
+					{ type: "toolCall", name: "read", arguments: { path: "two.ts" } },
+					{ type: "toolCall", name: "bash", arguments: { command: "ls" } },
+				],
+			},
+		},
+	]);
+	expect(rows.some((r) => r.includes("one.ts"))).toBe(true);
+	expect(rows.some((r) => r.includes("two.ts"))).toBe(true);
+	expect(rows.some((r) => r.includes("bash ls"))).toBe(true);
+});
+
+test("a call summary picks the identifying arg, never an oldText blob", () => {
+	const rows = tailRows([
+		{
+			message: {
+				role: "assistant",
+				content: [{ type: "toolCall", name: "edit", arguments: { oldText: "z".repeat(200), path: "src/app.ts" } }],
+			},
+		},
+	]);
+	expect(rows.some((r) => r.includes("edit src/app.ts"))).toBe(true);
+	expect(rows.some((r) => r.includes("zzz"))).toBe(false);
+});
+
+test("failed tool results are marked, and results name their tool", () => {
+	const rows = tailRows([
+		{ message: { role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: "exit 1" }] } },
+		{ message: { role: "toolResult", toolName: "read", isError: false, content: [{ type: "text", text: "ok" }] } },
+	]);
+	expect(rows.some((r) => r.startsWith("✗") && r.includes("bash: exit 1"))).toBe(true);
+	expect(rows.some((r) => r.startsWith("←") && r.includes("read: ok"))).toBe(true);
+});
+
+test("long absolute paths are shortened from the left, keeping the tail", () => {
+	const rows = tailRows([
+		{
+			message: {
+				role: "assistant",
+				content: [
+					{ type: "toolCall", name: "read", arguments: { path: "/Users/me/Code/work/proj/app/agents/service.py" } },
+				],
+			},
+		},
+	]);
+	const row = rows.find((r) => r.includes("service.py"));
+	expect(row).toBeDefined();
+	expect(row).toContain("…/app/agents/service.py"); // last 3 segments identify the file
+	expect(row).not.toContain("/Users/me");
+});
+
+test("a tail with nothing renderable says so instead of showing an empty frame", () => {
+	const rows = tailRows([{ message: { role: "assistant", content: [{ type: "text", text: "<think></think>" }] } }]);
+	expect(rows.some((r) => r.includes("(no activity yet)"))).toBe(true);
+});
