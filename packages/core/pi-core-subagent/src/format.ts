@@ -250,6 +250,11 @@ export function makeSummary(run: RunSnapshot): string {
 	return truncateText(lines.join("\n"));
 }
 /** Per-task notice: one task's outcome, small. Full output stays out of parent context. */
+/** Dead on arrival: failed without ever producing assistant text — model/plan/auth/agent-file
+ *  level, so every respawn with the same config fails identically. */
+export function isStartupFailure(task: TaskSnapshot, kind: string): boolean {
+	return kind === "failed" && !task.finalText?.trim();
+}
 export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: string): string {
 	const goal = truncateText(task.task, 120);
 	const detail = task.error ? task.error : truncateText(task.finalText || "(no output)", 200);
@@ -263,7 +268,9 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 	return [
 		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}${wt}`,
 		`Goal: ${goal}${src}`,
-		`Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,
+		isStartupFailure(task, kind)
+			? "Never started — stop and diagnose before spawning anything else: a config-level error (model, plan, auth, agent file) fails identically on every respawn."
+			: `Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,
 	].join("\n");
 }
 /** Notification: 3 lines max. Full output stays out of parent context. */

@@ -25,6 +25,7 @@ import {
 	isTalking,
 	makeNotice,
 	makeTaskNotice,
+	isStartupFailure,
 	SubagentsWidget,
 	truncateText,
 } from "./format.ts";
@@ -462,7 +463,16 @@ export class SubagentManager {
 		this.pi.events.emit(type, { type, timestamp: Date.now(), ...payload });
 	}
 
-	/** Per-task wake-up: queued follow-up so the parent can interleave responses. */
+	/** Only startup failures are forced: they're dead-on-arrival and the leader must
+	 *  notice before it respawns the same broken config. Completed/aborted and even
+	 *  mid-run failures wait for the turn's end (followUp) — they're not urgent and
+	 *  steering every one of them would interrupt the leader mid-tool-call.
+	 *  force = deliver immediately even while streaming (steer). */
+	private deliverMode(kind: string, task: TaskSnapshot): "steer" | "followUp" {
+		return isStartupFailure(task, kind) ? "steer" : "followUp";
+	}
+
+	/** Per-task wake-up: failures steer in immediately, the rest queue as follow-up. */
 	private notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: "completed" | "failed" | "aborted"): void {
 		const body = makeTaskNotice(run, task, kind);
 		// Parked leader (await_subagent) receives completions through the wait — no queue.
@@ -471,7 +481,7 @@ export class SubagentManager {
 			return;
 		}
 		try {
-			this.pi.sendUserMessage(body, { deliverAs: "followUp" });
+			this.pi.sendUserMessage(body, { deliverAs: this.deliverMode(kind, task) });
 		} catch {
 			/* parent mid-stream; consumers can poll subagent_status */
 		}
@@ -479,8 +489,8 @@ export class SubagentManager {
 	}
 
 	/** Wake the parent with a 3-line notice. Full text stays out of context.
-	 *  deliverAs followUp queues the message if the parent is mid-stream
-	 *  (e.g. inside await_subagent) instead of throwing/aborting. */
+	 *  deliverAs queues the message if the parent is mid-stream (e.g. inside
+	 *  await_subagent) instead of throwing/aborting. */
 	private notifyParent(
 		run: RunSnapshot,
 		kind: "completed" | "failed" | "aborted" | "asked",
