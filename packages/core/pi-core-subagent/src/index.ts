@@ -129,7 +129,10 @@ export default function (pi: ExtensionAPI) {
 				// A registered subagent worktree is a crash leftover UNLESS another pi
 				// session still owns it (pid marker) — commit its work, keep the branch,
 				// drop the dir. Then reap merged branches and dirs git no longer tracks.
-				reapDeadWorktrees(root, ownerAlive);
+				// Pass real ownership: in a long-lived process (pi `/new`) the previous
+				// session's markers carry THIS pid, and trusting them made those dirs
+				// unreapable until the process exited.
+				reapDeadWorktrees(root, (p) => ownerAlive(p, manager.ownsWorktree));
 				cleanupMerged(root, { skipBranches: manager.liveBranches() });
 				sweepStale(root);
 			} catch {

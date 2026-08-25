@@ -53,6 +53,9 @@ export interface TaskSnapshot {
 	 *  changes are already in the leader's tree — always surfaced, never silent. */
 	isolation?: "worktree" | "in-place";
 	isolationReason?: string;
+	/** Upstream branch this one was built on top of. Merge that one FIRST — these
+	 *  are stacked, not independent. Absent = branched from the base tree. */
+	stackedOn?: string;
 	/** Worktree commit/diff trouble. Kept apart from `error` so a completed task
 	 *  still reports its answer. */
 	worktreeError?: string;

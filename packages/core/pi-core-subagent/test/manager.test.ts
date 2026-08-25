@@ -65,16 +65,31 @@ describe("createRun", () => {
 		).toThrow(/Task bad \(b\): Model not found: missing/);
 		expect(m.listRuns()).toHaveLength(0);
 	});
-	test("single-mode-only fields beside tasks[] are refused, not silently dropped", () => {
+	test("per-agent fields beside tasks[] are refused; run-wide ones fan out", () => {
 		const m = makeManager();
 		// write:true next to tasks[] produced read-only children that reported they
 		// "cannot edit files", with nothing explaining why.
 		expect(() => m.createRun({ write: true, tasks: [{ agent: "b", task: "t" }] }, stubCtx)).toThrow(
-			/write is only read in single mode/,
+			/write describes a single agent/,
 		);
 		expect(() => m.createRun({ prompt: "p", tools: ["read"], tasks: [{ agent: "b", task: "t" }] }, stubCtx)).toThrow(
-			/prompt, tools are only read in single mode/,
+			/prompt, tools describe a single agent/,
 		);
+		// cwd + maxRuntimeMs are meaningful run-wide: they become per-task defaults,
+		// and a per-task value still wins.
+		const { inputs } = m.createRun(
+			{
+				cwd: "/run/wide",
+				maxRuntimeMs: 1234,
+				tasks: [
+					{ agent: "a", task: "t1" },
+					{ agent: "b", task: "t2", cwd: "/per/task", maxRuntimeMs: 99 },
+				],
+			},
+			stubCtx,
+		);
+		expect(inputs.map((i) => i.cwd)).toEqual(["/run/wide", "/per/task"]);
+		expect(inputs.map((i) => i.maxRuntimeMs)).toEqual([1234, 99]);
 		// Per-item is the correct shape and still works.
 		expect(m.createRun({ tasks: [{ agent: "b", task: "t", write: true }] }, stubCtx).run.mode).toBe("parallel");
 		// Leftover agent/task stay tolerated — they carry no capability.

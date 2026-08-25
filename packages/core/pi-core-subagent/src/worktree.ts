@@ -81,8 +81,15 @@ export function repoRoot(cwd: string): string | undefined {
 	}
 }
 
-/** Create an isolated worktree for a write task. Returns undefined when not a git repo. */
-export function createWorktree(cwd: string, runId: string, taskId: string): Worktree | undefined {
+/**
+ * Create an isolated worktree for a write task. Returns undefined when not a git repo.
+ *
+ * @param baseRef Branch/SHA to start from. A chained write task MUST pass its
+ *   upstream's branch: basing on main HEAD hands the child a tree without the
+ *   upstream's edits, so it "builds on" work it cannot see and its merge reverts
+ *   the upstream.
+ */
+export function createWorktree(cwd: string, runId: string, taskId: string, baseRef?: string): Worktree | undefined {
 	const root = repoRoot(cwd);
 	if (!root) return undefined;
 	// --git-common-dir, not "<root>/.git": inside a linked worktree or a submodule
@@ -92,17 +99,30 @@ export function createWorktree(cwd: string, runId: string, taskId: string): Work
 	if (!container) return undefined;
 	let base: string;
 	try {
-		base = git(root, ["rev-parse", "HEAD"]); // SHA — detached HEAD stays correct
+		// Resolve to a SHA so a later commit on the ref can't skew the diff base.
+		base = git(root, ["rev-parse", baseRef ?? "HEAD"]);
 	} catch {
-		return undefined; // broken repo — fall back to in-place
+		if (!baseRef) return undefined; // broken repo — fall back to in-place
+		try {
+			base = git(root, ["rev-parse", "HEAD"]); // upstream branch gone — fall back to HEAD
+		} catch {
+			return undefined;
+		}
 	}
 	const path = join(container, runId, taskId);
 	const branch = `${BRANCH_PREFIX}${runId}/${taskId}`;
 	// Branch from the recorded SHA, not "HEAD" — a concurrent commit in the main
 	// tree between the two would otherwise skew every later diff against base.
 	git(root, ["worktree", "add", "-b", branch, path, base]);
-	// Deps follow the child into the worktree; anything else the task needs is
-	// project content already checked out there.
+	// Deps follow the child into the worktree so it can build without a reinstall.
+	//
+	// ponytail: this is a SHARED symlink to the main tree's node_modules, not a
+	// copy — the cheap option, and it escapes isolation. A child that runs an
+	// install, or `rm -rf node_modules/` (trailing slash follows the link),
+	// mutates the leader's real deps outside any branch. Ceiling accepted because
+	// copying/hardlinking node_modules per worktree costs GBs per task; the
+	// upgrade path is a per-worktree install on an explicit opt-in flag.
+	// Children are warned in their system prompt (see manager.ts childPrompt).
 	const nm = join(root, "node_modules");
 	if (existsSync(nm) && !existsSync(join(path, "node_modules"))) {
 		try {
@@ -320,7 +340,7 @@ export function claimWorktree(wt: Worktree): void {
  * Guards against pid reuse across reboots (boot id) and other hosts (hostname);
  * EPERM means the pid exists under another user — alive, not reapable.
  */
-export function ownerAlive(path: string): boolean {
+export function ownerAlive(path: string, ownedHere?: (path: string) => boolean): boolean {
 	let marker: { pid?: number; host?: string; boot?: string };
 	try {
 		marker = JSON.parse(readFileSync(ownerFile(path), "utf8"));
@@ -331,7 +351,10 @@ export function ownerAlive(path: string): boolean {
 	if (!pid || !Number.isFinite(pid) || pid <= 0) return false;
 	if (marker.host !== hostname()) return true; // another machine's checkout — never ours to reap
 	if (marker.boot !== bootId()) return false; // pre-reboot pid: reuse is near-certain
-	if (pid === process.pid) return true;
+	// Our OWN pid is not proof: a previous session in this same long-lived process
+	// (pi `/new`) leaves markers with this pid, and trusting them made those dirs
+	// unreapable for the process lifetime. Callers pass `isLive` for real knowledge.
+	if (pid === process.pid) return ownedHere?.(path) ?? true;
 	try {
 		process.kill(pid, 0);
 		return true;

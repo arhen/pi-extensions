@@ -71,11 +71,17 @@ test("peek pane: navigate + tail, never mutates tasks", () => {
 	pane.dispose();
 });
 
-test("no default runtime cap; explicit maxRuntimeMs still honored", () => {
-	// DEFAULT_RUNTIME_MS = 0 means "no timer armed"; any positive value arms one.
+test("a hard runtime ceiling exists; an explicit maxRuntimeMs always wins", () => {
+	// The stall watchdog is touched by EVERY child event, so a retry/compaction
+	// livelock is never "stalled" — only a wall-clock cap events cannot reset
+	// bounds it. A zero default would restore the never-kill hang.
 	const src = require("node:fs").readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
-	expect(src).toMatch(/const DEFAULT_RUNTIME_MS = 0;/);
+	const cap = src.match(/const DEFAULT_RUNTIME_MS = ([\d_]+);/) as RegExpMatchArray | null;
+	if (!cap?.[1]) throw new Error("DEFAULT_RUNTIME_MS not found");
+	expect(Number(cap[1].replaceAll("_", ""))).toBeGreaterThan(0);
 	expect(src).toMatch(/if \(maxRuntimeMs > 0\)/);
+	// auto-limit off must drop the DEFAULT, never an explicitly requested cap.
+	expect(src).toMatch(/input\.maxRuntimeMs \?\? \(this\.autoLimit \? DEFAULT_RUNTIME_MS : 0\)/);
 });
 
 test("describeCall renders human activity lines", () => {

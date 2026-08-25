@@ -57,7 +57,10 @@ import {
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
 /** No default wall-clock cap: a subagent runs until its task is done, it stalls, or the user aborts. */
-const DEFAULT_RUNTIME_MS = 0;
+/** Hard wall-clock ceiling per child. The stall watchdog is touched by every
+ *  event, so a child stuck in a retry/compaction livelock emits forever and is
+ *  never "stalled" — only a cap that events CANNOT reset bounds that. */
+const DEFAULT_RUNTIME_MS = 3_600_000; // 1 h
 /** Last-resort hang detector, not a latency budget. A healthy child can be
  *  silent for minutes (big-context upload, non-streamed reasoning, provider
  *  retry backoff), so this is deliberately far above any normal quiet window —
@@ -248,9 +251,14 @@ export class SubagentManager {
 	private widgetTimers = new Map<string, ReturnType<typeof setTimeout>>(); // per-run stream throttle
 	private widgetRuns: RunSnapshot[] = [];
 	private eventSeq = 0;
-	/** Sidecar write ordering: unique tmp names + last-writer-wins by sequence. */
+	/** Sidecar writes are serialized on this chain — ordering the DECISION isn't
+	 *  enough, two renames in flight can still land out of order. */
 	private persistSeq = 0;
 	private persistedSeq = 0;
+	private persistChain: Promise<unknown> = Promise.resolve();
+	/** Distinguishes managers sharing a pid (tests, SDK hosts with two sessions)
+	 *  so their tmp paths can't collide. */
+	private readonly instanceNonce = Math.random().toString(36).slice(2, 8);
 	/** Set by clearRuns — blocks late persists from erasing the sidecar. */
 	private cleared = false;
 
@@ -425,18 +433,22 @@ export class SubagentManager {
 			// ALL run history for the session on the next read. The tmp name must be
 			// UNIQUE per write — a shared one lets two concurrent persists interleave
 			// their bytes (unparseable sidecar) or rename an older snapshot last.
-			const tmp = `${sidecar}.${process.pid}.${this.persistSeq++}.tmp`;
+			const seq = ++this.persistSeq;
+			const tmp = `${sidecar}.${process.pid}.${this.instanceNonce}.${seq}.tmp`;
 			const payload = JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2);
-			const seq = this.persistSeq;
-			void writeFile(tmp, payload)
-				.then(async () => {
-					// Drop a snapshot that a newer persist already superseded, so a slow
-					// write can't rename stale data over fresh data.
-					if (seq < this.persistedSeq) return rm(tmp, { force: true });
+			// Serialized: each write+rename runs after the previous one finishes, so two
+			// renames can never be in flight and land out of order.
+			this.persistChain = this.persistChain.then(async () => {
+				// A newer snapshot already landed — this one is stale, don't write it.
+				if (seq < this.persistedSeq) return;
+				try {
+					await writeFile(tmp, payload);
+					await rename(tmp, sidecar);
 					this.persistedSeq = seq;
-					return rename(tmp, sidecar);
-				})
-				.catch(() => rm(tmp, { force: true }).catch(() => {})); // never leak a tmp, never throw
+				} catch {
+					await rm(tmp, { force: true }).catch(() => {}); // never leak a tmp, never throw
+				}
+			});
 		} catch {
 			/* ignore */
 		}
@@ -825,7 +837,15 @@ export class SubagentManager {
 		let isolationReason: string | undefined;
 		if (canWrite) {
 			try {
-				wt = createWorktree(task.cwd, run.id, task.id);
+				// Stack on the upstream write task's branch, so a chained writer actually
+				// SEES the work it was told to build on. Read-only upstreams have no
+				// branch, so those stay based on HEAD.
+				const upstream = (task.needs ?? [])
+					.map((id) => run.tasks.find((t) => t.id === id))
+					.filter((t) => t?.branch && t.status === "completed")
+					.at(-1);
+				wt = createWorktree(task.cwd, run.id, task.id, upstream?.branch);
+				if (wt && upstream?.branch) task.stackedOn = upstream.branch;
 				if (!wt) isolationReason = "not a git repository";
 			} catch (err) {
 				wt = undefined; // git failure → in-place
@@ -866,24 +886,31 @@ export class SubagentManager {
 			this.liveWorktrees.set(`${run.id}:${task.id}`, wt);
 		}
 
-		this.updateTask(
-			run,
-			task,
-			{
-				status: "starting",
-				startedAt: Date.now(),
-				// Upstream outputs were spliced in by the scheduler; the snapshot must show
-				// the prompt the child actually receives.
-				task: input.task,
-				// RESOLVED model, not the request — an agent file's `model:` overrides it,
-				// and this patch used to clobber the resolved id recorded above.
-				model: model?.id ?? input.model,
-				thinking,
-				tools,
-			},
-			ctx,
-			onUpdate,
-		);
+		// Guarded: a throwing event listener or widget failure here would escape
+		// runChild BEFORE the try/finally that releases the worktree — leaking a
+		// checkout that every reaper then skips (registered + owned by a live pid).
+		try {
+			this.updateTask(
+				run,
+				task,
+				{
+					status: "starting",
+					startedAt: Date.now(),
+					// Upstream outputs were spliced in by the scheduler; the snapshot must show
+					// the prompt the child actually receives.
+					task: input.task,
+					// RESOLVED model, not the request — an agent file's `model:` overrides it,
+					// and this patch used to clobber the resolved id recorded above.
+					model: model?.id ?? input.model,
+					thinking,
+					tools,
+				},
+				ctx,
+				onUpdate,
+			);
+		} catch {
+			/* a listener/widget failure must not strand the checkout */
+		}
 
 		// Set once the dir must outlive this call: committed work awaiting the
 		// leader's merge, or a commit failure whose work exists ONLY in the dir.
@@ -897,9 +924,15 @@ export class SubagentManager {
 
 		const key = `${run.id}:${task.id}`;
 		try {
+			// node_modules is a SHARED symlink to the leader's real tree, so dep writes
+			// escape the worktree entirely and `rm -rf node_modules/` destroys the
+			// project's deps. The child is the only thing that can avoid that.
+			const worktreeNote = wt
+				? ` You work in an isolated git worktree (branch ${wt.branch})${task.stackedOn ? `, stacked on ${task.stackedOn} (its changes are already in your tree)` : ""}. Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes. node_modules is a SHARED symlink to the main checkout: never install, upgrade, or delete dependencies (no npm/bun/yarn/pnpm install, no \`rm -rf node_modules\`) — those writes escape your worktree and damage the user's project. If the task truly needs a dependency change, edit the manifest only and say so in your answer.`
+				: "";
 			const subagentInstruction = run.allowIntercom
-				? `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${wt ? ` You work in an isolated git worktree (branch ${wt.branch}). Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes.` : ""}`
-				: `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer for the parent agent.${wt ? ` You work in an isolated git worktree (branch ${wt.branch}). Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes.` : ""}`;
+				? `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`
+				: `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer for the parent agent.${worktreeNote}`;
 
 			const loader = new DefaultResourceLoader({
 				cwd: childCwd,
@@ -977,8 +1010,10 @@ export class SubagentManager {
 					),
 			});
 
-			// auto-limit off = strip leader-imposed caps; tasks run unlimited until done.
-			const maxRuntimeMs = this.autoLimit ? (input.maxRuntimeMs ?? DEFAULT_RUNTIME_MS) : 0;
+			// auto-limit off = drop the DEFAULT ceiling, but never an explicit request:
+			// discarding the leader's own maxRuntimeMs removed the last escape from a
+			// livelocked child.
+			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : 0);
 			const promptPromise = child.prompt(task.task, { source: "extension" });
 			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise, watchdog.promise];
 			if (maxRuntimeMs > 0) {
@@ -1000,6 +1035,11 @@ export class SubagentManager {
 			// TERMINAL, not just "aborted": a cancel/timeout that landed while the
 			// final text was being assembled must not be overwritten with "completed"
 			// (which would also skip the partial commit and drop the child's work).
+			// `awaiting_parent` also means the child hadn't finished talking — marking
+			// it completed would publish a truncated finalText to every dependent.
+			if (task.status === "awaiting_parent") {
+				this.pendingReplies.get(key)?.resolve("(your task is being finalized — stop work and return now)");
+			}
 			if (!TERMINAL.includes(task.status)) {
 				this.updateTask(run, task, { status: "completed", finalText, endedAt: Date.now() }, ctx, onUpdate);
 				if (wt) {
@@ -1134,13 +1174,14 @@ export class SubagentManager {
 		// Single-mode-only fields alongside an array mode are silently dropped
 		// otherwise: `write: true` next to tasks:[...] produced read-only children
 		// that reported they "cannot edit files", with nothing explaining why.
+		// `cwd` and `maxRuntimeMs` are meaningful run-wide (and the schema advertises
+		// maxRuntimeMs without a single-mode marker), so they FAN OUT as per-task
+		// defaults instead of being refused. The rest genuinely describe one agent.
 		if (hasChain || hasTasks) {
-			const stray = (["write", "prompt", "tools", "model", "thinking", "cwd", "maxRuntimeMs"] as const).filter(
-				(k) => params[k] !== undefined,
-			);
+			const stray = (["write", "prompt", "tools", "model", "thinking"] as const).filter((k) => params[k] !== undefined);
 			if (stray.length > 0) {
 				throw new Error(
-					`${stray.join(", ")} ${stray.length > 1 ? "are" : "is"} only read in single mode. Set ${stray.length > 1 ? "them" : "it"} on each item of ${hasChain ? "chain" : "tasks"} instead.`,
+					`${stray.join(", ")} ${stray.length > 1 ? "describe" : "describes"} a single agent. Set ${stray.length > 1 ? "them" : "it"} on each item of ${hasChain ? "chain" : "tasks"} instead.`,
 				);
 			}
 		}
@@ -1160,9 +1201,12 @@ export class SubagentManager {
 						maxRuntimeMs: params.maxRuntimeMs,
 					},
 				]
-			: hasTasks
-				? params.tasks!
-				: params.chain!;
+			: (hasTasks ? params.tasks! : params.chain!).map((item) => ({
+					// Run-wide defaults; a per-task value always wins.
+					...item,
+					cwd: item.cwd ?? params.cwd,
+					maxRuntimeMs: item.maxRuntimeMs ?? params.maxRuntimeMs,
+				}));
 		if (inputs.length > MAX_TASKS) throw new Error(`Too many subagent tasks (${inputs.length}). Max is ${MAX_TASKS}.`);
 		// Task ids become git refs + filesystem paths — refuse anything unsafe.
 		// Explicit ids are checked against each other; generated ones are checked
@@ -1184,6 +1228,10 @@ export class SubagentManager {
 			}
 		}
 		const edges = resolveNeeds(inputs, mode);
+		// A new run exists, so persisting is meaningful again. Without this, a host
+		// that emits session_shutdown with no following session_start (SIGTERM, SDK
+		// reuse, tests) leaves every later persist a silent no-op.
+		this.cleared = false;
 		// Pre-flight every task's model BEFORE the run exists. A matched agent file
 		// overrides the requested model, so an unresolvable one is the leader's
 		// mistake to see NOW — not N children dying one by one on their first turn
@@ -1376,6 +1424,12 @@ export class SubagentManager {
 	}
 
 	/** Branches owned by worktrees of still-running children. */
+	/** True only for checkouts THIS manager still runs — a marker carrying our own
+	 *  pid from a previous session in the same process is not proof of life. */
+	ownsWorktree = (path: string): boolean => {
+		for (const wt of this.liveWorktrees.values()) if (wt.path === path) return true;
+		return false;
+	};
 	liveBranches(): Set<string> {
 		return new Set(Array.from(this.liveWorktrees.values(), (wt) => wt.branch));
 	}

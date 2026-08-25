@@ -197,13 +197,23 @@ export class SubagentsWidget implements Component {
 }
 /** Blocking-call summary: full text, because the model asked for it. */
 /** Where a write child's edits went: a branch to merge, or straight into the tree. */
-function worktreeLine(task: TaskSnapshot): string {
+function worktreeLine(task: TaskSnapshot, siblings?: TaskSnapshot[]): string {
 	const parts: string[] = [];
 	if (task.branch) {
 		const files = task.changedFiles?.length
 			? ` (${task.changedFiles.length} file(s): ${truncateText(task.changedFiles.join(", "), 160)})`
 			: "";
 		parts.push(`Branch: ${task.branch}${files} — merge with \`git merge --no-ff ${task.branch}\` after review.`);
+		if (task.stackedOn) parts.push(`Stacked on ${task.stackedOn} — merge that branch FIRST.`);
+		// Sibling branches are independent, not stacked: overlapping files mean the
+		// second merge is a real 3-way, and non-overlapping-but-coupled edits break
+		// silently. Both are computable from changedFiles, so say so.
+		const overlap = (siblings ?? [])
+			.filter((s) => s.id !== task.id && s.branch && !s.stackedOn && !task.stackedOn)
+			.flatMap((s) => (s.changedFiles ?? []).filter((f) => task.changedFiles?.includes(f)).map((f) => `${s.id}:${f}`));
+		if (overlap.length > 0) {
+			parts.push(`CONFLICT RISK — sibling branches touched the same file(s): ${truncateText(overlap.join(", "), 200)}`);
+		}
 	} else if (task.isolation === "in-place") {
 		parts.push(
 			`Applied IN PLACE (no branch) — ${task.isolationReason ?? "worktree unavailable"}. Review the working tree directly.`,
@@ -228,7 +238,7 @@ export function makeSummary(run: RunSnapshot): string {
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
 		lines.push(
-			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task)}`,
+			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
 		);
 	}
 	// Ceiling on the WHOLE summary — 16 tasks × 24KB would otherwise flood the parent context.

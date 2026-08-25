@@ -147,6 +147,12 @@ On completion the extension commits the child's changes (the child is told not t
 git merge --no-ff subagents/<run>/<task>
 ```
 
+**Branch relationships — read this before merging.** A write task that `needs` a completed write task is **stacked**: its worktree branches from the upstream's branch, so the child actually sees the files its upstream wrote (basing on main `HEAD` would hand it a tree without them, and its merge would revert the upstream). The summary says `Stacked on <branch> — merge that branch FIRST`; merge in dependency order.
+
+Same-wave write tasks are **siblings**: both branch from the same base, so they are independent, not stacked. When two siblings changed the same file the summary emits `CONFLICT RISK` naming the overlap — the second `git merge` will be a real 3-way. Siblings that touched *different* but coupled files (a schema and its consumer) merge cleanly and can still break at runtime; that one is on you.
+
+**Dependencies are shared, not isolated.** `node_modules` is symlinked to the main checkout, so dependency writes escape the worktree: children are instructed never to install, upgrade, or delete deps. A task that genuinely needs a dependency change should edit the manifest and say so.
+
 Isolation follows the toolset the child actually receives: explicit `tools: ["bash", "edit", "write"]` earns a worktree even without `write: true`, and an agent file that narrows the child to read-only gets no branch at all.
 
 Cleanup, in order of trust:

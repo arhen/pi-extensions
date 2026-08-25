@@ -240,6 +240,39 @@ describe("worktree", () => {
 		expect(reapDeadWorktrees(repo, ownerAlive)).toBe(1); // now it can be committed + dropped
 	});
 
+	test("a stacked worktree SEES its upstream's committed work", () => {
+		// A chained write task based on main HEAD gets a tree WITHOUT the upstream's
+		// edits, so it "builds on" work it cannot see and its merge reverts it.
+		const up = createWorktree(repo, "run_stack", "task_a")!;
+		writeFileSync(join(up.path, "from-a.txt"), "written by A\n");
+		expect(commitWorktree(up, "A's work")).toBe("committed");
+
+		// Downstream stacks on A's branch instead of HEAD.
+		const down = createWorktree(repo, "run_stack", "task_b", up.branch)!;
+		expect(existsSync(join(down.path, "from-a.txt"))).toBe(true);
+		expect(readFileSync(join(down.path, "from-a.txt"), "utf8")).toBe("written by A\n");
+
+		// B's own diff is against its own base, so it reports only B's files.
+		writeFileSync(join(down.path, "from-b.txt"), "written by B\n");
+		expect(commitWorktree(down, "B's work")).toBe("committed");
+		expect(branchDiff(down).files).toEqual(["from-b.txt"]);
+
+		// A sibling (no baseRef) must NOT see A's work — siblings stay independent.
+		const sib = createWorktree(repo, "run_stack", "task_c")!;
+		expect(existsSync(join(sib.path, "from-a.txt"))).toBe(false);
+
+		removeWorktree(sib);
+		removeWorktree(down);
+		removeWorktree(up);
+	});
+
+	test("a vanished upstream ref falls back to HEAD instead of failing", () => {
+		const wt = createWorktree(repo, "run_ghost", "task_ghost", "subagents/does/not-exist");
+		expect(wt).toBeDefined();
+		expect(existsSync(wt!.path)).toBe(true);
+		removeWorktree(wt!);
+	});
+
 	test("removeByBranch removes the worktree dir by branch name", () => {
 		const wt = createWorktree(repo, "run_11", "task_11")!;
 		expect(existsSync(wt.path)).toBe(true);

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Seventh review round — write-mode chains and the round-6 fixes:
+  - **CRITICAL: a chained write task couldn't see the work it was told to build on.** Every write worktree branched from main `HEAD`, so in `chain:[A,B]` with both `write:true`, B got a tree WITHOUT A's edits — it received only A's text summary, edited the pre-A files, and merging B reverted A. A write task now stacks on its completed upstream write task's branch, the child is told its tree already contains that work, and the summary says `Stacked on <branch> — merge that branch FIRST`.
+  - **CRITICAL (self-inflicted, round 6): the watchdog fix traded a false-kill for a never-kill.** Touching it on every event means a child in a provider retry/compaction livelock emits forever and is never "stalled", and `DEFAULT_RUNTIME_MS` was 0 — so nothing bounded it: task `running` forever, `hasActiveRun()` pinned, `autoAwait` parked for good. There is now a 1 h hard wall-clock ceiling events cannot reset, and `auto-limit off` no longer discards an explicitly requested `maxRuntimeMs` (which had removed the last escape).
+  - **Sibling write branches were presented as independently mergeable.** Same-wave writers share a base, so the second merge is a real 3-way; `changedFiles` was already collected and never checked. Overlaps now raise `CONFLICT RISK` naming the files.
+  - **Shared `node_modules` escapes isolation**: it's a symlink to the main checkout, so a child's install — or `rm -rf node_modules/` — damages the user's real tree outside any branch. Children are now explicitly instructed never to install/upgrade/delete deps; the ceiling and its upgrade path are documented in code and README.
+  - Sidecar persists are **serialized** (ordering the decision still left two renames racing on the threadpool) and tmp names carry an instance nonce (two managers in one process shared a tmp path — the exact interleaving round 6 set out to fix).
+  - `cleared` no longer latches for the process lifetime: `createRun` re-arms it, so a host that never re-runs `session_start` still persists.
+  - Run-wide `cwd`/`maxRuntimeMs` beside `tasks[]` fan out as per-task defaults instead of being refused — the schema advertises `maxRuntimeMs` without a single-mode marker, so rejecting it contradicted the tool's own docs.
+  - `awaiting_parent` no longer passes the completion guard (it published a truncated `finalText` to every dependent); the worktree registration is guarded so a throwing listener can't strand a checkout; `ownerAlive` no longer trusts our own pid blindly, which made a previous session's dirs unreapable for the whole process lifetime in a long-lived pi.
+- 6 new tests including the first `makeSummary` coverage (105 total).
+
 - Sixth review round — watchdog, sidecar and cancel:
   - **CRITICAL: the stall watchdog killed healthy children.** Only a narrow event allowlist fed it, so silent-but-normal windows — big-context upload, providers that don't stream reasoning, retry backoff — tripped the 180s kill and surfaced as `Error: terminated` (this is why heavy-reasoning subagents kept dying). ANY child event now feeds the watchdog, and the limit is 15 min: it's a last-resort hang detector, not a latency budget.
   - **A cancel landing mid-completion was overwritten with `completed`** — the guard checked only `"aborted"` instead of all terminal states, which also skipped the partial commit and dropped the child's work.
