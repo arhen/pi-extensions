@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { colorNums, describeCall } from "../src/format.ts";
@@ -260,4 +260,127 @@ test("long absolute paths are shortened from the left, keeping the tail", () => 
 test("a tail with nothing renderable says so instead of showing an empty frame", () => {
 	const rows = tailRows([{ message: { role: "assistant", content: [{ type: "text", text: "<think></think>" }] } }]);
 	expect(rows.some((r) => r.includes("(no activity yet)"))).toBe(true);
+});
+
+/** A tailing pane over a synthetic file, plus a way to append to it live. */
+function tailingPane(count: number) {
+	const dir = mkdtempSync(join(tmpdir(), "peek-scroll-"));
+	const file = join(dir, "child.jsonl");
+	const entry = (n: number) =>
+		JSON.stringify({ message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `f${n}.ts` } }] } });
+	writeFileSync(file, ["", ...Array.from({ length: count }, (_, i) => entry(i))].join("\n"));
+	const tasks: PeekTask[] = [
+		{ runId: "r", taskId: "t", agent: "a", status: "running", running: true, sessionFile: file, line: "• a" },
+	];
+	const pane = createPeekPane(
+		() => tasks,
+		theme,
+		() => {},
+		() => {},
+		() => {},
+	);
+	pane.handleInput("\r"); // enter → tail
+	const rows = () => pane.render(100).map((l) => l.trim());
+	const append = (n: number) => appendFileSync(file, `\n${entry(n)}`);
+	return { pane, rows, append };
+}
+
+test("a fresh tail is live: newest lines, no scrollback banner", () => {
+	const { pane, rows } = tailingPane(40);
+	const r = rows();
+	expect(r.some((l) => l.includes("f39.ts"))).toBe(true);
+	expect(r.some((l) => l.includes("f0.ts"))).toBe(false); // scrolled off the viewport
+	expect(r.some((l) => l.includes("older"))).toBe(false);
+	pane.dispose();
+});
+
+test("k scrolls back one row and says how far back you are", () => {
+	const { pane, rows } = tailingPane(40);
+	pane.handleInput("k");
+	const r = rows();
+	expect(r.some((l) => l.includes("f39.ts"))).toBe(false); // newest is now below the window
+	expect(r.some((l) => l.includes("f38.ts"))).toBe(true);
+	expect(r.some((l) => l.includes("↑ 1 older"))).toBe(true);
+	pane.dispose();
+});
+
+test("G returns to live, j walks back down toward it", () => {
+	const { pane, rows } = tailingPane(40);
+	for (let i = 0; i < 5; i++) pane.handleInput("k");
+	expect(rows().some((l) => l.includes("↑ 5 older"))).toBe(true);
+	pane.handleInput("j");
+	expect(rows().some((l) => l.includes("↑ 4 older"))).toBe(true);
+	pane.handleInput("G");
+	expect(rows().some((l) => l.includes("older"))).toBe(false);
+	expect(rows().some((l) => l.includes("f39.ts"))).toBe(true);
+	pane.dispose();
+});
+
+test("scrolling past either end is a no-op, never a wrap", () => {
+	const { pane, rows } = tailingPane(40);
+	for (let i = 0; i < 200; i++) pane.handleInput("k"); // far past the oldest line
+	const top = rows();
+	expect(top.some((l) => l.includes("f0.ts"))).toBe(true); // pinned at the oldest
+	expect(top.filter((l) => l.startsWith("│")).length).toBeGreaterThan(3);
+	for (let i = 0; i < 200; i++) pane.handleInput("j"); // far past live
+	const live = rows();
+	expect(live.some((l) => l.includes("f39.ts"))).toBe(true);
+	expect(live.some((l) => l.includes("older"))).toBe(false);
+	pane.dispose();
+});
+
+test("g jumps to the oldest readable line", () => {
+	const { pane, rows } = tailingPane(40);
+	pane.handleInput("g");
+	expect(rows().some((l) => l.includes("f0.ts"))).toBe(true);
+	pane.dispose();
+});
+
+// The bug this guards: a window anchored to the END of a growing list makes the
+// text you are reading crawl upward on every 700ms poll.
+test("a scrolled-back view stays on the same lines as the child appends", () => {
+	const { pane, rows, append } = tailingPane(40);
+	for (let i = 0; i < 5; i++) pane.handleInput("k");
+	const before = rows().filter((l) => l.includes(".ts"));
+	append(40);
+	append(41);
+	const after = rows().filter((l) => l.includes(".ts"));
+	expect(after).toEqual(before); // same lines, not shifted by the two new ones
+	expect(rows().some((l) => l.includes("↑ 7 older"))).toBe(true); // 5 + 2 appended
+	pane.dispose();
+});
+
+test("a live view does follow new output", () => {
+	const { pane, rows, append } = tailingPane(40);
+	append(40);
+	expect(rows().some((l) => l.includes("f40.ts"))).toBe(true);
+	pane.dispose();
+});
+
+test("leaving the tail resets scrollback, so re-entering starts live", () => {
+	const { pane, rows } = tailingPane(40);
+	for (let i = 0; i < 5; i++) pane.handleInput("k");
+	pane.handleInput("\x1b"); // esc → back to the list
+	pane.handleInput("\r"); // enter → tail again
+	expect(rows().some((l) => l.includes("older"))).toBe(false);
+	expect(rows().some((l) => l.includes("f39.ts"))).toBe(true);
+	pane.dispose();
+});
+
+test("in the LIST, j/k still move between agents instead of scrolling", () => {
+	const tasks: PeekTask[] = [
+		{ runId: "r", taskId: "t1", agent: "a1", status: "running", running: true, line: "• a1" },
+		{ runId: "r", taskId: "t2", agent: "a2", status: "running", running: true, line: "• a2" },
+	];
+	const pane = createPeekPane(
+		() => tasks,
+		theme,
+		() => {},
+		() => {},
+		() => {},
+	);
+	expect(pane.render(60).some((l) => l.includes("1/2"))).toBe(true);
+	pane.handleInput("j");
+	expect(pane.render(60).some((l) => l.includes("2/2"))).toBe(true);
+	pane.dispose();
 });

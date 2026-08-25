@@ -116,7 +116,8 @@ function eventLines(raw: string): PeekLine[] {
 	return out;
 }
 
-function tailLines(path: string, max: number): PeekLine[] {
+/** The whole readable tail, unsliced — the viewport decides what is shown. */
+function tailLines(path: string): PeekLine[] {
 	let text: string;
 	try {
 		text = readTail(path);
@@ -126,7 +127,7 @@ function tailLines(path: string, max: number): PeekLine[] {
 	const lines: PeekLine[] = [];
 	// First line of a mid-file read is usually a fragment — drop it.
 	for (const raw of text.split("\n").slice(1)) lines.push(...eventLines(raw));
-	return lines.slice(-max);
+	return lines;
 }
 
 /** Gutter colour carries the line's role, so the eye can skip to failures without
@@ -172,9 +173,32 @@ export function createPeekPane(
 	let selected = 0;
 	let tailing = false;
 	let confirming = false;
+	/** Rows scrolled back from the newest line. 0 = pinned to live output.
+	 *  A tail that keeps jumping to the bottom while you read is unusable, so any
+	 *  scroll detaches from live and the 700ms poll stops moving the view. */
+	let scrollback = 0;
+	/** Content rows the last render could show — page keys need the real viewport,
+	 *  which only render() knows (it is given the width and derives the height). */
+	let viewport = TAIL_ROWS;
+	/** Tail length at the previous render, to keep a scrolled-back view pinned to
+	 *  the SAME lines as the child appends new ones. Without this the window is
+	 *  anchored to the end of a growing list, so the text you are reading crawls
+	 *  upward every poll. */
+	let lastTotal = 0;
 	const timer = setInterval(requestRender, POLL_MS);
 
 	const clamp = (n: number, len: number) => (len === 0 ? 0 : Math.max(0, Math.min(len - 1, n)));
+	/** Scrolling past either end is a no-op, never a wrap: the newest line is a
+	 *  hard floor, the oldest readable line a hard ceiling. */
+	const scrollBy = (rows: number) => {
+		const task = getTasks()[selected];
+		if (!tailing || !task?.sessionFile) return;
+		const total = tailLines(task.sessionFile).length;
+		// Anchor here as well as in render(): a scroll before the next render would
+		// otherwise be read as "the file grew by its whole length" and jump the view.
+		lastTotal = total;
+		scrollback = Math.max(0, Math.min(Math.max(0, total - viewport), scrollback + rows));
+	};
 
 	/**
 	 * Every row is a full-width bordered line: │ edge, one space of padding, the
@@ -208,7 +232,12 @@ export function createPeekPane(
 			const task = tasks[selected]!;
 			const hint = confirming
 				? theme.fg("error", `abort ${task.agent}?  y / n`)
-				: theme.fg("dim", tailing ? "esc back · x abort" : "shift+↑↓ / jk move · enter tail · x abort · esc close");
+				: theme.fg(
+						"dim",
+						tailing
+							? "↑↓ / jk scroll · ⇧ page · g/G top·live · esc back · x abort"
+							: "shift+↑↓ / jk move · enter tail · x abort · esc close",
+					);
 			// Breadcrumb, not a bare name: while tailing, WHERE you are is the thing you
 			// lose track of first, and the child's status belongs next to its name.
 			const crumb = tailing
@@ -226,9 +255,23 @@ export function createPeekPane(
 				lines.push(row(theme.fg("dim", "(no session file — agent has not started yet)"), width));
 			} else {
 				// ponytail: re-reads the tail each render (700ms poll). A watcher only pays off for files far bigger than a child session.
-				const tail = tailLines(task.sessionFile, TAIL_ROWS);
-				if (tail.length === 0) lines.push(row(theme.fg("dim", "(no activity yet)"), width));
-				for (const line of tail) lines.push(row(renderLine(line, theme), width));
+				const tail = tailLines(task.sessionFile);
+				viewport = TAIL_ROWS;
+				if (scrollback > 0 && lastTotal > 0 && tail.length > lastTotal) scrollback += tail.length - lastTotal;
+				lastTotal = tail.length;
+				// Clamp here too: the readable tail is a sliding 64KB window, so old lines
+				// fall off the front and a deep scrollback would render a blank window.
+				scrollback = Math.max(0, Math.min(Math.max(0, tail.length - viewport), scrollback));
+				const end = tail.length - scrollback;
+				const window = tail.slice(Math.max(0, end - viewport), end);
+				if (window.length === 0) lines.push(row(theme.fg("dim", "(no activity yet)"), width));
+				for (const line of window) lines.push(row(renderLine(line, theme), width));
+				// Scrolled-back views must say so: an unmoving tail is otherwise
+				// indistinguishable from a stalled child.
+				if (scrollback > 0) {
+					lines.push(edgeRow(width, "├", "┤"));
+					lines.push(row(theme.fg("warning", `↑ ${scrollback} older · G / end → live`), width));
+				}
 			}
 			lines.push(edgeRow(width, "╰", "╯"));
 			return lines;
@@ -249,17 +292,32 @@ export function createPeekPane(
 			if (data === "x" || data === "X") {
 				if (tasks[selected]?.running) confirming = true;
 			} else if (matchesKey(data, Key.escape)) {
-				if (tailing) tailing = false;
-				else close();
+				if (tailing) {
+					tailing = false;
+					scrollback = 0; // leaving the tail forgets where you were reading
+				} else close();
 			} else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
 				tailing = true;
+				scrollback = 0; // a freshly opened tail always starts live
 			} else if (matchesKey(data, Key.left)) {
 				tailing = false;
+				scrollback = 0;
+			} else if (matchesKey(data, Key.pageUp)) {
+				scrollBy(viewport);
+			} else if (matchesKey(data, Key.pageDown)) {
+				scrollBy(-viewport);
+			} else if (data === "g") {
+				scrollBy(Number.MAX_SAFE_INTEGER); // oldest readable line
+			} else if (data === "G" || matchesKey(data, Key.end)) {
+				scrollback = 0; // back to live
 			} else if (matchesKey(data, "shift+up") || matchesKey(data, Key.up) || data === "k") {
+				// In the tail the same keys scroll; in the list they move between agents.
 				// shift+↑↓ and j/k are the reliable pair: bare arrows can be eaten by prompt history.
-				selected = clamp(selected - 1, len);
+				if (tailing) scrollBy(1);
+				else selected = clamp(selected - 1, len);
 			} else if (matchesKey(data, "shift+down") || matchesKey(data, Key.down) || data === "j") {
-				selected = clamp(selected + 1, len);
+				if (tailing) scrollBy(-1);
+				else selected = clamp(selected + 1, len);
 			}
 			requestRender();
 		},
