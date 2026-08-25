@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Git chatter no longer corrupts the TUI.** `execFileSync` captures stdout but INHERITS stderr, so git printed `Preparing worktree (new branch ...)` straight into the rendered frame on every write-agent spawn. All git calls now capture stderr; failures still carry git's message.
+- Eighth review round — empirical proof + watchdog design audit:
+  - **The runtime ceiling was user-disablable.** `/subagents auto-limit off` set `maxRuntimeMs = 0`, arming no timer at all — and since the stall watchdog is touched by every event it cannot kill a child that emits events. That reproduced the immortal-child hang verbatim. `auto-limit off` now RAISES the ceiling (6 h) instead of removing it.
+  - **A killed child's output is no longer discarded.** A timeout/abort took the catch path, which never published `finalText`, so chain dependents received nothing while the child's partial work was still committed to its branch. Whatever the child said is now salvaged onto the task.
+  - `cleanupMerged` prunes empty `<subagents>/<runId>/` dirs — previously one leaked per run and only a later `sweepStale` removed it.
+  - **Corrected a claim the empirical test disproved**: stacked branches are order-INDEPENDENT (merging the stacked branch pulls the upstream in; the upstream's merge is then "Already up to date"). The summary said "merge that branch FIRST", implying a requirement that doesn't exist.
+- Worktree stacking verified end to end against real git: a stacked child sees its upstream's edits, its diff still reports only its own files, siblings stay independent, and sibling conflicts fail loudly. The old non-stacked behaviour was proven to produce spurious conflicts, phantom-delete clobbers, and clean merges that leave a non-compiling tree — documented in the README.
+
 - Seventh review round — write-mode chains and the round-6 fixes:
   - **CRITICAL: a chained write task couldn't see the work it was told to build on.** Every write worktree branched from main `HEAD`, so in `chain:[A,B]` with both `write:true`, B got a tree WITHOUT A's edits — it received only A's text summary, edited the pre-A files, and merging B reverted A. A write task now stacks on its completed upstream write task's branch, the child is told its tree already contains that work, and the summary says `Stacked on <branch> — merge that branch FIRST`.
   - **CRITICAL (self-inflicted, round 6): the watchdog fix traded a false-kill for a never-kill.** Touching it on every event means a child in a provider retry/compaction livelock emits forever and is never "stalled", and `DEFAULT_RUNTIME_MS` was 0 — so nothing bounded it: task `running` forever, `hasActiveRun()` pinned, `autoAwait` parked for good. There is now a 1 h hard wall-clock ceiling events cannot reset, and `auto-limit off` no longer discards an explicitly requested `maxRuntimeMs` (which had removed the last escape).

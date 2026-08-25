@@ -147,9 +147,11 @@ On completion the extension commits the child's changes (the child is told not t
 git merge --no-ff subagents/<run>/<task>
 ```
 
-**Branch relationships — read this before merging.** A write task that `needs` a completed write task is **stacked**: its worktree branches from the upstream's branch, so the child actually sees the files its upstream wrote (basing on main `HEAD` would hand it a tree without them, and its merge would revert the upstream). The summary says `Stacked on <branch> — merge that branch FIRST`; merge in dependency order.
+**Branch relationships — read this before merging.** A write task that `needs` a completed write task is **stacked**: its worktree branches from the upstream's branch, so the child actually sees the files its upstream wrote. A stacked branch *contains* its upstream's commits, so merge order doesn't matter — merging the stacked branch brings both, and the upstream's own merge is then a no-op.
 
-Same-wave write tasks are **siblings**: both branch from the same base, so they are independent, not stacked. When two siblings changed the same file the summary emits `CONFLICT RISK` naming the overlap — the second `git merge` will be a real 3-way. Siblings that touched *different* but coupled files (a schema and its consumer) merge cleanly and can still break at runtime; that one is on you.
+Why this matters (verified against real git, not just reasoned about): when a downstream child *can't* see its upstream's work, merging produces spurious conflicts, half-clobbered files where the child's side looks like a phantom delete, and — worst — **clean merges that leave a broken tree**. If the upstream renamed `login`→`signIn` and the downstream wrote new code importing `login`, git reports success with exit 0 and the code doesn't compile. Stacking removes that class by construction.
+
+Same-wave write tasks are **siblings**: both branch from the same base, so they are independent. When two siblings changed the same file the summary emits `CONFLICT RISK` naming the overlap — the second `git merge` is a real 3-way and fails loudly, which is the safe outcome. The dangerous case is siblings touching *different* but coupled files: that merges clean and breaks at runtime. Nothing can detect it for you.
 
 **Dependencies are shared, not isolated.** `node_modules` is symlinked to the main checkout, so dependency writes escape the worktree: children are instructed never to install, upgrade, or delete deps. A task that genuinely needs a dependency change should edit the manifest and say so.
 

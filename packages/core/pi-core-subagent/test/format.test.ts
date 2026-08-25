@@ -62,7 +62,7 @@ describe("makeSummary merge safety", () => {
 		expect(out).not.toContain("CONFLICT RISK");
 	});
 
-	test("a stacked branch says merge the upstream FIRST and is not a conflict", () => {
+	test("a stacked branch reports that it contains its upstream, and is not a conflict", () => {
 		const out = makeSummary(
 			run([
 				task({ id: "task_a", branch: "subagents/run_x/task_a", changedFiles: ["src/auth.ts"] }),
@@ -74,7 +74,10 @@ describe("makeSummary merge safety", () => {
 				}),
 			]),
 		);
-		expect(out).toContain("Stacked on subagents/run_x/task_a — merge that branch FIRST.");
+		// Proven empirically: merging the stacked branch brings the upstream with it,
+		// and the upstream's own merge is then "Already up to date" — order-independent.
+		expect(out).toContain("Stacked on subagents/run_x/task_a");
+		expect(out).toContain("merging this one brings both");
 		// Stacked branches already contain the upstream, so the shared file is expected.
 		expect(out).not.toContain("CONFLICT RISK");
 	});

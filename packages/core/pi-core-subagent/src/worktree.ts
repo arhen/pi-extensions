@@ -28,6 +28,11 @@ const BRANCH_PREFIX = "subagents/";
 const COMMIT_CONFIG = ["-c", "commit.gpgsign=false", "-c", "user.name=pi subagent", "-c", "user.email=subagent@local"];
 const GIT_TIMEOUT_MS = 120_000;
 const GIT_MAX_BUFFER = 32 * 1024 * 1024;
+/** Capture stderr instead of inheriting it. execFileSync only redirects stdout by
+ *  default, so git's progress chatter ("Preparing worktree (new branch ...)")
+ *  printed straight into the TUI and corrupted the rendered frame. Captured
+ *  stderr still reaches us on failure via the thrown error. */
+const GIT_STDIO: ("ignore" | "pipe")[] = ["ignore", "pipe", "pipe"];
 
 function git(root: string, args: string[]): string {
 	return gitRaw(root, args).trim();
@@ -39,6 +44,7 @@ function gitRaw(root: string, args: string[]): string {
 		encoding: "utf8",
 		timeout: GIT_TIMEOUT_MS,
 		maxBuffer: GIT_MAX_BUFFER,
+		stdio: GIT_STDIO,
 	});
 }
 
@@ -49,6 +55,7 @@ function gitIn(dir: string, args: string[]): string {
 		encoding: "utf8",
 		timeout: GIT_TIMEOUT_MS,
 		maxBuffer: GIT_MAX_BUFFER,
+		stdio: GIT_STDIO,
 	}).trim();
 }
 
@@ -269,7 +276,28 @@ export function cleanupMerged(root: string, opts: { skipBranches?: Set<string>; 
 		cleaned += 1;
 	}
 	prune(root);
+	pruneEmptyRunDirs(root);
 	return cleaned;
+}
+
+/** Remove `<subagents>/<runId>/` once its task dirs are gone. Cleanup left these
+ *  behind forever, so `.git/subagents` grew one empty dir per run. */
+function pruneEmptyRunDirs(root: string): void {
+	const sub = subagentsDir(root);
+	if (!sub || !existsSync(sub)) return;
+	try {
+		for (const entry of readdirSync(sub, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const runDir = join(sub, entry.name);
+			try {
+				if (readdirSync(runDir).length === 0) rmSync(runDir, { recursive: true, force: true });
+			} catch {
+				/* skip */
+			}
+		}
+	} catch {
+		/* best-effort */
+	}
 }
 
 /** Branch names currently checked out in any worktree, or undefined when git

@@ -61,6 +61,9 @@ export const MAX_CONCURRENCY = 8;
  *  event, so a child stuck in a retry/compaction livelock emits forever and is
  *  never "stalled" — only a cap that events CANNOT reset bounds that. */
 const DEFAULT_RUNTIME_MS = 3_600_000; // 1 h
+/** "Unlimited" still has a ceiling — an unbounded child pins hasActiveRun() and
+ *  its concurrency slot for the life of the session. */
+const UNLIMITED_RUNTIME_MS = 21_600_000; // 6 h
 /** Last-resort hang detector, not a latency budget. A healthy child can be
  *  silent for minutes (big-context upload, non-streamed reasoning, provider
  *  retry backoff), so this is deliberately far above any normal quiet window —
@@ -1010,10 +1013,11 @@ export class SubagentManager {
 					),
 			});
 
-			// auto-limit off = drop the DEFAULT ceiling, but never an explicit request:
-			// discarding the leader's own maxRuntimeMs removed the last escape from a
-			// livelocked child.
-			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : 0);
+			// The ceiling is the ONLY bound on a child that emits events forever (retry
+			// or tool-call livelock): the stall watchdog is touched by every event and
+			// cannot fire for one. So auto-limit off RAISES it, never removes it —
+			// removing it reproduced the immortal-child hang.
+			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS);
 			const promptPromise = child.prompt(task.task, { source: "extension" });
 			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise, watchdog.promise];
 			if (maxRuntimeMs > 0) {
@@ -1108,12 +1112,21 @@ export class SubagentManager {
 			} catch {
 				/* ignore */
 			}
+			// Publish whatever the child DID say before it was killed. A timeout or
+			// abort used to discard it, so a chain dependent received nothing at all
+			// while the child's partial work was still committed to its branch.
+			const salvaged =
+				task.finalText ||
+				truncateText(
+					(child?.messages as AssistantMessage[] | undefined)?.map(getFirstText).filter(Boolean).at(-1) || "",
+				);
 			this.updateTask(
 				run,
 				task,
 				{
 					status: aborted ? "aborted" : ((subagentStatus as TaskStatus) ?? "failed"),
 					error: err instanceof Error ? err.message : String(err),
+					finalText: salvaged || undefined,
 					endedAt: Date.now(),
 				},
 				ctx,

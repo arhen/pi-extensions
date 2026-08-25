@@ -80,8 +80,12 @@ test("a hard runtime ceiling exists; an explicit maxRuntimeMs always wins", () =
 	if (!cap?.[1]) throw new Error("DEFAULT_RUNTIME_MS not found");
 	expect(Number(cap[1].replaceAll("_", ""))).toBeGreaterThan(0);
 	expect(src).toMatch(/if \(maxRuntimeMs > 0\)/);
-	// auto-limit off must drop the DEFAULT, never an explicitly requested cap.
-	expect(src).toMatch(/input\.maxRuntimeMs \?\? \(this\.autoLimit \? DEFAULT_RUNTIME_MS : 0\)/);
+	// auto-limit off RAISES the ceiling; it must never remove it (a 0 here means
+	// no timer is armed, and the event-fed watchdog cannot kill a livelocked child).
+	expect(src).toMatch(/input\.maxRuntimeMs \?\? \(this\.autoLimit \? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS\)/);
+	const ceiling = src.match(/const UNLIMITED_RUNTIME_MS = ([\d_]+);/) as RegExpMatchArray | null;
+	if (!ceiling?.[1]) throw new Error("UNLIMITED_RUNTIME_MS not found");
+	expect(Number(ceiling[1].replaceAll("_", ""))).toBeGreaterThan(0);
 });
 
 test("describeCall renders human activity lines", () => {

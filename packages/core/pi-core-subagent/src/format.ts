@@ -204,7 +204,12 @@ function worktreeLine(task: TaskSnapshot, siblings?: TaskSnapshot[]): string {
 			? ` (${task.changedFiles.length} file(s): ${truncateText(task.changedFiles.join(", "), 160)})`
 			: "";
 		parts.push(`Branch: ${task.branch}${files} — merge with \`git merge --no-ff ${task.branch}\` after review.`);
-		if (task.stackedOn) parts.push(`Stacked on ${task.stackedOn} — merge that branch FIRST.`);
+		// Stacked branches CONTAIN their upstream, so either merge order gives the
+		// same tree (merging this one pulls the upstream in; the upstream's own merge
+		// is then a no-op). Say that, rather than implying an ordering requirement.
+		if (task.stackedOn) {
+			parts.push(`Stacked on ${task.stackedOn} — contains that branch's commits, so merging this one brings both.`);
+		}
 		// Sibling branches are independent, not stacked: overlapping files mean the
 		// second merge is a real 3-way, and non-overlapping-but-coupled edits break
 		// silently. Both are computable from changedFiles, so say so.
