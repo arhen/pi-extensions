@@ -125,6 +125,48 @@ test("peek rows are full-width so the transcript can't bleed through", () => {
 	pane.dispose();
 });
 
+test("the pane is a closed box: capped top and bottom, every row edged", () => {
+	const tasks: PeekTask[] = [
+		{ runId: "r", taskId: "t", agent: "a", status: "running", running: true, line: "• a · 1 tools" },
+	];
+	const pane = createPeekPane(
+		() => tasks,
+		theme,
+		() => {},
+		() => {},
+		() => {},
+	);
+	const rows = pane.render(60);
+	expect(rows[0]).toBe(`╭${"─".repeat(58)}╮`);
+	expect(rows.at(-1)).toBe(`╰${"─".repeat(58)}╯`);
+	expect(rows.some((r) => r === `├${"─".repeat(58)}┤`)).toBe(true); // chrome/content divider
+	// No row may lose its edges — a ragged side is what made the old pane read as a
+	// floating block of colour rather than one object.
+	for (const r of rows.slice(1, -1)) {
+		expect(r.startsWith("│") || r.startsWith("├")).toBe(true);
+		expect(r.endsWith("│") || r.endsWith("┤")).toBe(true);
+		expect(r.length).toBe(60);
+	}
+	pane.dispose();
+});
+
+test("the empty state is boxed too, not a bare line", () => {
+	const pane = createPeekPane(
+		() => [],
+		theme,
+		() => {},
+		() => {},
+		() => {},
+	);
+	const rows = pane.render(40);
+	expect(rows).toHaveLength(3);
+	expect(rows[0]?.startsWith("╭")).toBe(true);
+	expect(rows[1]).toContain("No subagents");
+	expect(rows.at(-1)?.startsWith("╰")).toBe(true);
+	for (const r of rows) expect(r.length).toBe(40);
+	pane.dispose();
+});
+
 /** Render a tail from a synthetic child session file and return plain-text rows. */
 function tailRows(entries: unknown[], width = 120): string[] {
 	const dir = mkdtempSync(join(tmpdir(), "peek-tail-"));
@@ -194,8 +236,8 @@ test("failed tool results are marked, and results name their tool", () => {
 		{ message: { role: "toolResult", toolName: "bash", isError: true, content: [{ type: "text", text: "exit 1" }] } },
 		{ message: { role: "toolResult", toolName: "read", isError: false, content: [{ type: "text", text: "ok" }] } },
 	]);
-	expect(rows.some((r) => r.startsWith("✗") && r.includes("bash: exit 1"))).toBe(true);
-	expect(rows.some((r) => r.startsWith("←") && r.includes("read: ok"))).toBe(true);
+	expect(rows.some((r) => r.includes("✗ bash: exit 1"))).toBe(true);
+	expect(rows.some((r) => r.includes("← read: ok"))).toBe(true);
 });
 
 test("long absolute paths are shortened from the left, keeping the tail", () => {

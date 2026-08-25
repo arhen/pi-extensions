@@ -177,21 +177,34 @@ export function createPeekPane(
 	const clamp = (n: number, len: number) => (len === 0 ? 0 : Math.max(0, Math.min(len - 1, n)));
 
 	/**
-	 * Every row is padded to the full pane width and background-filled, so the
-	 * transcript underneath never shows through the overlay.
+	 * Every row is a full-width bordered line: │ edge, one space of padding, the
+	 * text padded out, then the closing edge. Background-filled so the transcript
+	 * underneath never shows through the overlay, and edged so the pane reads as
+	 * one object instead of a floating block of colour.
 	 */
 	const row = (content: string, width: number): string => {
-		const inner = width - 4; // 2 cols padding each side
+		const inner = width - 4; // │ + space each side
 		const text = truncateToWidth(content, Math.max(0, inner), "…");
 		const pad = Math.max(0, inner - visibleWidth(text));
-		return theme.bg("selectedBg", `  ${text}${" ".repeat(pad)}  `);
+		const edge = theme.fg("border", "│");
+		return theme.bg("selectedBg", `${edge} ${text}${" ".repeat(pad)} ${edge}`);
 	};
+
+	/** Top/bottom cap, and the ├───┤ divider between chrome and content. */
+	const edgeRow = (width: number, left: string, right: string): string =>
+		theme.bg("selectedBg", theme.fg("border", `${left}${"─".repeat(Math.max(0, width - 2))}${right}`));
 
 	return {
 		render(width: number): string[] {
 			const tasks = getTasks();
 			selected = clamp(selected, tasks.length);
-			if (tasks.length === 0) return [row(theme.fg("dim", "No subagents in this session."), width)];
+			if (tasks.length === 0) {
+				return [
+					edgeRow(width, "╭", "╮"),
+					row(theme.fg("dim", "No subagents in this session."), width),
+					edgeRow(width, "╰", "╯"),
+				];
+			}
 			const task = tasks[selected]!;
 			const hint = confirming
 				? theme.fg("error", `abort ${task.agent}?  y / n`)
@@ -202,8 +215,7 @@ export function createPeekPane(
 				? `${theme.fg("muted", "Subagents")}${theme.fg("dim", " › ")}${theme.fg("accent", theme.bold(task.agent))} ${statusTag(task.status, theme)}`
 				: theme.fg("accent", theme.bold("Subagents"));
 			const title = `${crumb} ${theme.fg("muted", `${selected + 1}/${tasks.length}`)}`;
-			const rule = theme.fg("borderMuted", "─".repeat(Math.max(0, width - 4)));
-			const lines = [row("", width), row(title, width), row(hint, width), row(rule, width)];
+			const lines = [edgeRow(width, "╭", "╮"), row(title, width), row(hint, width), edgeRow(width, "├", "┤")];
 
 			if (!tailing) {
 				for (const [i, t] of tasks.entries()) {
@@ -218,7 +230,7 @@ export function createPeekPane(
 				if (tail.length === 0) lines.push(row(theme.fg("dim", "(no activity yet)"), width));
 				for (const line of tail) lines.push(row(renderLine(line, theme), width));
 			}
-			lines.push(row("", width));
+			lines.push(edgeRow(width, "╰", "╯"));
 			return lines;
 		},
 		handleInput(data: string): void {
