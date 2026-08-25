@@ -72,16 +72,16 @@ test("peek pane: navigate + tail, never mutates tasks", () => {
 });
 
 test("a hard runtime ceiling exists; an explicit maxRuntimeMs always wins", () => {
-	// The stall watchdog is touched by EVERY child event, so a retry/compaction
-	// livelock is never "stalled" — only a wall-clock cap events cannot reset
-	// bounds it. A zero default would restore the never-kill hang.
+	// This cap is the ONLY liveness bound (the event-heartbeat stall watchdog was
+	// deleted — it could only fire during startup, where firing is always wrong).
+	// A zero default would restore the never-kill hang.
 	const src = require("node:fs").readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
 	const cap = src.match(/const DEFAULT_RUNTIME_MS = ([\d_]+);/) as RegExpMatchArray | null;
 	if (!cap?.[1]) throw new Error("DEFAULT_RUNTIME_MS not found");
 	expect(Number(cap[1].replaceAll("_", ""))).toBeGreaterThan(0);
 	expect(src).toMatch(/if \(maxRuntimeMs > 0\)/);
-	// auto-limit off RAISES the ceiling; it must never remove it (a 0 here means
-	// no timer is armed, and the event-fed watchdog cannot kill a livelocked child).
+	// auto-limit off RAISES the ceiling; it must never remove it (a 0 here arms no
+	// timer at all, leaving a livelocked child immortal).
 	expect(src).toMatch(/input\.maxRuntimeMs \?\? \(this\.autoLimit \? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS\)/);
 	const ceiling = src.match(/const UNLIMITED_RUNTIME_MS = ([\d_]+);/) as RegExpMatchArray | null;
 	if (!ceiling?.[1]) throw new Error("UNLIMITED_RUNTIME_MS not found");

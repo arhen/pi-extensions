@@ -1,5 +1,5 @@
 /**
- * Child-session tools + watchdog.
+ * Child-session tools.
  *
  * When `allowIntercom: true`, children get four talk tools:
  *   - ask_parent            blocking Q&A with the leader (parent)
@@ -106,50 +106,4 @@ export function createChildTools(taskId: string, handlers: ChildHandlers): ToolD
 			},
 		},
 	];
-}
-
-/**
- * Watchdog — a subagent is "stalled" when it produces no events for stallMs.
- * In-process AgentSessions have no process-exit signal, so we synthesize one
- * via event-heartbeat. Every relevant child event must call touch().
- */
-export interface Watchdog {
-	touch(): void;
-	readonly promise: Promise<never>;
-	dispose(): void;
-}
-
-export function createWatchdog(stallMs: number, label: string): Watchdog {
-	let lastEventAt = Date.now();
-	let disposed = false;
-	let timer: ReturnType<typeof setInterval> | undefined;
-
-	const promise = new Promise<never>((_, reject) => {
-		const interval = Math.max(1000, Math.min(5000, Math.floor(stallMs / 4)));
-		timer = setInterval(() => {
-			if (disposed) return;
-			if (Date.now() - lastEventAt > stallMs) {
-				disposed = true;
-				if (timer) clearInterval(timer);
-				timer = undefined;
-				reject(new Error(`${label} stalled: no activity for ${Math.round(stallMs / 1000)}s`));
-			}
-		}, interval);
-		timer.unref?.();
-	});
-
-	return {
-		touch() {
-			lastEventAt = Date.now();
-		},
-		promise,
-		dispose() {
-			if (disposed) return;
-			disposed = true;
-			if (timer) {
-				clearInterval(timer);
-				timer = undefined;
-			}
-		},
-	};
 }

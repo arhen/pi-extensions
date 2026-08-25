@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Deleted the stall watchdog** (`createWatchdog`, `DEFAULT_STALL_MS`, `touchWatchdog`, and the 30 s `ask_parent` keep-alive that existed only to feed it) — 84 lines net.
+  It was armed BEFORE the child session was created, so the only window it could fire in was a slow startup, where firing is always wrong; once events flowed it could never fire at all (every event touched it). Across three releases its only demonstrated effect was killing healthy children with `Error: terminated`. A wedged child that emits events was already bounded solely by the runtime cap, so removing it changes nothing for wedged children — it just stops pretending a second mechanism exists.
+  Tradeoff, stated plainly: a truly frozen session (hung socket, zero events) now holds its concurrency slot until the runtime cap instead of 15 minutes. That is a throughput cost on a rare failure, traded against a correctness bug on a common one.
+  `maxRuntimeMs`, the 1 h default ceiling, the 6 h `auto-limit off` ceiling, and the killed-child output salvage all stay.
+
 - **Git chatter no longer corrupts the TUI.** `execFileSync` captures stdout but INHERITS stderr, so git printed `Preparing worktree (new branch ...)` straight into the rendered frame on every write-agent spawn. All git calls now capture stderr; failures still carry git's message.
 - Eighth review round — empirical proof + watchdog design audit:
   - **The runtime ceiling was user-disablable.** `/subagents auto-limit off` set `maxRuntimeMs = 0`, arming no timer at all — and since the stall watchdog is touched by every event it cannot kill a child that emits events. That reproduced the immortal-child hang verbatim. `auto-limit off` now RAISES the ceiling (6 h) instead of removing it.

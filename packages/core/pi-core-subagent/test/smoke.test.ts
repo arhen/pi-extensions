@@ -1,9 +1,9 @@
 /**
- * Smoke tests: failure classification + mailbox routing + watchdog.
+ * Smoke tests: failure classification + mailbox routing.
  * Pure logic only — no pi runtime needed. Run: bun test
  */
 import { describe, expect, test } from "bun:test";
-import { createChildTools, createWatchdog } from "../src/child.ts";
+import { createChildTools } from "../src/child.ts";
 import { createMailbox } from "../src/mailbox.ts";
 import { classifyFailure, resolveChildModel, validateThinking } from "../src/manager.ts";
 
@@ -76,27 +76,6 @@ describe("mailbox", () => {
 		const mb = createMailbox();
 		mb.open("task_1");
 		expect(mb.send("ghost", "task_1", "x")).toBe(false);
-	});
-});
-
-describe("watchdog", () => {
-	test("dispose resolves nothing and is idempotent", async () => {
-		const wd = createWatchdog(10_000, "test");
-		wd.dispose();
-		wd.dispose();
-		expect(wd).toBeTruthy();
-	});
-
-	test("rejects after stall when untouched; touch keeps it alive", async () => {
-		const wd = createWatchdog(40, "test");
-		wd.touch();
-		// interval floor is 1s, so detection takes >= ~1s even for tiny stallMs
-		const t0 = Date.now();
-		const err = await wd.promise.catch((e: unknown) => e);
-		expect(err).toBeInstanceOf(Error);
-		expect((err as Error).message).toMatch(/stalled/);
-		expect(Date.now() - t0).toBeGreaterThanOrEqual(900);
-		wd.dispose();
 	});
 });
 

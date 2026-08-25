@@ -17,7 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import type { TUI } from "@earendil-works/pi-tui";
 import { resolveAgentFile } from "./agentfile.ts";
-import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools, createWatchdog, type Watchdog } from "./child.ts";
+import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools } from "./child.ts";
 import {
 	activitySnippet,
 	describeCall,
@@ -56,19 +56,20 @@ import {
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
-/** No default wall-clock cap: a subagent runs until its task is done, it stalls, or the user aborts. */
-/** Hard wall-clock ceiling per child. The stall watchdog is touched by every
- *  event, so a child stuck in a retry/compaction livelock emits forever and is
- *  never "stalled" — only a cap that events CANNOT reset bounds that. */
+/**
+ * Hard wall-clock ceiling per child — the ONLY liveness bound.
+ *
+ * There used to be a second one, an event-heartbeat "stall" watchdog. It was
+ * deleted: it was armed before the child session even existed, so the only
+ * window it could fire in was a slow startup (where firing is always wrong),
+ * and once events flowed it could never fire at all. Every observed firing
+ * across three releases was a false kill. A wedged child that emits events was
+ * always bounded by this cap alone; nothing else changed by removing it.
+ */
 const DEFAULT_RUNTIME_MS = 3_600_000; // 1 h
 /** "Unlimited" still has a ceiling — an unbounded child pins hasActiveRun() and
  *  its concurrency slot for the life of the session. */
 const UNLIMITED_RUNTIME_MS = 21_600_000; // 6 h
-/** Last-resort hang detector, not a latency budget. A healthy child can be
- *  silent for minutes (big-context upload, non-streamed reasoning, provider
- *  retry backoff), so this is deliberately far above any normal quiet window —
- *  killing a working child is much worse than waiting out a dead one. */
-const DEFAULT_STALL_MS = 900_000; // 15 min
 /** Cap on a child's wait for reply_subagent — an ignored question must not pin the run open forever. */
 const PARENT_REPLY_TIMEOUT_MS = 600_000; // 10 min
 /** Intercom messages buffered per park before the followUp path takes over. */
@@ -244,7 +245,7 @@ export class SubagentManager {
 	private pendingReplies = new Map<string, PendingReply>();
 	private liveChildren = new Map<
 		string,
-		{ abort: () => void; dispose: () => void; touchWatchdog: () => void; steer: (message: string) => void }
+		{ abort: () => void; dispose: () => void; steer: (message: string) => void }
 	>();
 	private mailboxes: Mailbox = createMailbox();
 	/** Live worktrees by `${runId}:${taskId}` — lets cancel drop dirs and keeps
@@ -598,7 +599,6 @@ export class SubagentManager {
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
 		return {
 			onAskParent: async (_taskId, question) => {
-				const key = `${run.id}:${task.id}`;
 				// A tool call already in flight can reach here AFTER the task ended
 				// (abort/timeout/cancel). Reviving it would leave a "running" task in a
 				// finished run — hasActiveRun() then never clears.
@@ -606,7 +606,6 @@ export class SubagentManager {
 					return "(your task has already ended — stop work and return immediately)";
 				}
 				this.updateTask(run, task, { status: "awaiting_parent" }, ctx);
-				this.liveChildren.get(key)?.touchWatchdog();
 				// While the leader is parked in await_subagent the question rides the wait
 				// (no steering queue, no turn boundary); otherwise it goes out as a notice.
 				// Either way the pending reply entry must exist, or reply_subagent has
@@ -614,24 +613,17 @@ export class SubagentManager {
 				if (!this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
 					this.notifyParent(run, "asked", { taskId: task.id, question });
 				}
-				// A waiting child is not stalled — keep the watchdog fed until the reply.
-				// But the wait is BOUNDED: an unanswered question would otherwise keep the
-				// run non-terminal forever (widget never clears, run never settles).
-				const keepAlive = setInterval(() => this.liveChildren.get(key)?.touchWatchdog(), 30_000);
-				try {
-					const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
-					// Cancel wins over a reply that arrived in the same tick: never move a
-					// terminal task back to "running" (that would let a canceled task be
-					// reported as completed).
-					if (TERMINAL.includes(task.status)) {
-						return "(your task was canceled while you waited — stop work and return immediately)";
-					}
-					this.updateTask(run, task, { status: "running" }, ctx);
-					this.liveChildren.get(key)?.touchWatchdog();
-					return reply;
-				} finally {
-					clearInterval(keepAlive);
+				// The wait is BOUNDED: an unanswered question would otherwise keep the run
+				// non-terminal forever (widget never clears, run never settles).
+				const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
+				// Cancel wins over a reply that arrived in the same tick: never move a
+				// terminal task back to "running" (that would let a canceled task be
+				// reported as completed).
+				if (TERMINAL.includes(task.status)) {
+					return "(your task was canceled while you waited — stop work and return immediately)";
 				}
+				this.updateTask(run, task, { status: "running" }, ctx);
+				return reply;
 			},
 			onNotifyParent: (_taskId, message, level) => {
 				this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message });
@@ -709,14 +701,8 @@ export class SubagentManager {
 		task: TaskSnapshot,
 		ctx: ExtensionContext,
 		onUpdate: ((partial: any) => void) | undefined,
-		watchdog: Watchdog,
 		state: ChildEventState,
 	): void {
-		// ANY event is proof of life. The old allowlist ignored message_start,
-		// turn_start/end, compaction and auto-retry, so a child was killed during
-		// silent-but-healthy windows — context upload, a provider that doesn't
-		// stream reasoning, retry backoff — and surfaced as "Error: terminated".
-		watchdog.touch();
 		const active =
 			event.type === "message_update" ||
 			event.type === "message_end" ||
@@ -922,7 +908,6 @@ export class SubagentManager {
 		let unsubscribe: (() => void) | undefined;
 		let timeout: ReturnType<typeof setTimeout> | undefined;
 		let abortListener: (() => void) | undefined;
-		const watchdog = createWatchdog(DEFAULT_STALL_MS, `Subagent ${task.agent}`);
 		const childState: ChildEventState = {};
 
 		const key = `${run.id}:${task.id}`;
@@ -981,7 +966,7 @@ export class SubagentManager {
 			});
 
 			unsubscribe = child.subscribe((event: AgentSessionEvent) =>
-				this.onChildEvent(event, run, task, ctx, onUpdate, watchdog, childState),
+				this.onChildEvent(event, run, task, ctx, onUpdate, childState),
 			);
 
 			const abortChild = () => {
@@ -1002,8 +987,7 @@ export class SubagentManager {
 			}
 			this.liveChildren.set(key, {
 				abort: () => void child?.abort(),
-				dispose: () => watchdog.dispose(),
-				touchWatchdog: () => watchdog.touch(),
+				dispose: () => child?.dispose(),
 				// Inject a steering message mid-run; queues as steer if the child is streaming.
 				steer: (message) =>
 					void child?.prompt(message, { streamingBehavior: "steer" }).catch((err) =>
@@ -1014,12 +998,11 @@ export class SubagentManager {
 			});
 
 			// The ceiling is the ONLY bound on a child that emits events forever (retry
-			// or tool-call livelock): the stall watchdog is touched by every event and
-			// cannot fire for one. So auto-limit off RAISES it, never removes it —
+			// or tool-call livelock). So auto-limit off RAISES it, never removes it —
 			// removing it reproduced the immortal-child hang.
 			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS);
 			const promptPromise = child.prompt(task.task, { source: "extension" });
-			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise, watchdog.promise];
+			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise];
 			if (maxRuntimeMs > 0) {
 				races.push(
 					new Promise<never>((_, reject) => {
@@ -1140,7 +1123,6 @@ export class SubagentManager {
 			this.pendingReplies.delete(key);
 			abortListener?.();
 			unsubscribe?.();
-			watchdog.dispose();
 			if (timeout) clearTimeout(timeout);
 			child?.dispose();
 			// Failed/aborted: let the aborted child's last writes land (its tools may
