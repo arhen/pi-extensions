@@ -22,10 +22,10 @@ import {
 	activitySnippet,
 	describeCall,
 	getFirstText,
+	isStartupFailure,
 	isTalking,
 	makeNotice,
 	makeTaskNotice,
-	isStartupFailure,
 	SubagentsWidget,
 	truncateText,
 } from "./format.ts";
@@ -160,14 +160,26 @@ export function cloneRun(run: RunSnapshot): RunSnapshot {
 	return JSON.parse(JSON.stringify(run)) as RunSnapshot;
 }
 /** Resolve a child model from the pi model registry.
- *  Order: explicit "provider/model-id" or bare id (searched across available
- *  models) → agent file model → parent's current model (ctx.model) → undefined
- *  (createAgentSession falls back to settings). */
+ *  Order: explicit "provider/model-id" or bare id → agent file model → parent's
+ *  current model (ctx.model) → undefined (createAgentSession falls back to settings).
+ *
+ *  A BARE id is ambiguous: `claude-sonnet-5` exists on anthropic, commandcode,
+ *  github-copilot and openrouter at once, and an agent file's `model:` is written
+ *  without a provider. Taking the registry's first match routed children to a
+ *  provider the session never chose (403 MODEL_NOT_IN_PLAN on every spawn), so the
+ *  ACTIVE SESSION's provider is searched first — exact id, then its own prefixed
+ *  form (9router carries `cc/claude-opus-5`, not `claude-opus-5`). */
 export function resolveChildModel(ctx: ExtensionContext, explicit: string | undefined) {
 	if (!explicit?.trim()) return ctx.model; // inherit the parent's active model
 	const ref = explicit.trim();
 	if (!ctx.modelRegistry) return ctx.model; // no registry to check against (tests, headless)
 	const available = ctx.modelRegistry.getAvailable();
+	const sessionProvider = ctx.model?.provider;
+	if (sessionProvider && !ref.includes("/")) {
+		const own = available.filter((m) => m.provider === sessionProvider);
+		const hit = own.find((m) => m.id === ref) ?? own.find((m) => m.id.endsWith(`/${ref}`));
+		if (hit) return hit;
+	}
 	// Model ids can contain slashes (e.g. 9router/cc/claude-opus-5), so a bare id
 	// match and every provider/id split point must be tried, not just the first.
 	const byId = available.find((m) => m.id === ref);
@@ -177,6 +189,48 @@ export function resolveChildModel(ctx: ExtensionContext, explicit: string | unde
 		if (model) return model;
 	}
 	throw new Error(`Model not found: ${ref}`);
+}
+
+/** One throwaway request against the resolved model. A child that cannot reach its
+ *  model dies on its FIRST turn with no output, after a worktree and a session have
+ *  already been built — and an agent file's `model:` is chosen by a file the leader
+ *  never wrote, so "it resolved" is not evidence it is usable (plan gates, ZDR,
+ *  dead keys all pass resolution). Returns the error text, or undefined when OK. */
+async function probeModel(
+	ctx: ExtensionContext,
+	model: Model<Api>,
+	signal: AbortSignal | undefined,
+): Promise<string | undefined> {
+	try {
+		const reply = await ctx.modelRegistry.complete(
+			model,
+			{ messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
+			{ maxTokens: 16, signal },
+		);
+		return reply.stopReason === "error" ? (reply.errorMessage ?? "provider returned an error") : undefined;
+	} catch (err) {
+		return err instanceof Error ? err.message : String(err);
+	}
+}
+
+/** Preflight for the model a child is about to run on. Probes only what is not
+ *  already proven: the session's own model answered this very turn. On failure the
+ *  session model is the fallback — the one model known to work right now. */
+export async function ensureUsableModel(
+	ctx: ExtensionContext,
+	model: Model<Api> | undefined,
+	signal: AbortSignal | undefined,
+): Promise<{ model: Model<Api> | undefined; note?: string }> {
+	const session = ctx.model;
+	if (!model || !ctx.modelRegistry) return { model };
+	if (session && model.provider === session.provider && model.id === session.id) return { model };
+	const error = await probeModel(ctx, model, signal);
+	if (!error) return { model };
+	if (!session) throw new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`);
+	return {
+		model: session,
+		note: `${model.provider}/${model.id} failed preflight (${error}); using session model ${session.provider}/${session.id}`,
+	};
 }
 
 /** Extension-registered providers (e.g. 9router) live only in the parent's
@@ -810,10 +864,18 @@ export class SubagentManager {
 		try {
 			model = resolveChildModel(ctx, file?.model ?? input.model);
 			validateThinking(model, thinking);
+			// Resolution only proves the id exists. Probe it before anything is built,
+			// and fall back to the session's own model when the probe fails.
+			const checked = await ensureUsableModel(ctx, model, signal);
+			model = checked.model;
+			if (checked.note) {
+				task.modelNote = checked.note;
+				validateThinking(model, thinking);
+			}
 			// Record the model ACTUALLY used — an agent file's `model:` overrides the
 			// requested one, and showing the request in the widget hides that entirely
 			// (a 403 then names a model the leader never asked for).
-			if (model) this.updateTask(run, task, { model: model.id }, ctx, onUpdate);
+			if (model) this.updateTask(run, task, { model: model.id, modelNote: checked.note }, ctx, onUpdate);
 		} catch (err) {
 			this.updateTask(
 				run,

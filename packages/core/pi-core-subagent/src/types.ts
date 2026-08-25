@@ -36,6 +36,9 @@ export interface TaskSnapshot {
 	finalText?: string;
 	error?: string;
 	model?: string;
+	/** Why `model` is not what was requested: preflight failed and the session's
+	 *  model took over. Silent substitution is worse than a slow spawn. */
+	modelNote?: string;
 	thinking?: string;
 	tools?: string[];
 	usage: UsageStats;

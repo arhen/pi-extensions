@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 import { createChildTools } from "../src/child.ts";
 import { createMailbox } from "../src/mailbox.ts";
-import { classifyFailure, resolveChildModel, validateThinking } from "../src/manager.ts";
+import { classifyFailure, ensureUsableModel, resolveChildModel, validateThinking } from "../src/manager.ts";
 
 describe("classifyFailure", () => {
 	test("stop/end/undefined → no failure (normal completion)", () => {
@@ -146,5 +146,70 @@ describe("resolveChildModel", () => {
 	});
 	test("throws on unknown refs", () => {
 		expect(() => resolveChildModel(ctx, "cc/nope")).toThrow("Model not found");
+	});
+
+	// The bug this guards: an agent file's bare `model: claude-sonnet-5` matched
+	// whichever provider the registry listed first (commandcode), not the one the
+	// session runs on — 403 MODEL_NOT_IN_PLAN on every spawn.
+	test("a bare id prefers the SESSION's provider over registry order", () => {
+		const shared = [
+			{ provider: "commandcode", id: "claude-sonnet-5" },
+			{ provider: "anthropic", id: "claude-sonnet-5" },
+		] as never[];
+		const sessionCtx = {
+			model: { provider: "anthropic", id: "claude-opus-5" },
+			modelRegistry: { getAvailable: () => shared, find: () => undefined },
+		} as never as Parameters<typeof resolveChildModel>[0];
+		expect(resolveChildModel(sessionCtx, "claude-sonnet-5")).toBe(shared[1]);
+	});
+	test("a bare id also matches the session provider's PREFIXED form (9router/cc/*)", () => {
+		const sessionCtx = {
+			model: { provider: "9router", id: "cc/claude-opus-5" },
+			modelRegistry: { getAvailable: () => models, find: () => undefined },
+		} as never as Parameters<typeof resolveChildModel>[0];
+		expect(resolveChildModel(sessionCtx, "claude-opus-5")).toBe(models[0]);
+	});
+});
+
+describe("ensureUsableModel", () => {
+	const session = { provider: "9router", id: "cc/claude-opus-5" } as never;
+	const other = { provider: "commandcode", id: "claude-sonnet-5" } as never;
+	const makeCtx = (complete: () => Promise<unknown>) =>
+		({ model: session, modelRegistry: { complete } }) as never as Parameters<typeof ensureUsableModel>[0];
+
+	test("the session's own model is never probed — it answered this very turn", async () => {
+		let probes = 0;
+		const ctx = makeCtx(async () => {
+			probes++;
+			return {};
+		});
+		expect(await ensureUsableModel(ctx, session, undefined)).toMatchObject({ model: session });
+		expect(probes).toBe(0);
+	});
+	test("a model that answers is kept, with no note", async () => {
+		const ctx = makeCtx(async () => ({ stopReason: "stop" }));
+		const out = await ensureUsableModel(ctx, other, undefined);
+		expect(out.model).toBe(other);
+		expect(out.note).toBeUndefined();
+	});
+	test("a 403 falls back to the session model and says so", async () => {
+		const ctx = makeCtx(async () => ({ stopReason: "error", errorMessage: "403 MODEL_NOT_IN_PLAN" }));
+		const out = await ensureUsableModel(ctx, other, undefined);
+		expect(out.model).toBe(session);
+		expect(out.note).toContain("MODEL_NOT_IN_PLAN");
+		expect(out.note).toContain("cc/claude-opus-5");
+	});
+	test("a thrown transport error falls back too", async () => {
+		const ctx = makeCtx(async () => {
+			throw new Error("ECONNREFUSED");
+		});
+		expect(await ensureUsableModel(ctx, other, undefined)).toMatchObject({ model: session });
+	});
+	test("with no session model to fall back to, an unusable model throws", async () => {
+		const ctx = {
+			model: undefined,
+			modelRegistry: { complete: async () => ({ stopReason: "error", errorMessage: "401" }) },
+		} as never as Parameters<typeof ensureUsableModel>[0];
+		expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/unusable/);
 	});
 });
