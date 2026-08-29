@@ -34,9 +34,13 @@ const git = (args: string[], cwd = repo) => execFileSync("git", args, { cwd, enc
 beforeAll(() => {
 	repo = mkdtempSync(join(tmpdir(), "wt-repo-"));
 	git(["init", "-q", "-b", "main"]);
+	// CI runners have no global git identity — repo-local config covers every
+	// commit/merge in this file (incl. ones inside src/worktree.ts helpers).
+	git(["config", "user.name", "test"]);
+	git(["config", "user.email", "test@local"]);
 	writeFileSync(join(repo, "a.txt"), "hello\n");
 	git(["add", "-A"]);
-	git(["-c", "user.name=test", "-c", "user.email=test@local", "commit", "-qm", "init"]);
+	git(["commit", "-qm", "init"]);
 });
 afterAll(() => {
 	rmSync(repo, { recursive: true, force: true });
