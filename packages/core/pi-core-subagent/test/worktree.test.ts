@@ -157,8 +157,8 @@ describe("worktree", () => {
 		const spaced = mkdtempSync(join(tmpdir(), "wt repo-"));
 		const g = (args: string[]) => execFileSync("git", args, { cwd: spaced, encoding: "utf8" }).trim();
 		g(["init", "-q", "-b", "main"]);
-	g(["config", "user.name", "test"]);
-	g(["config", "user.email", "test@local"]);
+		g(["config", "user.name", "test"]);
+		g(["config", "user.email", "test@local"]);
 		writeFileSync(join(spaced, "a.txt"), "hello\n");
 		g(["add", "-A"]);
 		g(["commit", "-qm", "init"]);
