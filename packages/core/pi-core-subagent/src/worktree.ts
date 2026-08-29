@@ -392,10 +392,23 @@ export function ownerAlive(path: string, ownedHere?: (path: string) => boolean):
 }
 
 /** Stable per-boot id, so a recycled pid from before a reboot can't look alive.
- *  Compute ONE floor on the expressed seconds, not two — separate floors of
- *  walltime and uptime flip by ±1 around integer boundaries and would read a
- *  live marker as dead on a cross-second read. */
+ *  Prefer the OS's own boot identity — the clock formula (Date.now - uptime)
+ *  breaks on NTP-stepped clocks (CI runners): the step flips the floor and a
+ *  live marker suddenly reads as pre-reboot/dead. The formula stays as the
+ *  last-resort fallback: one floor on the expressed seconds, not two —
+ *  separate floors of walltime and uptime flip by ±1 around integer
+ *  boundaries and would read a live marker as dead on a cross-second read. */
 function bootId(): string {
+	try {
+		if (process.platform === "linux") return readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+		if (process.platform === "darwin") {
+			// kern.boottime = "{ sec = 1756…, usec = … }" — sec alone is stable per boot.
+			const out = execFileSync("sysctl", ["-n", "kern.boottime"], { encoding: "utf8" });
+			return out.match(/sec = (\d+)/)?.[1] ?? out.trim();
+		}
+	} catch {
+		/* fall through to the formula */
+	}
 	return String(Math.floor((Date.now() - uptime() * 1000) / 1000));
 }
 
