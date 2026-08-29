@@ -36,7 +36,7 @@ beforeAll(() => {
 	git(["init", "-q", "-b", "main"]);
 	writeFileSync(join(repo, "a.txt"), "hello\n");
 	git(["add", "-A"]);
-	git(["commit", "-qm", "init"]);
+	git(["-c", "user.name=test", "-c", "user.email=test@local", "commit", "-qm", "init"]);
 });
 afterAll(() => {
 	rmSync(repo, { recursive: true, force: true });
