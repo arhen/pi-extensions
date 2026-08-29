@@ -48,9 +48,7 @@ function stripThinking(text: string): string {
 		.trim();
 }
 
-// biome-ignore lint/suspicious/noControlCharactersInRegex: stripping real terminal escapes is the point
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: same
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
 /** Tool output is terminal output: it carries colour escapes and carriage returns

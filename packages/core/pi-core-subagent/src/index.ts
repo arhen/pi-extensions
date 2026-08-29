@@ -175,7 +175,7 @@ export default function (pi: ExtensionAPI) {
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel", // sibling subagent calls run concurrently, not serialized
-		async execute(_toolCallId, params, signal, onUpdate, ctx) {
+		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const typed = params as SubagentParamsShape;
 			const details = manager.startInBackground(typed, ctx);
 			if (typed.autoAwait) {

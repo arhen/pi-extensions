@@ -267,7 +267,9 @@ function tailingPane(count: number) {
 	const dir = mkdtempSync(join(tmpdir(), "peek-scroll-"));
 	const file = join(dir, "child.jsonl");
 	const entry = (n: number) =>
-		JSON.stringify({ message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `f${n}.ts` } }] } });
+		JSON.stringify({
+			message: { role: "assistant", content: [{ type: "toolCall", name: "read", arguments: { path: `f${n}.ts` } }] },
+		});
 	writeFileSync(file, ["", ...Array.from({ length: count }, (_, i) => entry(i))].join("\n"));
 	const tasks: PeekTask[] = [
 		{ runId: "r", taskId: "t", agent: "a", status: "running", running: true, sessionFile: file, line: "• a" },
