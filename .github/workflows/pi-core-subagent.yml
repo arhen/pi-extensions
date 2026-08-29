@@ -1,0 +1,22 @@
+name: pi-core-subagent CI
+
+on:
+  push:
+    branches: [main]
+    paths: ["packages/core/pi-core-subagent/**", ".github/workflows/pi-core-subagent.yml"]
+  pull_request:
+    branches: [main]
+    paths: ["packages/core/pi-core-subagent/**", ".github/workflows/pi-core-subagent.yml"]
+
+defaults:
+  run:
+    working-directory: packages/core/pi-core-subagent
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
