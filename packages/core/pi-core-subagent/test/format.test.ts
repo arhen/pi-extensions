@@ -29,7 +29,6 @@ function run(tasks: TaskSnapshot[]): RunSnapshot {
 		id: "run_x",
 		mode: "parallel",
 		status: "completed",
-		allowIntercom: false,
 		notifyPerTask: true,
 		createdAt: Date.now(),
 		concurrency: 3,

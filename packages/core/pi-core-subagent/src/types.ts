@@ -68,7 +68,6 @@ export interface RunSnapshot {
 	id: string;
 	mode: RunMode;
 	status: RunStatus;
-	allowIntercom: boolean;
 	notifyPerTask: boolean;
 	createdAt: number;
 	startedAt?: number;

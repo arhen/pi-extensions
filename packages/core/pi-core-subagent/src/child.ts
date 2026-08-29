@@ -1,7 +1,7 @@
 /**
  * Child-session tools.
  *
- * When `allowIntercom: true`, children get four talk tools:
+ * Every child gets four talk tools:
  *   - ask_parent            blocking Q&A with the leader (parent)
  *   - notify_parent         one-way message to the leader
  *   - send_agent_message    one-way message to another subagent's mailbox

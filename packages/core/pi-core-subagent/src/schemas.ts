@@ -67,9 +67,6 @@ export const SubagentParams = Type.Object({
 			default: true,
 		}),
 	),
-	allowIntercom: Type.Optional(
-		Type.Boolean({ description: "Let children ask you questions, notify you, and message sibling subagents" }),
-	),
 });
 
 /** Derived from the schemas — single source of truth, no hand-maintained mirror. */

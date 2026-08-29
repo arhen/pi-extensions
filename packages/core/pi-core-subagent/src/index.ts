@@ -81,12 +81,12 @@ export default function (pi: ExtensionAPI) {
 				if (value === "on" || value === "off") {
 					const next = manager.setAutoLimit(value === "on");
 					ctx.ui.notify(
-						`auto-limit ${next ? "on" : "off"} — ${next ? "leader-imposed" : "no"} maxRuntimeMs caps apply to tasks (off = unlimited until done).`,
+						`auto-limit ${next ? "on" : "off"} — ${next ? "tasks without an explicit maxRuntimeMs get the 1 h default ceiling" : "raised 6 h ceiling applies (no 1 h cap)"}.`,
 						"info",
 					);
 				} else {
 					ctx.ui.notify(
-						`auto-limit is ${manager.autoLimitOn ? "on" : "off"} — use \`/subagents auto-limit on|off\` (off = tasks run unlimited until done).`,
+						`auto-limit is ${manager.autoLimitOn ? "on (1 h default ceiling)" : "off (6 h ceiling)"} — use \`/subagents auto-limit on|off\`.`,
 						"info",
 					);
 				}
@@ -157,7 +157,7 @@ export default function (pi: ExtensionAPI) {
 		// ponytail: this string is billed on every request. No example block — an example
 		// biases the model toward one shape; guidelines + JSON schema describe all of them.
 		description:
-			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. If a user agent file in `.agents/agents`, `.claude/agents`, or `.pi/agents` (project dirs, then home) has a `description` matching the spawn goal (name + task), that file is authoritative: body = system prompt, frontmatter `model`/`tools` apply, inline prompt/model/tools ignored. No match → the inline definition stands. Write agents run in an isolated git worktree: on completion the result reports the branch + changed files — review, then merge with `git merge --no-ff <branch>` (merged branches are cleaned automatically). Every run is background: the call returns a runId immediately and completion notifies you — do NOT park waiting on it. If you have no other work, end your turn; the completion notice wakes you with the results. Set autoAwait:true only when the very next step in the SAME turn consumes the result. allowIntercom:true lets children talk to you and each other.",
+			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. If a user agent file in `.agents/agents`, `.claude/agents`, or `.pi/agents` (project dirs, then home) has a `description` matching the spawn goal (name + task), that file is authoritative: body = system prompt, frontmatter `model`/`tools` apply, inline prompt/model/tools ignored. No match → the inline definition stands. Write agents run in an isolated git worktree: on completion the result reports the branch + changed files — review, then merge with `git merge --no-ff <branch>` (merged branches are cleaned automatically). Every run is background: the call returns a runId immediately and completion notifies you — do NOT park waiting on it. If you have no other work, end your turn; the completion notice wakes you with the results. Set autoAwait:true only when the very next step in the SAME turn consumes the result. Children always carry talk tools: they can ask you questions, notify you, and message siblings.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
 			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
@@ -172,7 +172,6 @@ export default function (pi: ExtensionAPI) {
 			"Never block with nothing to do: if you have no work left after spawning, end your turn. Task completion notifies you and wakes a fresh turn with the results — await_subagent/autoAwait in that situation only burns time and tokens.",
 			"autoAwait:true only when the same turn must consume the result immediately (e.g. you spawn a reviewer and then must act on its verdict before replying). Otherwise spawn background and read results from the completion notice, or subagent_result when you come back.",
 			"await_subagent is for the rare case where you have parallel work of your own and need to sync at a specific point — not the default follow-up to a spawn.",
-			"allowIntercom:true only when a child may need to ask you something.",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel", // sibling subagent calls run concurrently, not serialized
@@ -237,7 +236,7 @@ export default function (pi: ExtensionAPI) {
 					: args.agent
 						? `single ${args.agent}`
 						: "preparing…";
-			const flags = [args.autoAwait ? "await" : "bg", args.allowIntercom ? "a2a" : ""].filter(Boolean).join(" · ");
+			const flags = args.autoAwait ? "await" : "bg";
 			// Params used, dimmed: model, thinking, toolset, per-task write count.
 			const tasks = args.tasks ?? args.chain ?? [];
 			const writeCount = tasks.filter((t) => t.write).length;
@@ -269,7 +268,7 @@ export default function (pi: ExtensionAPI) {
 				})
 				.join("");
 			return new Text(
-				`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", mode)}${flags ? ` ${theme.fg("muted", `[${flags}]`)}` : ""}${params}${graphLine}${plan}`,
+				`${theme.fg("toolTitle", theme.bold("subagent"))} ${theme.fg("accent", mode)} ${theme.fg("muted", `[${flags}]`)}${params}${graphLine}${plan}`,
 				0,
 				0,
 			);

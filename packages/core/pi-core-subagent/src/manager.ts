@@ -321,8 +321,8 @@ export class SubagentManager {
 	/** Set by clearRuns — blocks late persists from erasing the sidecar. */
 	private cleared = false;
 
-	/** When false, strip leader-imposed maxRuntimeMs so tasks run unlimited — toggle via `/subagents auto-limit on|off`. */
-	private autoLimit = true;
+	/** When true, tasks without an explicit maxRuntimeMs get the 1 h default ceiling; when false (default) the raised 6 h ceiling applies — toggle via `/subagents auto-limit on|off`. */
+	private autoLimit = false;
 
 	turnActivity = false;
 
@@ -850,7 +850,7 @@ export class SubagentManager {
 		const allowedTools = input.write ? WRITE_TOOLS : READONLY_TOOLS;
 		const fileTools = file?.tools?.filter((t) => allowedTools.includes(t));
 		const baseTools = fileTools?.length ? fileTools : (input.tools ?? allowedTools);
-		const tools = [...baseTools, ...(run.allowIntercom ? CHILD_TALK_TOOLS : [])];
+		const tools = [...baseTools, ...CHILD_TALK_TOOLS];
 		// Isolation follows the DELIVERED toolset, never the raw request: explicit
 		// tools: [bash] without write:true still gets a worktree, and a file that
 		// narrowed the child to read-only never gets the commit/merge ceremony.
@@ -990,9 +990,7 @@ export class SubagentManager {
 			const worktreeNote = wt
 				? ` You work in an isolated git worktree (branch ${wt.branch})${task.stackedOn ? `, stacked on ${task.stackedOn} (its changes are already in your tree)` : ""}. Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes. node_modules is a SHARED symlink to the main checkout: never install, upgrade, or delete dependencies (no npm/bun/yarn/pnpm install, no \`rm -rf node_modules\`) — those writes escape your worktree and damage the user's project. If the task truly needs a dependency change, edit the manifest only and say so in your answer.`
 				: "";
-			const subagentInstruction = run.allowIntercom
-				? `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`
-				: `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer for the parent agent.${worktreeNote}`;
+			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`;
 
 			const loader = new DefaultResourceLoader({
 				cwd: childCwd,
@@ -1005,9 +1003,7 @@ export class SubagentManager {
 			});
 			await loader.reload();
 
-			const customTools: ToolDefinition[] = run.allowIntercom
-				? createChildTools(task.id, this.makeChildHandlers(run, task, ctx))
-				: [];
+			const customTools: ToolDefinition[] = createChildTools(task.id, this.makeChildHandlers(run, task, ctx));
 
 			const created = await createAgentSession({
 				cwd: childCwd,
@@ -1324,7 +1320,6 @@ export class SubagentManager {
 			id: newId("run"),
 			mode,
 			status: "queued",
-			allowIntercom: Boolean(params.allowIntercom),
 			notifyPerTask: params.notifyPerTask ?? true,
 			createdAt: Date.now(),
 			concurrency: Math.max(1, Math.min(params.concurrency ?? DEFAULT_CONCURRENCY, MAX_CONCURRENCY)),
