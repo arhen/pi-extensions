@@ -243,8 +243,9 @@ export function makeSummary(run: RunSnapshot): string {
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
 		const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
+		const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
 		lines.push(
-			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
+			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${tools}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
 		);
 	}
 	// Ceiling on the WHOLE summary — 16 tasks × 24KB would otherwise flood the parent context.
@@ -267,9 +268,10 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 	// in the notice, not only in the run summary the leader may never read.
 	const src = task.agentFile ? `\nAgent file: ${task.agentFile}${task.model ? ` (model ${task.model})` : ""}` : "";
 	const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
+	const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
 	return [
 		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}${wt}`,
-		`Goal: ${goal}${src}${swap}`,
+		`Goal: ${goal}${src}${swap}${tools}`,
 		isStartupFailure(task, kind)
 			? "Never started — stop and diagnose before spawning anything else: a config-level error (model, plan, auth, agent file) fails identically on every respawn."
 			: `Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,

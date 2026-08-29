@@ -845,11 +845,17 @@ export class SubagentManager {
 		if (file?.path) task.agentFile = file.path; // recorded for audit — which file won
 		const prompt = file?.body ?? input.prompt?.trim();
 		const thinking = input.thinking;
-		// Trust boundary: a file can NARROW the toolset (intersect with the leader's
-		// intent) but never widen it — a repo-planted agent file can't grant write.
+		// File tools are default policy, applied only when the call carries no
+		// explicit tool intent: tools: or write: true win over them — silently
+		// displacing explicit intent produced read-only children that "completed"
+		// with zero edits (issue #3). The gate still holds: a repo-planted file
+		// can never WIDEN past the leader's read/write choice (filtered above).
 		const allowedTools = input.write ? WRITE_TOOLS : READONLY_TOOLS;
 		const fileTools = file?.tools?.filter((t) => allowedTools.includes(t));
-		const baseTools = fileTools?.length ? fileTools : (input.tools ?? allowedTools);
+		const explicitTools = input.tools ?? (input.write ? WRITE_TOOLS : undefined);
+		const baseTools = explicitTools ?? (fileTools?.length ? fileTools : allowedTools);
+		if (explicitTools && fileTools?.length)
+			task.toolsNote = `explicit tools overrode agent-file tools (${fileTools.join(", ")})`;
 		const tools = [...baseTools, ...CHILD_TALK_TOOLS];
 		// Isolation follows the DELIVERED toolset, never the raw request: explicit
 		// tools: [bash] without write:true still gets a worktree, and a file that

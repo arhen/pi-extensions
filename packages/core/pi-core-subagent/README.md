@@ -117,7 +117,7 @@ Chain — `{previous}` is replaced with the prior agent's output:
 
 ## Agent files
 
-A user agent file in an agents directory is matched by its `description` frontmatter against the spawn goal (`agent` name + `task`) — not by name. When matched, the file is **authoritative**: body = system prompt, frontmatter `model`/`tools` apply, inline `prompt`/`model`/`tools` are ignored. No match → the inline on-demand definition stands. The model stays in control: it names the agent and states the goal; user files that describe that goal take over.
+A user agent file in an agents directory is matched by its `description` frontmatter against the spawn goal (`agent` name + `task`) — not by name. When matched, the file is **authoritative**: body = system prompt, frontmatter `model`/`tools` apply, inline `prompt`/`model` are ignored — with one exception: explicit per-call `tools`/`write` override the file's tools (the file narrows defaults, it never displaces explicit intent, and it can never widen past the leader's read/write choice). An override is surfaced on the task's notice and summary. No match → the inline on-demand definition stands. The model stays in control: it names the agent and states the goal; user files that describe that goal take over.
 
 ```md
 ---

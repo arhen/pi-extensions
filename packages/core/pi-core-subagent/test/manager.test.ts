@@ -243,3 +243,16 @@ describe("cancel", () => {
 		expect(m.deliverReply(run.id, "task_1", "late answer")).toBe(false); // entry already gone
 	});
 });
+
+describe("tool precedence (issue #3)", () => {
+	// Tool resolution happens inside runTask (needs a full child session), so this
+	// pins the precedence rule at the source level — same idiom as peek.test.ts.
+	const src = readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
+	test("explicit tools:/write: win over a matched file's tools; file only narrows the default", () => {
+		expect(src).toMatch(/const explicitTools = input\.tools \?\? \(input\.write \? WRITE_TOOLS : undefined\);/);
+		expect(src).toMatch(/const baseTools = explicitTools \?\? \(fileTools\?\.length \? fileTools : allowedTools\);/);
+	});
+	test("an overridden file's tools are surfaced on the task, not silently dropped", () => {
+		expect(src).toMatch(/task\.toolsNote = `explicit tools overrode agent-file tools/);
+	});
+});
