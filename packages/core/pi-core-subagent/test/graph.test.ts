@@ -1,7 +1,3 @@
-/**
- * Wave scheduling (Graph Protocol §2) + edge payload (§6).
- * Pure logic — no pi runtime needed.
- */
 import { describe, expect, test } from "bun:test";
 import { applyUpstream, resolveNeeds, runWaveScheduler, waveNotation } from "../src/graph.ts";
 
@@ -82,7 +78,7 @@ describe("applyUpstream", () => {
 
 	test("{previous} with no upstream is emptied and flagged", () => {
 		const out = applyUpstream("build on: {previous}", [], new Map());
-		expect(out.split("\n")[0]).toBe("build on: "); // placeholder substituted, not left literal
+		expect(out.split("\n")[0]).toBe("build on: ");
 		expect(out).toContain("was empty");
 	});
 
@@ -101,7 +97,7 @@ describe("wave frontier (real scheduler)", () => {
 		const order: string[] = [];
 		await runWaveScheduler(tasks, opts.concurrency ?? 3, outputs, settled, async (task) => {
 			order.push(task.id);
-			if (opts.fail?.includes(task.id)) return; // upstream "failed": no output recorded
+			if (opts.fail?.includes(task.id)) return;
 			outputs.set(task.id, `out-${task.id}`);
 		});
 		return order;
@@ -176,7 +172,7 @@ describe("wave frontier (real scheduler)", () => {
 			settled,
 			async (task) => {
 				ran.push(task.id);
-				// a produces no output → everything downstream of it is broken
+
 				if (task.id !== "a") outputs.set(task.id, "x");
 			},
 		);
@@ -187,18 +183,12 @@ describe("wave frontier (real scheduler)", () => {
 
 	test("canceled upstream (settled, no output) skips the dependent without running it", async () => {
 		const outputs = new Map<string, string>();
-		const settled = new Set<string>(["a"]); // a canceled before start
+		const settled = new Set<string>(["a"]);
 		const ran: string[] = [];
-		const { skipped } = await runWaveScheduler(
-			[{ id: "b", needs: ["a"] }], // caller filters pre-settled tasks out, like executeTasks does
-			3,
-			outputs,
-			settled,
-			async (task) => {
-				ran.push(task.id);
-				outputs.set(task.id, "x");
-			},
-		);
+		const { skipped } = await runWaveScheduler([{ id: "b", needs: ["a"] }], 3, outputs, settled, async (task) => {
+			ran.push(task.id);
+			outputs.set(task.id, "x");
+		});
 		expect(ran).toEqual([]);
 		expect(skipped.map((s) => s.id)).toEqual(["b"]);
 	});
@@ -227,7 +217,6 @@ describe("waveNotation (§2 rendering)", () => {
 	});
 
 	test("half-streamed args still render: unresolved tasks land in a trailing wave", () => {
-		// "doc" needs an id the model has not typed yet.
 		expect(waveNotation([{ id: "api" }, { id: "doc", needs: ["db"] }])).toBe("wave1[api] → gate → wave2[doc]");
 	});
 

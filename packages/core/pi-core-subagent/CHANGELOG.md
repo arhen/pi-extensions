@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+(Entries below cover 1.3.43–1.3.49; the section was never rotated per release. Newest first:)
+
+- **Comments stripped across the package (~990 lines).** Code is the source of truth; design rationale lives here in the changelog and in commit messages, not inline.
+- **Stale prompts fixed.** Child instruction claimed "stalled waits get the whole run killed" (the watchdog is gone) — now states the real bound (ask_parent times out after 10 min). `maxRuntimeMs` schema text claimed "no cap by default" — a ceiling always applies (6 h, 1 h with auto-limit on). `ask_parent` tool description now names the 10-min cap. README: 7 tools not 6, watchdog bullets replaced with the ceiling model, `tools:` is no longer "no per-agent tool config surface", `/subagents` command description lists `auto-limit`.
+- **Tool precedence (issue #3, shipped 1.3.49):** explicit per-call `tools:`/`write:` override a matched agent file's tools; the file narrows defaults but never displaces explicit intent and can never widen past the read/write gate. Overrides surface as `task.toolsNote` in notices/summaries.
+- **Boot id from the OS** (`/proc/.../boot_id` on Linux, `sysctl kern.boottime` on macOS): the `Date.now() - uptime()` formula flipped on NTP-stepped clocks (CI runners), reading live worktree markers as pre-reboot and making them reapable. Formula kept as last-resort fallback.
+- **CI exists now**: the workflow lived at `packages/core/pi-core-subagent/.github/` where GitHub never reads it; moved to repo root, path-scoped. It immediately caught the git-identity test failures and the boot-id bug.
+
+## 1.3.43 and earlier (kept under "Unreleased" historically)
+
 - **Deleted the stall watchdog** (`createWatchdog`, `DEFAULT_STALL_MS`, `touchWatchdog`, and the 30 s `ask_parent` keep-alive that existed only to feed it) — 84 lines net.
   It was armed BEFORE the child session was created, so the only window it could fire in was a slow startup, where firing is always wrong; once events flowed it could never fire at all (every event touched it). Across three releases its only demonstrated effect was killing healthy children with `Error: terminated`. A wedged child that emits events was already bounded solely by the runtime cap, so removing it changes nothing for wedged children — it just stops pretending a second mechanism exists.
   Tradeoff, stated plainly: a truly frozen session (hung socket, zero events) now holds its concurrency slot until the runtime cap instead of 15 minutes. That is a throughput cost on a rare failure, traded against a correctness bug on a common one.

@@ -51,12 +51,11 @@ flowchart LR
 - **Proof is an exit code, never a self-report.** Tasks are asked for a runnable `Verify:` command; the leader checks `git diff --stat`. Agents auditing their own work score ~0. ([why](#why-9-is-a-verification-command-not-a-self-report))
 - **No ceremony without edges.** Six independent reviewers stay six independent reviewers — no waves, no gates, no graph vocabulary imposed on flat work.
 - **Agent files respected.** A spawn goal (name + task) that matches a user agent file's `description` (`.agents/agents`, `.claude/agents`, `.pi/agents` — project then home) loads that file — body = system prompt, frontmatter `model`/`tools` apply, file `model` validated against the pi model registry. File wins over inline; no match → on-demand definition.
-- **Two toolsets only.** Read-only (`read, grep, find, ls` — default) or write (`read, grep, find, ls, bash, edit, write` — `write: true`). No per-agent tool config surface.
+- **Two toolsets, plus explicit override.** Read-only (`read, grep, find, ls` — default) or write (`read, grep, find, ls, bash, edit, write` — `write: true`); `tools:` sets an explicit per-task allowlist.
 - **In-process** — children are `AgentSession`s in the same runtime. No process spawn, no context bleed.
-- **Zero parent-context injection.** No catalog, no context hook. 6 slim tools total.
+- **Zero parent-context injection.** No catalog, no context hook. 7 slim tools total.
 - **Throttled updates** — widget/stream updates coalesce to ~6/s; no per-event deep clones.
-- **No silent hangs** — watchdog aborts children that produce no events for 3 minutes.
-- **No default runtime cap** — tasks run until done, stalled (watchdog), or aborted by the user. `maxRuntimeMs` is opt-in (default 0 = unlimited).
+- **Bounded always** — a child is limited only by wall clock: explicit `maxRuntimeMs`, else the 1 h ceiling with `/subagents auto-limit on`, else the 6 h safety ceiling (default).
 
 ## How it runs
 
@@ -308,7 +307,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 | `send_agent_message` | message to a sibling subagent's mailbox (`to` = its task id, or `"leader"`) |
 | `poll_agent_messages` | drain this subagent's mailbox |
 
-> **Intercom anti-deadlock:** children are told to never block indefinitely on intercom replies — `ask_parent` keeps the stall watchdog fed while awaiting a parent reply, and sibling polls are capped (~5 tries) with a proceed-with-best-judgment fallback. Gated siblings (later waves) may not be running yet — waiting on them is the top stall cause, so children are instructed not to.
+> **Intercom anti-deadlock:** children are told to never block indefinitely on intercom replies — an unanswered `ask_parent` times out after 10 minutes (the child is told to proceed with best judgment), and sibling polls are capped (~5 tries) with the same fallback. Gated siblings (later waves) may not be running yet — waiting on them is the top stall cause, so children are instructed not to.
 
 ## Commands
 
@@ -352,7 +351,7 @@ The extension has no multiplexer integration and does not want one: it exposes t
 
 ## Context budget
 
-- Parent tools: 6 schemas with short descriptions. **No catalog, no context hook** — nothing injected per request.
+- Parent tools: 7 schemas with short descriptions. **No catalog, no context hook** — nothing injected per request.
 - Background completion: 3-line notice. Full text only via `subagent_result`.
 - Children: isolated sessions; talk tools always injected; each child's prompt states its own task id and its siblings' so mailbox addressing works. Model resolution: explicit `provider/model-id` or bare id via the pi model registry → the parent's current model → settings default. Thinking levels validated against the resolved model's `thinkingLevelMap`.
 

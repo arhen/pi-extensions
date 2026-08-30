@@ -1,8 +1,3 @@
-/**
- * Agent↔agent mailbox. Pure logic, no pi imports — easily unit-tested.
- * Agents talk by polling, not push: send() enqueues, poll() drains.
- */
-
 export interface MailboxMessage {
 	from: string;
 	text: string;
@@ -11,9 +6,7 @@ export interface MailboxMessage {
 
 export interface Mailbox {
 	open(taskId: string): void;
-	/** Returns false when sender or target is unknown (no silent drops). */
 	send(from: string, to: string, text: string): boolean;
-	/** Return and clear all pending messages for taskId. */
 	poll(taskId: string): MailboxMessage[];
 	close(taskId: string): void;
 }

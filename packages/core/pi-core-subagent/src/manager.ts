@@ -1,4 +1,3 @@
-/** SubagentManager: run lifecycle, child sessions, intercom, persistence, widget plumbing. */
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
@@ -57,33 +56,15 @@ import {
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
-/**
- * Hard wall-clock ceiling per child — the ONLY liveness bound.
- *
- * There used to be a second one, an event-heartbeat "stall" watchdog. It was
- * deleted: it was armed before the child session even existed, so the only
- * window it could fire in was a slow startup (where firing is always wrong),
- * and once events flowed it could never fire at all. Every observed firing
- * across three releases was a false kill. A wedged child that emits events was
- * always bounded by this cap alone; nothing else changed by removing it.
- */
-const DEFAULT_RUNTIME_MS = 3_600_000; // 1 h
-/** "Unlimited" still has a ceiling — an unbounded child pins hasActiveRun() and
- *  its concurrency slot for the life of the session. */
-const UNLIMITED_RUNTIME_MS = 21_600_000; // 6 h
-/** Cap on a child's wait for reply_subagent — an ignored question must not pin the run open forever. */
-const PARENT_REPLY_TIMEOUT_MS = 600_000; // 10 min
-/** Intercom messages buffered per park before the followUp path takes over. */
+const DEFAULT_RUNTIME_MS = 3_600_000;
+const UNLIMITED_RUNTIME_MS = 21_600_000;
+const PARENT_REPLY_TIMEOUT_MS = 600_000;
 const PARKED_MSG_CAP = 24;
 const READONLY_TOOLS = ["read", "grep", "find", "ls"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
-/** Tools that can mutate the tree — their presence is what earns a worktree. */
 const WRITE_CAPABLE = ["bash", "edit", "write"];
-/** Task ids become git refs + filesystem paths. */
 const SAFE_TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const WIDGET_THROTTLE_MS = 150;
-
-// ── helpers ──────────────────────────────────────────────────────────────
 
 function newId(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -103,7 +84,6 @@ function aggregateUsage(tasks: TaskSnapshot[]): UsageStats {
 	}
 	return total;
 }
-/** realpath when possible; the raw path otherwise (cwd may not exist yet). */
 function safeRealPath(path: string): string {
 	try {
 		return realpathSync(path);
@@ -118,10 +98,6 @@ function getParentSessionFile(ctx: ExtensionContext): string | undefined {
 		return undefined;
 	}
 }
-/**
- * pi 0.84 StopReason enum: "stop" is NORMAL completion (was "end" in older pi).
- * Only length/error/aborted/deferred/pending/toolUse-as-final are failures.
- */
 export function classifyFailure(
 	stopReason: string | undefined,
 	errorMessage?: string,
@@ -159,20 +135,10 @@ function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): 
 export function cloneRun(run: RunSnapshot): RunSnapshot {
 	return JSON.parse(JSON.stringify(run)) as RunSnapshot;
 }
-/** Resolve a child model from the pi model registry.
- *  Order: explicit "provider/model-id" or bare id → agent file model → parent's
- *  current model (ctx.model) → undefined (createAgentSession falls back to settings).
- *
- *  A BARE id is ambiguous: `claude-sonnet-5` exists on anthropic, commandcode,
- *  github-copilot and openrouter at once, and an agent file's `model:` is written
- *  without a provider. Taking the registry's first match routed children to a
- *  provider the session never chose (403 MODEL_NOT_IN_PLAN on every spawn), so the
- *  ACTIVE SESSION's provider is searched first — exact id, then its own prefixed
- *  form (9router carries `cc/claude-opus-5`, not `claude-opus-5`). */
 export function resolveChildModel(ctx: ExtensionContext, explicit: string | undefined) {
-	if (!explicit?.trim()) return ctx.model; // inherit the parent's active model
+	if (!explicit?.trim()) return ctx.model;
 	const ref = explicit.trim();
-	if (!ctx.modelRegistry) return ctx.model; // no registry to check against (tests, headless)
+	if (!ctx.modelRegistry) return ctx.model;
 	const available = ctx.modelRegistry.getAvailable();
 	const sessionProvider = ctx.model?.provider;
 	if (sessionProvider && !ref.includes("/")) {
@@ -180,8 +146,7 @@ export function resolveChildModel(ctx: ExtensionContext, explicit: string | unde
 		const hit = own.find((m) => m.id === ref) ?? own.find((m) => m.id.endsWith(`/${ref}`));
 		if (hit) return hit;
 	}
-	// Model ids can contain slashes (e.g. 9router/cc/claude-opus-5), so a bare id
-	// match and every provider/id split point must be tried, not just the first.
+
 	const byId = available.find((m) => m.id === ref);
 	if (byId) return byId;
 	for (let slash = ref.indexOf("/"); slash > 0; slash = ref.indexOf("/", slash + 1)) {
@@ -191,11 +156,6 @@ export function resolveChildModel(ctx: ExtensionContext, explicit: string | unde
 	throw new Error(`Model not found: ${ref}`);
 }
 
-/** One throwaway request against the resolved model. A child that cannot reach its
- *  model dies on its FIRST turn with no output, after a worktree and a session have
- *  already been built — and an agent file's `model:` is chosen by a file the leader
- *  never wrote, so "it resolved" is not evidence it is usable (plan gates, ZDR,
- *  dead keys all pass resolution). Returns the error text, or undefined when OK. */
 async function probeModel(
 	ctx: ExtensionContext,
 	model: Model<Api>,
@@ -213,9 +173,6 @@ async function probeModel(
 	}
 }
 
-/** Preflight for the model a child is about to run on. Probes only what is not
- *  already proven: the session's own model answered this very turn. On failure the
- *  session model is the fallback — the one model known to work right now. */
 export async function ensureUsableModel(
 	ctx: ExtensionContext,
 	model: Model<Api> | undefined,
@@ -233,12 +190,9 @@ export async function ensureUsableModel(
 	};
 }
 
-/** Extension-registered providers (e.g. 9router) live only in the parent's
- *  in-memory runtime. A child builds its runtime from disk and would lose them,
- *  so replay the parent's registrations before the child resolves auth. */
 async function createChildModelRuntime(ctx: ExtensionContext) {
 	const ids = ctx.modelRegistry.getRegisteredProviderIds?.() ?? [];
-	if (ids.length === 0) return undefined; // no extension providers: disk runtime is enough
+	if (ids.length === 0) return undefined;
 	const agentDir = getAgentDir();
 	const runtime = await ModelRuntime.create({
 		authPath: join(agentDir, "auth.json"),
@@ -257,9 +211,6 @@ async function createChildModelRuntime(ctx: ExtensionContext) {
 	return runtime;
 }
 
-/** Validate a thinking level against the RESOLVED model's registry entry.
- *  thinkingLevelMap: null = unsupported, missing key = provider default,
- *  absent map = provider defaults. Non-reasoning models only accept "off". */
 export function validateThinking(model: Model<Api> | undefined, level: string | undefined): void {
 	if (!level || level === "off") return;
 	if (!model) return;
@@ -274,9 +225,6 @@ export function validateThinking(model: Model<Api> | undefined, level: string | 
 		throw new Error(`Model ${model.provider}/${model.id} does not support thinking. Use thinking: "off".`);
 	}
 }
-
-// Cached catalog removed: agents are defined inline by the leader per call,
-// so there is nothing to inject into the parent context. Zero per-request cost.
 
 interface ChildEventState {
 	pendingFailure?: ReturnType<typeof classifyFailure>;
@@ -293,9 +241,7 @@ export interface ParkedMsg {
 
 export class SubagentManager {
 	private runs = new Map<string, RunSnapshot>();
-	/** Runs that are still settleable (presence = not yet settled). */
 	private settlers = new Map<string, true>();
-	/** Everyone parked on a run — a set, so re-parking can't build a closure chain. */
 	private settleWaiters = new Map<string, Set<(run: RunSnapshot) => void>>();
 	private pendingReplies = new Map<string, PendingReply>();
 	private liveChildren = new Map<
@@ -303,25 +249,17 @@ export class SubagentManager {
 		{ abort: () => void; dispose: () => void; steer: (message: string) => void }
 	>();
 	private mailboxes: Mailbox = createMailbox();
-	/** Live worktrees by `${runId}:${taskId}` — lets cancel drop dirs and keeps
-	 *  cleanup from touching a branch that a running child owns. */
 	private liveWorktrees = new Map<string, Worktree>();
 	private runControllers = new Map<string, AbortController>();
-	private widgetTimers = new Map<string, ReturnType<typeof setTimeout>>(); // per-run stream throttle
+	private widgetTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	private widgetRuns: RunSnapshot[] = [];
 	private eventSeq = 0;
-	/** Sidecar writes are serialized on this chain — ordering the DECISION isn't
-	 *  enough, two renames in flight can still land out of order. */
 	private persistSeq = 0;
 	private persistedSeq = 0;
 	private persistChain: Promise<unknown> = Promise.resolve();
-	/** Distinguishes managers sharing a pid (tests, SDK hosts with two sessions)
-	 *  so their tmp paths can't collide. */
 	private readonly instanceNonce = Math.random().toString(36).slice(2, 8);
-	/** Set by clearRuns — blocks late persists from erasing the sidecar. */
 	private cleared = false;
 
-	/** When true, tasks without an explicit maxRuntimeMs get the 1 h default ceiling; when false (default) the raised 6 h ceiling applies — toggle via `/subagents auto-limit on|off`. */
 	private autoLimit = false;
 
 	turnActivity = false;
@@ -330,12 +268,9 @@ export class SubagentManager {
 		try {
 			const cfg = JSON.parse(readFileSync(join(getAgentDir(), "subagents-config.json"), "utf8"));
 			if (typeof cfg.autoLimit === "boolean") this.autoLimit = cfg.autoLimit;
-		} catch {
-			/* no config yet — defaults */
-		}
+		} catch {}
 	}
 
-	/** Flip the auto-limit flag; persists to the agent dir. Returns the new value. */
 	setAutoLimit(on: boolean): boolean {
 		this.autoLimit = on;
 		void writeFile(join(getAgentDir(), "subagents-config.json"), JSON.stringify({ autoLimit: on }, null, 2)).catch(
@@ -348,7 +283,6 @@ export class SubagentManager {
 		return this.autoLimit;
 	}
 
-	/** Any run still has queued/running tasks? */
 	hasActiveRun(): boolean {
 		for (const run of this.runs.values()) {
 			if (run.tasks.some((t) => !TERMINAL.includes(t.status))) return true;
@@ -356,16 +290,13 @@ export class SubagentManager {
 		return false;
 	}
 
-	/** Hide the widget + clear the footer status entry. */
 	clearWidget(ctx: ExtensionContext): void {
 		this.widgetRuns = [];
 		this.widgetTui = null;
 		if (ctx.hasUI) {
 			try {
 				ctx.ui.setWidget("subagents", undefined);
-			} catch {
-				/* ignore */
-			}
+			} catch {}
 		}
 	}
 
@@ -381,10 +312,7 @@ export class SubagentManager {
 			child.dispose();
 		}
 		this.liveChildren.clear();
-		// Mark every non-terminal task aborted BEFORE resolving pendingReplies: the
-		// resumed onAskParent closure re-checks status, and a still-awaiting task
-		// would flip back to "running" and re-insert the run after the maps clear —
-		// a ghost run that widgets re-arm on and persist forever.
+
 		for (const run of this.runs.values()) {
 			for (const task of run.tasks) {
 				if (!TERMINAL.includes(task.status)) {
@@ -393,8 +321,7 @@ export class SubagentManager {
 				}
 			}
 		}
-		// Release anyone parked on a run before the maps go — dropping waiters would
-		// leave their promises pending forever (autoAwait / await_subagent hang).
+
 		for (const [runId, waiters] of this.settleWaiters) {
 			const run = this.runs.get(runId);
 			for (const waiter of waiters) waiter(run ? cloneRun(run) : ({ id: runId, status: "aborted" } as RunSnapshot));
@@ -403,17 +330,16 @@ export class SubagentManager {
 			pending.resolve("(session ended — stop work immediately)");
 		}
 		this.parked.clear();
-		// Ownership markers stay on disk; the next session reaps those dirs (commit,
-		// keep branch, drop dir) once this pid is gone.
+
 		this.liveWorktrees.clear();
 		this.runs.clear();
 		this.settlers.clear();
 		this.settleWaiters.clear();
 		this.pendingReplies.clear();
 		this.runControllers.clear();
-		this.cleared = true; // any persist after this point would write an empty sidecar
+		this.cleared = true;
 		this.mailboxes = createMailbox();
-		this.widgetTui = null; // force re-registration on the next session
+		this.widgetTui = null;
 		if (this.pulseTimer) {
 			clearTimeout(this.pulseTimer);
 			this.pulseTimer = null;
@@ -423,31 +349,27 @@ export class SubagentManager {
 		this.widgetRuns = [];
 	}
 
-	// ── persistence (sidecar per parent session) ────────────────────────
 	async restoreFromSidecar(ctx: ExtensionContext): Promise<void> {
-		this.cleared = false; // a new session may persist again
+		this.cleared = false;
 		const parentFile = getParentSessionFile(ctx);
 		if (!parentFile) return;
 		const sidecar = parentFile.replace(/\.jsonl$/, ".subagents.json");
 		let runs: RunSnapshot[];
-		// Sweep tmp files a crash left between write and rename (one per dead session).
+
 		try {
 			const dir = dirname(sidecar);
 			const prefix = `${basename(sidecar)}.`;
 			for (const entry of readdirSync(dir)) {
 				if (entry.startsWith(prefix) && entry.endsWith(".tmp")) rmSync(join(dir, entry), { force: true });
 			}
-		} catch {
-			/* best-effort */
-		}
+		} catch {}
 		try {
 			if (!existsSync(sidecar)) return;
 			const raw = JSON.parse(readFileSync(sidecar, "utf-8"));
 			if (!Array.isArray(raw)) return;
 			runs = (raw as RunSnapshot[]).map((run) => {
 				const interrupted = run.tasks.some((t) => !TERMINAL.includes(t.status));
-				// A persisted "running" run whose tasks are all terminal (crash between
-				// task end and run end) must not stay "running" forever.
+
 				let status = interrupted ? ("aborted" as RunStatus) : run.status;
 				if (!TERMINAL.includes(status)) {
 					const anyFailed = run.tasks.some((t) => t.status === "failed");
@@ -480,93 +402,67 @@ export class SubagentManager {
 		}
 	}
 	private persist(ctx: ExtensionContext): void {
-		// After clearRuns the map is empty by design; a late persist (e.g. the
-		// background rejection handler firing after session_shutdown) would write
-		// `[]` over a good sidecar and erase the session's history.
 		if (this.cleared) return;
 		try {
 			const parentFile = getParentSessionFile(ctx);
 			if (!parentFile) return;
 			const sidecar = parentFile.replace(/\.jsonl$/, ".subagents.json");
-			// Write-then-rename: a plain writeFile can tear on crash and silently drop
-			// ALL run history for the session on the next read. The tmp name must be
-			// UNIQUE per write — a shared one lets two concurrent persists interleave
-			// their bytes (unparseable sidecar) or rename an older snapshot last.
+
 			const seq = ++this.persistSeq;
 			const tmp = `${sidecar}.${process.pid}.${this.instanceNonce}.${seq}.tmp`;
 			const payload = JSON.stringify(this.listRuns().slice(0, 50).map(cloneRun), null, 2);
-			// Serialized: each write+rename runs after the previous one finishes, so two
-			// renames can never be in flight and land out of order.
+
 			this.persistChain = this.persistChain.then(async () => {
-				// A newer snapshot already landed — this one is stale, don't write it.
 				if (seq < this.persistedSeq) return;
 				try {
 					await writeFile(tmp, payload);
 					await rename(tmp, sidecar);
 					this.persistedSeq = seq;
 				} catch {
-					await rm(tmp, { force: true }).catch(() => {}); // never leak a tmp, never throw
+					await rm(tmp, { force: true }).catch(() => {});
 				}
 			});
-		} catch {
-			/* ignore */
-		}
+		} catch {}
 	}
 
 	private emit(type: string, payload: Record<string, unknown>): void {
 		this.pi.events.emit(type, { type, timestamp: Date.now(), ...payload });
 	}
 
-	/** Only startup failures are forced: they're dead-on-arrival and the leader must
-	 *  notice before it respawns the same broken config. Completed/aborted and even
-	 *  mid-run failures wait for the turn's end (followUp) — they're not urgent and
-	 *  steering every one of them would interrupt the leader mid-tool-call.
-	 *  force = deliver immediately even while streaming (steer). */
 	private deliverMode(kind: string, task: TaskSnapshot): "steer" | "followUp" {
 		return isStartupFailure(task, kind) ? "steer" : "followUp";
 	}
 
-	/** Per-task wake-up: failures steer in immediately, the rest queue as follow-up. */
 	private notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: "completed" | "failed" | "aborted"): void {
 		const body = makeTaskNotice(run, task, kind);
-		// Parked leader (await_subagent) receives completions through the wait — no queue.
+
 		if (this.collectParked(run.id, { kind: "done", taskId: task.id, agent: task.agent, text: body })) {
 			this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body });
 			return;
 		}
 		try {
 			this.pi.sendUserMessage(body, { deliverAs: this.deliverMode(kind, task) });
-		} catch {
-			/* parent mid-stream; consumers can poll subagent_status */
-		}
+		} catch {}
 		this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body });
 	}
 
-	/** Wake the parent with a 3-line notice. Full text stays out of context.
-	 *  deliverAs queues the message if the parent is mid-stream (e.g. inside
-	 *  await_subagent) instead of throwing/aborting. */
 	private notifyParent(
 		run: RunSnapshot,
 		kind: "completed" | "failed" | "aborted" | "asked",
 		extra?: { taskId?: string; question?: string },
 	): void {
-		if (kind !== "asked" && run.awaited) return; // parent already got the result via await_subagent
+		if (kind !== "asked" && run.awaited) return;
 		const body =
 			kind === "asked"
 				? `A subagent is asking you a question (task ${extra?.taskId}): ${extra?.question ?? ""}\nReply with reply_subagent(runId: "${run.id}", taskId: "${extra?.taskId}", message: ...).`
 				: makeNotice(run, kind);
 		try {
 			this.pi.sendUserMessage(body, { deliverAs: "followUp" });
-		} catch {
-			/* parent mid-stream; consumers can poll subagent_status */
-		}
+		} catch {}
 		this.emit("subagent:notification", { runId: run.id, kind, body });
 	}
 
-	// Widget: register-once + requestRender (todo-overlay pattern).
-	// scheduleWidget throttles status changes into requestRender calls.
 	private widgetTui: TUI | null = null;
-	/** Upsert a run into the widget's visible set (all runs, not just the latest). */
 	private upsertWidgetRun(run: RunSnapshot | undefined): void {
 		if (!run) return;
 		const idx = this.widgetRuns.findIndex((r) => r.id === run.id);
@@ -589,12 +485,11 @@ export class SubagentManager {
 		);
 	}
 
-	/** While any live task's last activity is a talk tool, keep re-rendering so its name pulses. */
 	private pulseTimer: ReturnType<typeof setTimeout> | null = null;
 	private maybePulse(ctx?: ExtensionContext): void {
 		if (this.pulseTimer || !this.widgetTui) return;
 		const talking = this.widgetRuns.some((r) => r.tasks.some(isTalking));
-		if (!talking) return; // last tick stops the loop: talking→normal resumes instantly
+		if (!talking) return;
 		this.pulseTimer = setTimeout(() => {
 			this.pulseTimer = null;
 			this.widgetTui?.requestRender();
@@ -615,7 +510,7 @@ export class SubagentManager {
 			this.widgetTui?.requestRender();
 		}
 		this.maybePulse(ctx);
-		// Transcript gets one status line only — the live per-task view is the widget's job.
+
 		onUpdate?.({
 			content: [
 				{
@@ -659,30 +554,20 @@ export class SubagentManager {
 		this.updateRun(run, ctx, onUpdate);
 	}
 
-	// ── intercom + mailbox ──────────────────────────────────────────────
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
 		return {
 			onAskParent: async (_taskId, question) => {
-				// A tool call already in flight can reach here AFTER the task ended
-				// (abort/timeout/cancel). Reviving it would leave a "running" task in a
-				// finished run — hasActiveRun() then never clears.
 				if (TERMINAL.includes(task.status)) {
 					return "(your task has already ended — stop work and return immediately)";
 				}
 				this.updateTask(run, task, { status: "awaiting_parent" }, ctx);
-				// While the leader is parked in await_subagent the question rides the wait
-				// (no steering queue, no turn boundary); otherwise it goes out as a notice.
-				// Either way the pending reply entry must exist, or reply_subagent has
-				// nowhere to land and the child waits on an answer that never comes.
+
 				if (!this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
 					this.notifyParent(run, "asked", { taskId: task.id, question });
 				}
-				// The wait is BOUNDED: an unanswered question would otherwise keep the run
-				// non-terminal forever (widget never clears, run never settles).
+
 				const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
-				// Cancel wins over a reply that arrived in the same tick: never move a
-				// terminal task back to "running" (that would let a canceled task be
-				// reported as completed).
+
 				if (TERMINAL.includes(task.status)) {
 					return "(your task was canceled while you waited — stop work and return immediately)";
 				}
@@ -691,14 +576,11 @@ export class SubagentManager {
 			},
 			onNotifyParent: (_taskId, message, level) => {
 				this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message });
-				// Parked leader gets it through the wait; otherwise queue it. `awaited` must
-				// NOT gate this — between two parks the leader is awaited but listening.
+
 				if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text: message })) return;
 				try {
 					this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "followUp" });
-				} catch {
-					/* parent mid-stream */
-				}
+				} catch {}
 			},
 			onSendMessage: (_taskId, to, text) => {
 				if (to === "leader") {
@@ -712,12 +594,10 @@ export class SubagentManager {
 					if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text })) return true;
 					try {
 						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "followUp" });
-					} catch {
-						/* parent mid-stream */
-					}
+					} catch {}
 					return true;
 				}
-				// Run-scoped keys: sibling ids are run-local; cross-run task_1 can never collide.
+
 				return this.mailboxes.send(`${run.id}:${task.id}`, `${run.id}:${to}`, text);
 			},
 			onPollMailbox: (taskId) => this.mailboxes.poll(`${run.id}:${taskId}`),
@@ -726,8 +606,6 @@ export class SubagentManager {
 	private awaitParentReply(runId: string, taskId: string, timeoutMs = 0): Promise<string> {
 		const key = `${runId}:${taskId}`;
 		return new Promise<string>((resolve) => {
-			// Identity-tagged: two asks from one child must not delete each other's
-			// entry (the loser would hang until its own timer).
 			const entry: PendingReply = {
 				resolve: (message) => {
 					if (timer) clearTimeout(timer);
@@ -751,14 +629,10 @@ export class SubagentManager {
 	deliverReply(runId: string, taskId: string, message: string): boolean {
 		const pending = this.pendingReplies.get(`${runId}:${taskId}`);
 		if (!pending) return false;
-		pending.resolve(message); // clears its own entry + timer
+		pending.resolve(message);
 		return true;
 	}
 
-	/**
-	 * Child session events → task state. Extracted from runChild so the
-	 * per-event classification is readable and unit-testable.
-	 */
 	private onChildEvent(
 		event: AgentSessionEvent,
 		run: RunSnapshot,
@@ -807,16 +681,13 @@ export class SubagentManager {
 			this.updateRun(run, ctx, onUpdate);
 		} else if (event.type === "agent_end") {
 			if (event.willRetry) {
-				state.pendingFailure = undefined; // retry in flight — don't trust stale failures
+				state.pendingFailure = undefined;
 			} else {
 				const failure = lastAssistantFailure(event.messages as AssistantMessage[]);
 				if (failure) {
 					state.pendingFailure = failure;
 					state.failChildEnd?.(failureError(failure));
 				}
-				// NOTE: success does NOT resolve childEndPromise here — pi may run a
-				// continuation leg (compaction/overflow recovery) that emits another
-				// agent_end. Resolve only on agent_settled, after all legs finish.
 			}
 		} else if (event.type === "agent_settled") {
 			state.childEndResolve?.();
@@ -827,29 +698,18 @@ export class SubagentManager {
 		run: RunSnapshot,
 		task: TaskSnapshot,
 		input: TaskInput,
-		/** The task text as WRITTEN, before upstream outputs were spliced in. */
 		routingTask: string,
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
 		onUpdate?: (partial: any) => void,
 	): Promise<void> {
-		if (TERMINAL.includes(task.status)) return; // canceled while queued
+		if (TERMINAL.includes(task.status)) return;
 
-		// Matched user agent file (`.agents/agents` etc., by description): the file
-		// is authoritative — body = system prompt, frontmatter model/tools win over
-		// inline. No match → inline on-demand definition as usual.
-		// Route on the task as written, never on the upstream output spliced into
-		// it: a chain step would otherwise match a different file (and a different
-		// model) at runtime than the one createRun pre-flighted.
 		const file = resolveAgentFile(input.agent, routingTask, task.cwd, getAgentDir());
-		if (file?.path) task.agentFile = file.path; // recorded for audit — which file won
+		if (file?.path) task.agentFile = file.path;
 		const prompt = file?.body ?? input.prompt?.trim();
 		const thinking = input.thinking;
-		// File tools are default policy, applied only when the call carries no
-		// explicit tool intent: tools: or write: true win over them — silently
-		// displacing explicit intent produced read-only children that "completed"
-		// with zero edits (issue #3). The gate still holds: a repo-planted file
-		// can never WIDEN past the leader's read/write choice (filtered above).
+
 		const allowedTools = input.write ? WRITE_TOOLS : READONLY_TOOLS;
 		const fileTools = file?.tools?.filter((t) => allowedTools.includes(t));
 		const explicitTools = input.tools ?? (input.write ? WRITE_TOOLS : undefined);
@@ -857,30 +717,21 @@ export class SubagentManager {
 		if (explicitTools && fileTools?.length)
 			task.toolsNote = `explicit tools overrode agent-file tools (${fileTools.join(", ")})`;
 		const tools = [...baseTools, ...CHILD_TALK_TOOLS];
-		// Isolation follows the DELIVERED toolset, never the raw request: explicit
-		// tools: [bash] without write:true still gets a worktree, and a file that
-		// narrowed the child to read-only never gets the commit/merge ceremony.
+
 		const canWrite = baseTools.some((t) => WRITE_CAPABLE.includes(t));
 
-		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
-		// Model + thinking resolve against the pi model registry BEFORE any worktree
-		// exists — a bad request fails the TASK with a helpful message and can't leak a
-		// checkout past this early return.
 		let model: Model<Api> | undefined;
 		try {
 			model = resolveChildModel(ctx, file?.model ?? input.model);
 			validateThinking(model, thinking);
-			// Resolution only proves the id exists. Probe it before anything is built,
-			// and fall back to the session's own model when the probe fails.
+
 			const checked = await ensureUsableModel(ctx, model, signal);
 			model = checked.model;
 			if (checked.note) {
 				task.modelNote = checked.note;
 				validateThinking(model, thinking);
 			}
-			// Record the model ACTUALLY used — an agent file's `model:` overrides the
-			// requested one, and showing the request in the widget hides that entirely
-			// (a 403 then names a model the leader never asked for).
+
 			if (model) this.updateTask(run, task, { model: model.id, modelNote: checked.note }, ctx, onUpdate);
 		} catch (err) {
 			this.updateTask(
@@ -897,16 +748,10 @@ export class SubagentManager {
 			return;
 		}
 
-		// Write agents run in an isolated git worktree (branch subagents/<run>/<task>);
-		// non-git repos fall back to in-place. Created BEFORE session start so the
-		// child's cwd + AGENTS.md context chain are the worktree's.
 		let wt: Worktree | undefined;
 		let isolationReason: string | undefined;
 		if (canWrite) {
 			try {
-				// Stack on the upstream write task's branch, so a chained writer actually
-				// SEES the work it was told to build on. Read-only upstreams have no
-				// branch, so those stay based on HEAD.
 				const upstream = (task.needs ?? [])
 					.map((id) => run.tasks.find((t) => t.id === id))
 					.filter((t) => t?.branch && t.status === "completed")
@@ -915,14 +760,11 @@ export class SubagentManager {
 				if (wt && upstream?.branch) task.stackedOn = upstream.branch;
 				if (!wt) isolationReason = "not a git repository";
 			} catch (err) {
-				wt = undefined; // git failure → in-place
+				wt = undefined;
 				isolationReason = `git worktree add failed: ${err instanceof Error ? err.message : String(err)}`;
 			}
 		}
-		// Map a per-task cwd subpath into the worktree so relative paths stay correct.
-		// Both sides go through realpath — a symlinked root would otherwise look
-		// "outside" the repo. If the mapping can't be trusted, drop the worktree AND
-		// reset the cwd (never point the child at a dir that was just removed).
+
 		let childCwd = wt?.path ?? task.cwd;
 		if (wt) {
 			const rel = relative(safeRealPath(wt.root), safeRealPath(task.cwd));
@@ -933,8 +775,7 @@ export class SubagentManager {
 				isolationReason = "task cwd is outside the repository";
 			} else if (rel && rel !== ".") {
 				childCwd = join(wt.path, rel);
-				// The subpath may be gitignored/untracked, so it won't exist in a fresh
-				// checkout — create it rather than fail session start.
+
 				try {
 					mkdirSync(childCwd, { recursive: true });
 				} catch {
@@ -943,19 +784,14 @@ export class SubagentManager {
 			}
 		}
 		if (canWrite) {
-			// Never let isolation lapse quietly: the leader must know its edits landed
-			// straight in the working tree with no branch to review.
 			task.isolation = wt ? "worktree" : "in-place";
 			task.isolationReason = wt ? undefined : (isolationReason ?? "worktree unavailable");
 		}
 		if (wt) {
-			claimWorktree(wt); // pid marker: another pi session must not reap this
+			claimWorktree(wt);
 			this.liveWorktrees.set(`${run.id}:${task.id}`, wt);
 		}
 
-		// Guarded: a throwing event listener or widget failure here would escape
-		// runChild BEFORE the try/finally that releases the worktree — leaking a
-		// checkout that every reaper then skips (registered + owned by a live pid).
 		try {
 			this.updateTask(
 				run,
@@ -963,11 +799,9 @@ export class SubagentManager {
 				{
 					status: "starting",
 					startedAt: Date.now(),
-					// Upstream outputs were spliced in by the scheduler; the snapshot must show
-					// the prompt the child actually receives.
+
 					task: input.task,
-					// RESOLVED model, not the request — an agent file's `model:` overrides it,
-					// and this patch used to clobber the resolved id recorded above.
+
 					model: model?.id ?? input.model,
 					thinking,
 					tools,
@@ -975,12 +809,8 @@ export class SubagentManager {
 				ctx,
 				onUpdate,
 			);
-		} catch {
-			/* a listener/widget failure must not strand the checkout */
-		}
+		} catch {}
 
-		// Set once the dir must outlive this call: committed work awaiting the
-		// leader's merge, or a commit failure whose work exists ONLY in the dir.
 		let keepWorktreeDir = false;
 		let child: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
@@ -990,13 +820,10 @@ export class SubagentManager {
 
 		const key = `${run.id}:${task.id}`;
 		try {
-			// node_modules is a SHARED symlink to the leader's real tree, so dep writes
-			// escape the worktree entirely and `rm -rf node_modules/` destroys the
-			// project's deps. The child is the only thing that can avoid that.
 			const worktreeNote = wt
 				? ` You work in an isolated git worktree (branch ${wt.branch})${task.stackedOn ? `, stacked on ${task.stackedOn} (its changes are already in your tree)` : ""}. Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes. node_modules is a SHARED symlink to the main checkout: never install, upgrade, or delete dependencies (no npm/bun/yarn/pnpm install, no \`rm -rf node_modules\`) — those writes escape your worktree and damage the user's project. If the task truly needs a dependency change, edit the manifest only and say so in your answer.`
 				: "";
-			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. Stalled waits get the whole run killed. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`;
+			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. An unanswered ask_parent times out after 10 minutes — proceed with your best judgment then. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`;
 
 			const loader = new DefaultResourceLoader({
 				cwd: childCwd,
@@ -1045,7 +872,7 @@ export class SubagentManager {
 
 			const abortChild = () => {
 				void child?.abort();
-				this.runControllers.get(run.id)?.abort(); // parent abort kills ALL siblings, not just this child
+				this.runControllers.get(run.id)?.abort();
 			};
 			const runController = this.runControllers.get(run.id);
 			if (signal) signal.addEventListener("abort", abortChild, { once: true });
@@ -1054,7 +881,7 @@ export class SubagentManager {
 				signal?.removeEventListener("abort", abortChild);
 				runController?.signal.removeEventListener("abort", abortChild);
 			};
-			// Cancel may have landed during session creation — honor it before prompting.
+
 			if (run.status === "aborted" || TERMINAL.includes(task.status) || signal?.aborted) {
 				await child.abort();
 				throw new Error("Canceled by subagent_cancel");
@@ -1062,7 +889,7 @@ export class SubagentManager {
 			this.liveChildren.set(key, {
 				abort: () => void child?.abort(),
 				dispose: () => child?.dispose(),
-				// Inject a steering message mid-run; queues as steer if the child is streaming.
+
 				steer: (message) =>
 					void child?.prompt(message, { streamingBehavior: "steer" }).catch((err) =>
 						this.pi.sendUserMessage(`[steer_subagent] ${err instanceof Error ? err.message : String(err)}`, {
@@ -1071,9 +898,6 @@ export class SubagentManager {
 					),
 			});
 
-			// The ceiling is the ONLY bound on a child that emits events forever (retry
-			// or tool-call livelock). So auto-limit off RAISES it, never removes it —
-			// removing it reproduced the immortal-child hang.
 			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS);
 			const promptPromise = child.prompt(task.task, { source: "extension" });
 			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise];
@@ -1093,31 +917,19 @@ export class SubagentManager {
 			const finalText =
 				task.finalText ||
 				truncateText((child.messages as AssistantMessage[]).map(getFirstText).filter(Boolean).at(-1) || "");
-			// TERMINAL, not just "aborted": a cancel/timeout that landed while the
-			// final text was being assembled must not be overwritten with "completed"
-			// (which would also skip the partial commit and drop the child's work).
-			// `awaiting_parent` also means the child hadn't finished talking — marking
-			// it completed would publish a truncated finalText to every dependent.
+
 			if (task.status === "awaiting_parent") {
 				this.pendingReplies.get(key)?.resolve("(your task is being finalized — stop work and return now)");
 			}
 			if (!TERMINAL.includes(task.status)) {
 				this.updateTask(run, task, { status: "completed", finalText, endedAt: Date.now() }, ctx, onUpdate);
 				if (wt) {
-					// Commit the child's changes, then report the branch + diff so the
-					// leader can review and merge (PR-style). The worktree dir stays
-					// until the branch is merged — cleanupMerged removes both then.
-					// Commit/diff failures must NOT downgrade a completed task or destroy
-					// its work: the error is reported, the status stays completed.
 					let committed: "committed" | "empty" | undefined;
 					try {
 						committed = commitWorktree(wt, `subagent ${task.agent}: ${truncateText(input.task, 60)}`);
-						// Only a real commit is worth a branch: an empty one would send the
-						// leader off to review and merge nothing.
+
 						keepWorktreeDir = committed === "committed";
 					} catch (commitErr) {
-						// Never drop a checkout whose work isn't on the branch — it would be
-						// unreachable once the base-tip branch is reaped as "merged".
 						keepWorktreeDir = true;
 						this.updateTask(
 							run,
@@ -1130,7 +942,7 @@ export class SubagentManager {
 							onUpdate,
 						);
 					}
-					// Diff separately: a diff failure must not be reported as a lost commit.
+
 					if (committed === "committed") {
 						try {
 							const { stat, files } = branchDiff(wt);
@@ -1158,20 +970,14 @@ export class SubagentManager {
 			}
 		} catch (err) {
 			if (timeout) clearTimeout(timeout);
-			// Cancel is authoritative: parent tool signal OR run/task already marked aborted.
+
 			const aborted = signal?.aborted || run.status === "aborted" || task.status === "aborted";
 			const subagentStatus = (err as Error & { subagentStatus?: string })?.subagentStatus;
 			try {
-				// Unblock a child stuck in ask_parent, then time-box the abort so a
-				// wedged session can never hang this catch/finally.
 				this.pendingReplies.get(key)?.resolve("(parent unreachable)");
 				await Promise.race([child?.abort(), new Promise((r) => setTimeout(r, 5000))]);
-			} catch {
-				/* ignore */
-			}
-			// Publish whatever the child DID say before it was killed. A timeout or
-			// abort used to discard it, so a chain dependent received nothing at all
-			// while the child's partial work was still committed to its branch.
+			} catch {}
+
 			const salvaged =
 				task.finalText ||
 				truncateText(
@@ -1191,46 +997,37 @@ export class SubagentManager {
 			);
 		} finally {
 			this.liveChildren.delete(key);
-			// Resolve, don't just delete: a bare delete strands the 10-minute reply
-			// timer and leaves the child's await unsettled.
+
 			this.pendingReplies.get(key)?.resolve("(task ended — stop work now)");
 			this.pendingReplies.delete(key);
 			abortListener?.();
 			unsubscribe?.();
 			if (timeout) clearTimeout(timeout);
 			child?.dispose();
-			// Failed/aborted: let the aborted child's last writes land (its tools may
-			// still be unwinding), commit whatever partial work exists so the branch
-			// really keeps it, then drop the checkout dir. A commit FAILURE keeps the
-			// dir — dropping it would make the work unreachable.
+
 			if (wt && task.status !== "completed") {
 				await new Promise((r) => setTimeout(r, 250));
 				let partial: "committed" | "empty" | undefined;
 				try {
 					partial = commitWorktree(wt, `subagent ${task.agent} (partial, ${task.status})`);
 				} catch {
-					keepWorktreeDir = true; // work exists only in the dir — keep it
+					keepWorktreeDir = true;
 				}
-				// A branch is only worth reporting when it actually carries something.
+
 				if (partial === "committed" || keepWorktreeDir) {
 					this.updateTask(run, task, { branch: wt.branch }, ctx, onUpdate);
 				}
 			}
 			if (wt && !keepWorktreeDir) removeWorktree(wt);
-			// Released only after the dir is gone: while it exists, the branch must stay
-			// in liveBranches() so cleanup can't reap it.
+
 			this.liveWorktrees.delete(key);
 		}
 	}
 
-	// ── run lifecycle ───────────────────────────────────────────────────
 	createRun(params: SubagentParamsShape, ctx: ExtensionContext): { run: RunSnapshot; inputs: TaskInput[] } {
 		const hasChain = (params.chain?.length ?? 0) > 0;
 		const hasTasks = (params.tasks?.length ?? 0) > 0;
-		// An array mode wins over stray top-level agent/task: models routinely leave
-		// those in place when switching to tasks:[...], and the intent is not
-		// ambiguous — rejecting a well-formed 3-task call over leftovers is worse
-		// than ignoring them. Genuine ambiguity (tasks AND chain) is still refused.
+
 		const hasSingle = !hasChain && !hasTasks && Boolean(params.agent && params.task);
 		if (hasChain && hasTasks) {
 			throw new Error(`Provide either tasks (parallel) or chain (sequential), not both.`);
@@ -1240,12 +1037,7 @@ export class SubagentManager {
 				`Provide one subagent mode: agent+task (single), tasks: [...] (parallel), or chain: [...] (sequential).`,
 			);
 		}
-		// Single-mode-only fields alongside an array mode are silently dropped
-		// otherwise: `write: true` next to tasks:[...] produced read-only children
-		// that reported they "cannot edit files", with nothing explaining why.
-		// `cwd` and `maxRuntimeMs` are meaningful run-wide (and the schema advertises
-		// maxRuntimeMs without a single-mode marker), so they FAN OUT as per-task
-		// defaults instead of being refused. The rest genuinely describe one agent.
+
 		if (hasChain || hasTasks) {
 			const stray = (["write", "prompt", "tools", "model", "thinking"] as const).filter((k) => params[k] !== undefined);
 			if (stray.length > 0) {
@@ -1271,15 +1063,12 @@ export class SubagentManager {
 					},
 				]
 			: (hasTasks ? params.tasks! : params.chain!).map((item) => ({
-					// Run-wide defaults; a per-task value always wins.
 					...item,
 					cwd: item.cwd ?? params.cwd,
 					maxRuntimeMs: item.maxRuntimeMs ?? params.maxRuntimeMs,
 				}));
 		if (inputs.length > MAX_TASKS) throw new Error(`Too many subagent tasks (${inputs.length}). Max is ${MAX_TASKS}.`);
-		// Task ids become git refs + filesystem paths — refuse anything unsafe.
-		// Explicit ids are checked against each other; generated ones are checked
-		// against explicit ones so a collision can't silently fall back to in-place.
+
 		const ids = new Set<string>();
 		for (const input of inputs) {
 			if (input.id !== undefined) {
@@ -1297,14 +1086,9 @@ export class SubagentManager {
 			}
 		}
 		const edges = resolveNeeds(inputs, mode);
-		// A new run exists, so persisting is meaningful again. Without this, a host
-		// that emits session_shutdown with no following session_start (SIGTERM, SDK
-		// reuse, tests) leaves every later persist a silent no-op.
+
 		this.cleared = false;
-		// Pre-flight every task's model BEFORE the run exists. A matched agent file
-		// overrides the requested model, so an unresolvable one is the leader's
-		// mistake to see NOW — not N children dying one by one on their first turn
-		// with an error naming a model the leader never asked for.
+
 		for (let i = 0; i < inputs.length; i++) {
 			const input = inputs[i] as TaskInput;
 			const cwd = input.cwd ?? ctx.cwd;
@@ -1345,8 +1129,7 @@ export class SubagentManager {
 			})),
 			aggregateUsage: emptyUsage(),
 		};
-		// Roster: each child learns its own address + sibling addresses so
-		// send_agent_message/poll_agent_messages can be used reliably.
+
 		const roster = run.tasks.map((t) => `${t.id} (${t.agent})`).join(", ");
 		for (const task of run.tasks) {
 			task.roster = roster;
@@ -1374,15 +1157,12 @@ export class SubagentManager {
 		run.startedAt = Date.now();
 		this.updateRun(run, ctx, onUpdate);
 
-		// One wave scheduler for every mode. A wave is the set of tasks whose needs
-		// are all satisfied; the loop boundary between waves IS the gate. Chain mode
-		// reaches here as needs: [previous], so it needs no special case.
 		const outputs = new Map<string, string>();
 		const settled = new Set<string>();
 		for (const task of run.tasks) {
-			if (TERMINAL.includes(task.status)) settled.add(task.id); // canceled before start
+			if (TERMINAL.includes(task.status)) settled.add(task.id);
 		}
-		// id → input, immune to filtered-array index drift (C4).
+
 		const inputById = new Map(run.tasks.map((t, i) => [t.id, inputs[i]]));
 
 		const { skipped } = await runWaveScheduler(
@@ -1391,12 +1171,8 @@ export class SubagentManager {
 			outputs,
 			settled,
 			async (task) => {
-				// The scheduler passes the index into the FILTERED list — never use it
-				// against the unfiltered inputs. Look the input up by task id instead.
 				const input = inputById.get(task.id);
 				if (!input) {
-					// Impossible unless ids drift from inputs — fail loudly instead of
-					// leaving the task queued forever (hasActiveRun would never clear).
 					this.updateTask(
 						run,
 						task,
@@ -1421,7 +1197,7 @@ export class SubagentManager {
 				}
 			},
 		);
-		// Broken-upstream tasks are detected by the scheduler; mark them after the wave.
+
 		for (const s of skipped) {
 			const task = run.tasks.find((t) => t.id === s.id);
 			if (task && !TERMINAL.includes(task.status)) {
@@ -1430,7 +1206,7 @@ export class SubagentManager {
 					task,
 					{
 						status: "aborted",
-						// Don't overwrite a real reason (e.g. "Canceled by subagent_cancel").
+
 						error: task.error || `Skipped: upstream task(s) did not complete: ${s.needs.join(", ")}`,
 						endedAt: Date.now(),
 					},
@@ -1439,9 +1215,7 @@ export class SubagentManager {
 				);
 			}
 		}
-		// Belt and braces: the wave loop breaks out when no frontier is ready, which
-		// would otherwise leave tasks queued inside a terminal run — hasActiveRun()
-		// then never clears and the widget stays pinned.
+
 		for (const task of run.tasks) {
 			if (TERMINAL.includes(task.status)) continue;
 			this.updateTask(
@@ -1458,11 +1232,10 @@ export class SubagentManager {
 		run.status = aborted ? "aborted" : failed ? "failed" : "completed";
 		run.endedAt = Date.now();
 		this.flushWidget(run, ctx, onUpdate);
-		// Finished runs (including aborted ones) stay on screen so the outcome is readable.
-		// The agent_start handler clears them on the next turn that spawns nothing.
+
 		const live = this.listRuns().find((r) => !TERMINAL.includes(r.status));
 		if (live) this.scheduleWidget(live, ctx);
-		// L7: cancelRun already emitted + settled — don't double-report.
+
 		if (this.settlers.has(run.id)) {
 			this.emit("subagent:run-completed", {
 				runId: run.id,
@@ -1475,9 +1248,7 @@ export class SubagentManager {
 		this.runControllers.delete(run.id);
 		for (const task of run.tasks) this.mailboxes.close(`${run.id}:${task.id}`);
 		this.persist(ctx);
-		// Branches merged by the leader since the run ended: drop worktree dir + branch.
-		// Once per repo, never for a branch another live run owns, never fatal — a
-		// throw here would re-settle an already-finished run as failed.
+
 		try {
 			const roots = new Set<string>();
 			for (const task of run.tasks) {
@@ -1486,14 +1257,9 @@ export class SubagentManager {
 				if (root) roots.add(root);
 			}
 			for (const root of roots) cleanupMerged(root, { skipBranches: this.liveBranches() });
-		} catch {
-			/* cleanup is best-effort; the run outcome must stand */
-		}
+		} catch {}
 	}
 
-	/** Branches owned by worktrees of still-running children. */
-	/** True only for checkouts THIS manager still runs — a marker carrying our own
-	 *  pid from a previous session in the same process is not proof of life. */
 	ownsWorktree = (path: string): boolean => {
 		for (const wt of this.liveWorktrees.values()) if (wt.path === path) return true;
 		return false;
@@ -1502,7 +1268,6 @@ export class SubagentManager {
 		return new Set(Array.from(this.liveWorktrees.values(), (wt) => wt.branch));
 	}
 
-	/** Spawn a run that keeps executing after this call returns. Every run is background. */
 	startInBackground(params: SubagentParamsShape, ctx: ExtensionContext): RunDetails {
 		const { run, inputs } = this.createRun(params, ctx);
 		void this.executeTasks(run, inputs, ctx, undefined, undefined)
@@ -1513,7 +1278,6 @@ export class SubagentManager {
 				);
 			})
 			.catch((err) => {
-				// Never leave a background run unsettled: mark failed, settle, notify.
 				run.status = "failed";
 				run.endedAt = Date.now();
 				for (const task of run.tasks) {
@@ -1533,7 +1297,6 @@ export class SubagentManager {
 		return { run: cloneRun(run) };
 	}
 
-	/** Push a steering message into a live child's session. Returns false when unknown or not running. */
 	steerTask(runId: string, taskId: string | undefined, message: string): boolean {
 		const run = this.runs.get(runId);
 		if (!run) return false;
@@ -1543,12 +1306,11 @@ export class SubagentManager {
 		return true;
 	}
 
-	/** Abort ONE task; siblings keep running. Returns false when unknown or already finished. */
 	cancelTask(runId: string, taskId: string, ctx?: ExtensionContext): boolean {
 		const run = this.runs.get(runId);
 		const task = run?.tasks.find((t) => t.id === taskId);
 		if (!run || !task || TERMINAL.includes(task.status)) return false;
-		// Mark first: runChild's catch reads task.status to classify the outcome as aborted.
+
 		task.status = "aborted";
 		task.error = task.error || "Canceled from peek";
 		task.endedAt = Date.now();
@@ -1564,11 +1326,10 @@ export class SubagentManager {
 	cancelRun(runId: string): { aborted: number } {
 		const run = this.runs.get(runId);
 		if (!run) return { aborted: 0 };
-		if (TERMINAL.includes(run.status)) return { aborted: 0 }; // never corrupt a finished run
+		if (TERMINAL.includes(run.status)) return { aborted: 0 };
 		let aborted = 0;
 		this.runControllers.get(runId)?.abort();
-		// Release children parked in ask_parent first — an unresolved wait would keep
-		// the child alive past the abort.
+
 		for (const [key, pending] of this.pendingReplies) {
 			if (key.startsWith(`${runId}:`)) {
 				this.pendingReplies.delete(key);
@@ -1583,11 +1344,10 @@ export class SubagentManager {
 		for (const task of run.tasks) {
 			if (TERMINAL.includes(task.status)) continue;
 			task.status = "aborted";
-			task.error = task.error || "Canceled by subagent_cancel"; // never overwrite a real error
+			task.error = task.error || "Canceled by subagent_cancel";
 			task.endedAt = Date.now();
 			aborted += 1;
-			// The branch is recorded here so the leader can still merge partial work;
-			// runChild's finally commits + drops the dir (it owns the live worktree).
+
 			const wt = this.liveWorktrees.get(`${runId}:${task.id}`);
 			if (wt) task.branch = wt.branch;
 		}
@@ -1600,7 +1360,6 @@ export class SubagentManager {
 		return { aborted };
 	}
 
-	/** Settle-and-delete: every awaiter resolves once, then the set is dropped. */
 	private settleRun(runId: string, run: RunSnapshot): void {
 		if (!this.settlers.has(runId)) return;
 		this.settlers.delete(runId);
@@ -1611,12 +1370,8 @@ export class SubagentManager {
 		for (const waiter of waiters) waiter(snapshot);
 	}
 
-	/** Child→leader messages collected while the parent is parked in await_subagent. */
-	/** Every awaiter parked on a run — a SET, so two concurrent awaits can't
-	 *  overwrite each other's buffer and silently swallow one side's intercom. */
 	private parked = new Map<string, Set<{ msgs: ParkedMsg[]; wake: () => void }>>();
 
-	/** While the parent is parked on this run, deliver the message through the wait instead of the steering queue. */
 	private collectParked(runId: string, msg: ParkedMsg): boolean {
 		const parked = this.parked.get(runId);
 		if (!parked || parked.size === 0) return false;
@@ -1626,22 +1381,18 @@ export class SubagentManager {
 				p.msgs.push(msg);
 				delivered = true;
 			} else if (msg.kind === "ask") {
-				// An unanswered ask blocks a child for 10 minutes — it must never be the
-				// message that gets dropped by the cap. Evict the oldest NON-ask first
-				// (asks already block children; displacing one hangs the earlier asker).
 				const drop = p.msgs.findIndex((m) => m.kind !== "ask");
 				if (drop !== -1) {
 					p.msgs.splice(drop, 1);
 					p.msgs.push(msg);
 				} else {
-					p.msgs[p.msgs.length - 1] = msg; // all asks — overwrite the oldest ask
+					p.msgs[p.msgs.length - 1] = msg;
 				}
 				delivered = true;
 			}
-			p.wake(); // resolve the parked await early — the leader breathes on every message
+			p.wake();
 		}
-		// Not buffered anywhere → report undelivered so the caller falls back to a
-		// followUp notice instead of assuming the leader saw it.
+
 		return delivered;
 	}
 
@@ -1655,7 +1406,7 @@ export class SubagentManager {
 		const finish = (): void => {
 			const parked = this.parked.get(runId);
 			if (!parked || !entry) return;
-			parked.delete(entry); // only our own park — a sibling await keeps receiving
+			parked.delete(entry);
 			if (parked.size === 0) this.parked.delete(runId);
 		};
 		if (TERMINAL.includes(run.status)) {
@@ -1664,9 +1415,6 @@ export class SubagentManager {
 		}
 		const msgs: ParkedMsg[] = [];
 		const settled = new Promise<RunSnapshot | undefined>((resolve) => {
-			// Waiters are a SET, not a chain: the autoAwait loop re-parks on every
-			// child message, and wrapping the previous settler each time grew an
-			// unbounded closure chain (each holding a snapshot clone).
 			const waiter = (r: RunSnapshot) => {
 				this.settleWaiters.get(runId)?.delete(waiter);
 				resolve(r);
@@ -1677,8 +1425,7 @@ export class SubagentManager {
 				this.settleWaiters.set(runId, waiters);
 			}
 			waiters.add(waiter);
-			// A child→leader message while parked wakes the wait: the leader gets it
-			// IN the await result, no steering queue, no turn boundary needed.
+
 			entry = { msgs, wake: () => waiter(cloneRun(run)) };
 			let parked = this.parked.get(runId);
 			if (!parked) {
@@ -1692,9 +1439,7 @@ export class SubagentManager {
 			return Promise.race([
 				settled.then((r) => {
 					finish();
-					// Only mark awaited when this call actually hands the run back to the
-					// leader. A slice that already timed out is abandoned — setting it here
-					// would suppress the run's completion notice the leader still needs.
+
 					if (!timedOut) run.awaited = true;
 					return { run: r, intercom: msgs };
 				}),

@@ -1,7 +1,3 @@
-/** Spawn-cost bench: replicate manager.runChild's pipeline, phase by phase.
- *  Phase 1-4: no LLM. Phase 5: one real end-to-end spawn (cheap model).
- *  Run: bun bench/spawn-cost.ts */
-
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,7 +13,7 @@ import { resolveAgentFile } from "../src/agentfile.ts";
 
 const CWD = "/Users/alva-arhen/Code/personal/pi-extensions";
 const AGENT_DIR = getAgentDir();
-const MODEL = "my-google/gemma-4-31b-it"; // cheap, no reasoning
+const MODEL = "my-google/gemma-4-31b-it";
 const RUNS = 3;
 
 async function phase<T>(name: string, fn: () => Promise<T>): Promise<T> {
@@ -27,7 +23,6 @@ async function phase<T>(name: string, fn: () => Promise<T>): Promise<T> {
 	return r;
 }
 
-// Phase 0: agent-file resolution cost (inline vs existing file)
 const tmp = mkdtempSync(join(tmpdir(), "spawn-bench-"));
 mkdirSync(join(tmp, ".agents/agents"), { recursive: true });
 writeFileSync(
@@ -46,7 +41,7 @@ rmSync(tmp, { recursive: true, force: true });
 
 for (let run = 1; run <= RUNS; run++) {
 	console.log(`\n— pipeline run ${run}/${RUNS} (no LLM) —`);
-	// 1. child model runtime (createChildModelRuntime replica): disk auth/models + provider replay + refresh
+
 	const runtime = await phase("ModelRuntime.create+refresh", async () => {
 		const rt = await ModelRuntime.create({
 			authPath: join(AGENT_DIR, "auth.json"),
@@ -55,15 +50,15 @@ for (let run = 1; run <= RUNS; run++) {
 		await rt.refresh({ allowNetwork: false });
 		return rt;
 	});
-	// 2. resource loader (runChild uses DefaultResourceLoader + reload)
+
 	const loader = await phase("DefaultResourceLoader reload", async () => {
 		const l = new DefaultResourceLoader({ cwd: CWD, agentDir: AGENT_DIR, noExtensions: true });
 		await l.reload();
 		return l;
 	});
-	// 3. session manager
+
 	const sm = await phase("SessionManager.create", async () => SessionManager.create(CWD, undefined, {}));
-	// 4. agent session (model client init, no prompt)
+
 	const created = await phase("createAgentSession", async () => {
 		const models = await runtime.getAvailable();
 		return createAgentSession({
@@ -79,7 +74,6 @@ for (let run = 1; run <= RUNS; run++) {
 	created.session.dispose();
 }
 
-// Phase 5: real end-to-end — spawn until the child starts producing output
 console.log(`\n— end-to-end: spawn → first model output (${MODEL}) —`);
 const t0 = performance.now();
 const runtime = await ModelRuntime.create({

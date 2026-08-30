@@ -1,4 +1,3 @@
-/** Agent-file resolution: description matching, dir priority, frontmatter. */
 import { afterAll, beforeAll, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,7 +10,7 @@ let home: string;
 beforeAll(() => {
 	root = mkdtempSync(join(tmpdir(), "agentfile-"));
 	home = mkdtempSync(join(tmpdir(), "agentfile-home-"));
-	clearAgentFileCache(); // per-suite baseline — cache is session-scoped
+	clearAgentFileCache();
 });
 afterAll(() => {
 	clearAgentFileCache();
@@ -34,7 +33,7 @@ const BRAINSTORM =
 
 describe("resolveAgentFile (description matching)", () => {
 	beforeEach(() => {
-		clearAgentFileCache(); // files are written inside the tests — no stale walk
+		clearAgentFileCache();
 	});
 
 	beforeAll(() => {
@@ -86,19 +85,17 @@ describe("resolveAgentFile (description matching)", () => {
 
 	test(".agents/agents beats .claude/agents (single source), same description", () => {
 		write(".agents/agents/frndos-architect.md", ARCHITECT);
-		clearAgentFileCache(); // the file was written after the suite-level walk was cached
+		clearAgentFileCache();
 		const hit = resolveAgentFile("whatever", "review how services work together", root, join(home, ".pi/agent"));
 		expect(hit?.body).toBe("You are the architect.");
-		// and the .agents copy is the one used — verify by model difference
+
 		write(".agents/agents/frndos-architect.md", ARCHITECT.replace("claude-opus-4-6", "gemma"));
-		clearAgentFileCache(); // refresh before re-reading after the second write
+		clearAgentFileCache();
 		const hit2 = resolveAgentFile("whatever", "review how services work together", root, join(home, ".pi/agent"));
 		expect(hit2?.model).toBe("gemma");
 	});
 
 	test("filler-word overlap does not bind unrelated goals (real frndos false positives)", () => {
-		// A file overrides prompt AND model, so a weak match cost real 403s: these
-		// four goals all bound to a PRD writer via junk tokens like "from"/"user".
 		write(
 			".claude/agents/frndos-prd.md",
 			"---\ndescription: Creates formal PRDs from Lark notes or user descriptions\nmodel: claude-opus-5\n---\nPRD writer.",
@@ -114,15 +111,13 @@ describe("resolveAgentFile (description matching)", () => {
 		for (const [name, task] of goals) {
 			expect(resolveAgentFile(name, task, root, agentDir)?.body).not.toBe("PRD writer.");
 		}
-		// ...while a genuine PRD goal still lands on it.
+
 		expect(resolveAgentFile("writer", "write the formal PRD from the Lark notes", root, agentDir)?.body).toBe(
 			"PRD writer.",
 		);
 	});
 
 	test("-e nouns survive the plural stemmer (services/service, files/file)", () => {
-		// `es`-stripping mangled every -e noun: services→servic vs service→service
-		// never shared a token, silently breaking the most common routing words.
 		write(
 			".claude/agents/svc.md",
 			"---\ndescription: Audits services and their config files across packages\n---\nSvc.",
@@ -134,7 +129,6 @@ describe("resolveAgentFile (description matching)", () => {
 	});
 
 	test("a detailed description is not harder to match than a lazy one", () => {
-		// Normalizing by the description's length made better docs route worse.
 		write(
 			".claude/agents/detailed-reviewer.md",
 			"---\ndescription: Reviews TypeScript pull requests for correctness, performance, security, style; checks test coverage, flags breaking API changes, suggests refactors across monorepo packages\n---\nDetailed.",
@@ -175,11 +169,11 @@ describe("resolveAgentFile (description matching)", () => {
 	});
 
 	test("project beats home", () => {
-		clearAgentFileCache(); // make sure the earlier home-only walk is dropped
+		clearAgentFileCache();
 		const hit = resolveAgentFile("n", "audit the npm publish token scope", root, join(home, ".pi/agent"));
-		expect(hit?.body).toBe("G-agents."); // project has no match → home still wins
+		expect(hit?.body).toBe("G-agents.");
 		write(".pi/agents/local.md", "---\ndescription: audits npm publish credentials and token scopes\n---\nP.");
-		clearAgentFileCache(); // refresh before re-reading with the new project file
+		clearAgentFileCache();
 		const hit2 = resolveAgentFile("n", "audit the npm publish token scope", root, join(home, ".pi/agent"));
 		expect(hit2?.body).toBe("P.");
 	});

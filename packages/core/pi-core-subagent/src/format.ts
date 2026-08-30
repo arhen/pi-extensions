@@ -1,6 +1,3 @@
-/** Rendering: task lines, usage, the widget, summaries, notices.
- *  Pure + theme-aware — no manager state, no pi runtime. */
-
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
@@ -14,13 +11,12 @@ import {
 	type UsageStats,
 } from "./types.ts";
 
-/** Cap on a single child's final output (and on full-run summaries). */
 const FINAL_OUTPUT_CAP = 24 * 1024;
 
 export function truncateText(text: string, max = FINAL_OUTPUT_CAP): string {
 	if (Buffer.byteLength(text, "utf8") <= max) return text;
 	let out = text.slice(0, max);
-	while (Buffer.byteLength(out, "utf8") > max) out = out.slice(0, -1); // multibyte-safe
+	while (Buffer.byteLength(out, "utf8") > max) out = out.slice(0, -1);
 	return `${out}\n\n[Output truncated. Full child session is available in the session file.]`;
 }
 export function getFirstText(message: AssistantMessage): string {
@@ -67,40 +63,24 @@ function taskStatsWithUsage(task: TaskSnapshot): string {
 export function taskLine(task: TaskSnapshot): string {
 	return `${statusIcon(task.status)} ${task.agent} · ${taskStatsWithUsage(task)} · ${taskTimer(task)}`;
 }
-/**
- * Numbers take the theme's number color, everything else stays muted — like the footer.
- * Must run on RAW text: styling an already-colored string rewrites the digits
- * inside the ANSI escape codes themselves ("38;2;139;136;122m16 tools").
- */
 export function colorNums(text: string, theme: Theme): string {
-	// A value keeps its unit: "460.6k" and "2m30s" each color as one token, not digit-by-digit.
 	return text.replace(/((?:\d+(?:\.\d+)?[a-zA-Z]*)+)|([^\d]+)/g, (_m, num?: string, rest?: string) =>
 		num ? theme.fg("syntaxNumber", num) : theme.fg("muted", rest ?? ""),
 	);
 }
-/**
- * Themed one-liner. Finished tasks dim entirely (stats included); live tasks
- * keep the agent name readable with themed numbers.
- */
 function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""): string {
 	const tail = `${taskStatsWithUsage(task)} · ${taskTimer(task)}`;
-	// Queued task with unmet needs: show the gate it's waiting on instead of empty stats.
+
 	const gate =
 		task.status === "queued" && task.needs?.length ? `${theme.fg("muted", `↳ waits ${task.needs.join(", ")}`)} · ` : "";
 	if (TERMINAL.includes(task.status)) {
 		return theme.fg("dim", `${statusIcon(task.status)} ${task.agent} · ${tail}`);
 	}
-	// Talking (mailbox/intercom tool in flight): pulse the name accent↔dim; normal otherwise.
+
 	pulsePhase += 1;
 	const name = isTalking(task) ? theme.fg(pulsePhase % 2 === 0 ? "accent" : "dim", `${task.agent} ⇄`) : task.agent;
 	return `${statusIcon(task.status)} ${name} · ${gate}${activity}${colorNums(tail, theme)}`;
 }
-/**
- * Human-readable activity line: "Read src/index.ts", "Grep wrapSingleLine".
- * ponytail: picks the first interesting string arg instead of a per-tool table —
- * unknown/custom tools then read fine too. Add a case only if one reads badly.
- */
-// Order matters: the most specific arg wins (grep's pattern beats its path).
 const ARG_KEYS = ["pattern", "query", "command", "path", "file_path", "filePath", "url", "name", "subject", "task"];
 export function describeCall(toolName: string, args: unknown, cwd?: string): string {
 	const verb = toolName.charAt(0).toUpperCase() + toolName.slice(1);
@@ -112,7 +92,7 @@ export function describeCall(toolName: string, args: unknown, cwd?: string): str
 	}
 	if (value === undefined) return verb;
 	let text = value.replace(/\s+/g, " ").trim();
-	if (cwd && text.startsWith(`${cwd}/`)) text = text.slice(cwd.length + 1); // absolute paths inside the task cwd read as noise
+	if (cwd && text.startsWith(`${cwd}/`)) text = text.slice(cwd.length + 1);
 	return `${verb} ${text.length > 60 ? `${text.slice(0, 60)}…` : text}`;
 }
 export function activitySnippet(text: string): string {
@@ -120,14 +100,12 @@ export function activitySnippet(text: string): string {
 	return flat.length > 90 ? `${flat.slice(0, 90)}…` : flat;
 }
 
-/** Mailbox/intercom tools — while one is the task's last activity, the agent is "talking". */
 const TALK_TOOLS = ["poll_agent_messages", "send_agent_message", "ask_parent", "notify_parent"];
 export function isTalking(task: TaskSnapshot): boolean {
 	const a = task.lastActivity?.toLowerCase() ?? "";
 	return TALK_TOOLS.some((t) => a.startsWith(t));
 }
-let pulsePhase = 0; // flips per render; talking agents alternate between the two name styles
-/** Static compact lines (tool-result stream, subagent_status, /subagents). */
+let pulsePhase = 0;
 export function compactLines(run: RunSnapshot): string[] {
 	const lines: string[] = [];
 	for (const task of run.tasks.slice(0, MAX_TASKS)) {
@@ -136,14 +114,6 @@ export function compactLines(run: RunSnapshot): string[] {
 	if (run.tasks.length > MAX_TASKS) lines.push(`… +${run.tasks.length - MAX_TASKS} more`);
 	return lines;
 }
-/**
- * Above-editor widget, todo-tree style:
- *   ● Subagents (0/1)
- *   ├─ • code-sleuth · 4 tools · 12s
- *   │    → read src/auth.ts
- *   └─ ✓ reviewer · 6 tools · 44s
- * Static icons (no animation); latest activity + tool count + runtime per agent.
- */
 const WIDGET_MAX_LINES = 10;
 
 export class SubagentsWidget implements Component {
@@ -152,13 +122,9 @@ export class SubagentsWidget implements Component {
 		private readonly theme: Theme,
 	) {}
 
-	invalidate(): void {
-		// no cached strings; render() reads live state
-	}
+	invalidate(): void {}
 
 	render(width: number): string[] {
-		// ONE flat tree: every run's tasks concatenated under a single heading.
-		// Whether the model spawned N runs or one tasks[] call, the pane reads the same.
 		const runs = this.getRuns().filter((r) => r.tasks.length > 0);
 		if (runs.length === 0) return [];
 		const total = runs.reduce((n, r) => n + r.tasks.length, 0);
@@ -179,7 +145,7 @@ export class SubagentsWidget implements Component {
 				if (shown >= budget) break outer;
 				shown += 1;
 				const activity = task.lastActivity ? `${this.theme.fg("dim", `→ ${task.lastActivity}`)} · ` : "";
-				// Per-TASK status drives dimming: a finished agent stays dim even while siblings run.
+
 				lines.push(
 					truncateToWidth(`${this.theme.fg("dim", "├─")} ${themedTaskLine(task, this.theme, activity)}`, width, "…"),
 				);
@@ -195,8 +161,6 @@ export class SubagentsWidget implements Component {
 		return lines;
 	}
 }
-/** Blocking-call summary: full text, because the model asked for it. */
-/** Where a write child's edits went: a branch to merge, or straight into the tree. */
 function worktreeLine(task: TaskSnapshot, siblings?: TaskSnapshot[]): string {
 	const parts: string[] = [];
 	if (task.branch) {
@@ -204,15 +168,11 @@ function worktreeLine(task: TaskSnapshot, siblings?: TaskSnapshot[]): string {
 			? ` (${task.changedFiles.length} file(s): ${truncateText(task.changedFiles.join(", "), 160)})`
 			: "";
 		parts.push(`Branch: ${task.branch}${files} — merge with \`git merge --no-ff ${task.branch}\` after review.`);
-		// Stacked branches CONTAIN their upstream, so either merge order gives the
-		// same tree (merging this one pulls the upstream in; the upstream's own merge
-		// is then a no-op). Say that, rather than implying an ordering requirement.
+
 		if (task.stackedOn) {
 			parts.push(`Stacked on ${task.stackedOn} — contains that branch's commits, so merging this one brings both.`);
 		}
-		// Sibling branches are independent, not stacked: overlapping files mean the
-		// second merge is a real 3-way, and non-overlapping-but-coupled edits break
-		// silently. Both are computable from changedFiles, so say so.
+
 		const overlap = (siblings ?? [])
 			.filter((s) => s.id !== task.id && s.branch && !s.stackedOn && !task.stackedOn)
 			.flatMap((s) => (s.changedFiles ?? []).filter((f) => task.changedFiles?.includes(f)).map((f) => `${s.id}:${f}`));
@@ -239,7 +199,6 @@ export function makeSummary(run: RunSnapshot): string {
 	const usage = formatUsage(run.aggregateUsage);
 	if (usage) lines.push(`Usage: ${usage}`);
 	for (const task of run.tasks) {
-		// Edges are named so the leader can compare what it delegated against what came back.
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
 		const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
@@ -248,12 +207,9 @@ export function makeSummary(run: RunSnapshot): string {
 			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${tools}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
 		);
 	}
-	// Ceiling on the WHOLE summary — 16 tasks × 24KB would otherwise flood the parent context.
+
 	return truncateText(lines.join("\n"));
 }
-/** Per-task notice: one task's outcome, small. Full output stays out of parent context. */
-/** Dead on arrival: failed without ever producing assistant text — model/plan/auth/agent-file
- *  level, so every respawn with the same config fails identically. */
 export function isStartupFailure(task: TaskSnapshot, kind: string): boolean {
 	return kind === "failed" && !task.finalText?.trim();
 }
@@ -263,9 +219,7 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 	const wt = task.branch
 		? ` · branch ${task.branch}${task.changedFiles?.length ? `, ${task.changedFiles.length} file(s)` : ""}`
 		: "";
-	// A matched agent file overrides prompt AND model — on a failure (bad model,
-	// 403, wrong persona) that override is the likeliest cause, so it has to be
-	// in the notice, not only in the run summary the leader may never read.
+
 	const src = task.agentFile ? `\nAgent file: ${task.agentFile}${task.model ? ` (model ${task.model})` : ""}` : "";
 	const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
 	const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
@@ -277,7 +231,6 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 			: `Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,
 	].join("\n");
 }
-/** Notification: 3 lines max. Full output stays out of parent context. */
 export function makeNotice(run: RunSnapshot, kind: string): string {
 	const lines = [
 		`Background subagent run ${run.id} ${kind}: ${run.tasks.filter((t) => t.status === "completed").length}/${run.tasks.length} succeeded.`,

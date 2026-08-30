@@ -1,8 +1,3 @@
-/**
- * Merge-safety reporting in the run summary. Write runs hand the leader branches
- * to merge, and the summary is the ONLY place the relationship between those
- * branches is stated — getting it wrong loses work silently.
- */
 import { describe, expect, test } from "bun:test";
 import { makeSummary } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
@@ -47,7 +42,7 @@ describe("makeSummary merge safety", () => {
 		);
 		expect(out).toContain("CONFLICT RISK");
 		expect(out).toContain("src/auth.ts");
-		// The non-overlapping file must not be reported as a conflict.
+
 		expect(out).not.toContain("task_2:src/a.ts");
 	});
 
@@ -73,11 +68,10 @@ describe("makeSummary merge safety", () => {
 				}),
 			]),
 		);
-		// Proven empirically: merging the stacked branch brings the upstream with it,
-		// and the upstream's own merge is then "Already up to date" — order-independent.
+
 		expect(out).toContain("Stacked on subagents/run_x/task_a");
 		expect(out).toContain("merging this one brings both");
-		// Stacked branches already contain the upstream, so the shared file is expected.
+
 		expect(out).not.toContain("CONFLICT RISK");
 	});
 

@@ -1,16 +1,3 @@
-/**
- * Child-session tools.
- *
- * Every child gets four talk tools:
- *   - ask_parent            blocking Q&A with the leader (parent)
- *   - notify_parent         one-way message to the leader
- *   - send_agent_message    one-way message to another subagent's mailbox
- *                           (`to` = target task id in this run, or "leader")
- *   - poll_agent_messages   drain this subagent's mailbox
- *
- * Mailbox is a plain map in the manager; agents talk by polling, not push.
- */
-
 import { StringEnum } from "@earendil-works/pi-ai";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -21,9 +8,7 @@ export const CHILD_TALK_TOOLS = ["ask_parent", "notify_parent", "send_agent_mess
 export interface ChildHandlers {
 	onAskParent(taskId: string, question: string): Promise<string>;
 	onNotifyParent(taskId: string, message: string, level: "info" | "warning" | "error"): void;
-	/** Route a child→child message. Returns false when the target is unknown. */
 	onSendMessage(taskId: string, to: string, text: string): boolean;
-	/** Drain the mailbox (returns and clears pending messages). */
 	onPollMailbox(taskId: string): MailboxMessage[];
 }
 
@@ -33,7 +18,7 @@ export function createChildTools(taskId: string, handlers: ChildHandlers): ToolD
 			name: "ask_parent",
 			label: "Ask Parent",
 			description:
-				"Ask the parent agent a clarifying question and BLOCK until it replies. Use sparingly — only when you truly cannot proceed without information only the parent has. Prefer figuring it out yourself.",
+				"Ask the parent agent a clarifying question and BLOCK until it replies (10 min cap — then proceed with best judgment). Use sparingly — only when you truly cannot proceed without information only the parent has. Prefer figuring it out yourself.",
 			promptSnippet: "Ask the parent agent a question when truly blocked.",
 			promptGuidelines: [
 				"Use ask_parent only as a last resort when blocked on information only the parent has.",
@@ -101,7 +86,7 @@ export function createChildTools(taskId: string, handlers: ChildHandlers): ToolD
 				const messages = handlers.onPollMailbox(taskId);
 				if (messages.length === 0) return { content: [{ type: "text" as const, text: "No messages." }], details: {} };
 				const body = messages.map((m) => `from ${m.from}: ${m.text}`).join("\n");
-				const capped = body.length > 4000 ? body.slice(0, 4000).replace(/[\uD800-\uDBFF]$/, "") : body; // multibyte-safe
+				const capped = body.length > 4000 ? body.slice(0, 4000).replace(/[\uD800-\uDBFF]$/, "") : body;
 				return { content: [{ type: "text" as const, text: capped }], details: { messages } };
 			},
 		},

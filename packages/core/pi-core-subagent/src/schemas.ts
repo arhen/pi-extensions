@@ -1,5 +1,3 @@
-/** Tool schemas — single source of truth. TaskInput/SubagentParamsShape are
- *  derived from them, so the shapes can never drift from what the model sees. */
 import { StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY } from "./manager.ts";
@@ -52,7 +50,7 @@ export const SubagentParams = Type.Object({
 	maxRuntimeMs: Type.Optional(
 		Type.Number({
 			description:
-				"Per-task timeout, ms. Omit for no cap (default): tasks run until done, stalled, or user-aborted. Do not add arbitrary caps — only set when a hard bound is genuinely required.",
+				"Per-task timeout, ms. Omit unless a hard bound is genuinely required — a safety ceiling always applies (6 h, or 1 h with `/subagents auto-limit on`).",
 		}),
 	),
 	autoAwait: Type.Optional(
@@ -69,7 +67,6 @@ export const SubagentParams = Type.Object({
 	),
 });
 
-/** Derived from the schemas — single source of truth, no hand-maintained mirror. */
 export type TaskInput = Static<typeof TaskItem>;
 export type SubagentParamsShape = Static<typeof SubagentParams>;
 

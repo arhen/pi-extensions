@@ -1,7 +1,3 @@
-/**
- * Smoke tests: failure classification + mailbox routing.
- * Pure logic only — no pi runtime needed. Run: bun test
- */
 import { describe, expect, test } from "bun:test";
 import { createChildTools } from "../src/child.ts";
 import { createMailbox } from "../src/mailbox.ts";
@@ -38,7 +34,6 @@ describe("poll_agent_messages cap", () => {
 		expect(text).toHaveLength(4000);
 	});
 	test("truncation does not split a surrogate pair", async () => {
-		// 12-char prefix + "a" shifts the 4000-cut onto an odd boundary inside an emoji.
 		const emoji = createChildTools("task_1", {
 			onAskParent: async () => "ok",
 			onNotifyParent: () => {},
@@ -49,7 +44,7 @@ describe("poll_agent_messages cap", () => {
 		const res = await (emojiPoll.execute as unknown as () => Promise<{ content: { text: string }[] }>)();
 		const text = (res as unknown as { content: { text: string }[] }).content[0]!.text;
 		const last = text.charCodeAt(text.length - 1);
-		expect(last < 0xd800 || last > 0xdbff).toBe(true); // no lone high surrogate
+		expect(last < 0xd800 || last > 0xdbff).toBe(true);
 		expect(text.length).toBeLessThanOrEqual(4000);
 	});
 });
@@ -65,7 +60,7 @@ describe("mailbox", () => {
 		expect(got).toHaveLength(1);
 		expect(got[0]!.text).toBe("hi there");
 		expect(got[0]!.from).toBe("task_1");
-		expect(mb.poll("task_2")).toHaveLength(0); // drained
+		expect(mb.poll("task_2")).toHaveLength(0);
 	});
 	test("unknown target rejected", () => {
 		const mb = createMailbox();
@@ -117,8 +112,6 @@ describe("validateThinking", () => {
 });
 
 describe("resolveChildModel", () => {
-	// Model ids may contain slashes (9router/cc/claude-opus-5), so the first "/"
-	// is not always the provider boundary.
 	const models = [
 		{ provider: "9router", id: "cc/claude-opus-5" },
 		{ provider: "anthropic", id: "claude-opus-5" },
@@ -148,9 +141,6 @@ describe("resolveChildModel", () => {
 		expect(() => resolveChildModel(ctx, "cc/nope")).toThrow("Model not found");
 	});
 
-	// The bug this guards: an agent file's bare `model: claude-sonnet-5` matched
-	// whichever provider the registry listed first (commandcode), not the one the
-	// session runs on — 403 MODEL_NOT_IN_PLAN on every spawn.
 	test("a bare id prefers the SESSION's provider over registry order", () => {
 		const shared = [
 			{ provider: "commandcode", id: "claude-sonnet-5" },

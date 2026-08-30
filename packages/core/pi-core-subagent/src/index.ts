@@ -1,19 +1,3 @@
-/**
- * pi-core-subagent — in-process subagents.
- *
- * Fast in-process subagents (isolated AgentSessions, no process spawn).
- * Modes: single / parallel / chain. Background runs, cancel, intercom
- * (ask/notify/update the leader) and agent↔agent mailbox (send/poll).
- *
- * Context discipline: 7 slim parent tools, one-line catalog injected per
- * request (cached), background completions notify with a 3-line summary
- * instead of full outputs, and run updates are throttled (no per-event
- * deep clones).
- *
- * Layout: schemas → schemas.ts, scheduler/graph → graph.ts, rendering →
- * format.ts, run lifecycle → manager.ts, this file = entry + registrations.
- */
-
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import { compactLines, formatUsage, makeSummary, statusIcon, taskLine, truncateText } from "./format.ts";
@@ -35,7 +19,6 @@ import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } fr
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
 
-	/** Read-only peek: browse agents, enter to tail one. Never mutates run state. */
 	const openPeek = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		const getTasks = (): PeekTask[] =>
@@ -70,7 +53,8 @@ export default function (pi: ExtensionAPI) {
 		);
 	};
 	pi.registerCommand("subagents", {
-		description: "List subagent runs. `/subagents peek` opens the browsable pane.",
+		description:
+			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
 		handler: async (args, ctx) => {
 			const arg = String(args ?? "")
 				.trim()
@@ -100,7 +84,7 @@ export default function (pi: ExtensionAPI) {
 			ctx.ui.notify(runs.flatMap((run) => compactLines(run).concat("")).join("\n"), "info");
 		},
 	});
-	// ctrl+shift+s belongs to pi-web-access (search curator); 'a' for agents is free.
+
 	pi.registerShortcut("ctrl+shift+a", { description: "Peek at running subagents", handler: openPeek });
 
 	pi.on("agent_start", (_event, ctx) => {
@@ -110,9 +94,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		await manager.restoreFromSidecar(ctx);
-		// Crash leftovers: remove stale worktree dirs (branches survive for merging).
-		// Also reap branches the leader merged in a previous session (H1: cleanup can't
-		// fire at run end — the leader merges after).
+
 		const roots = new Set<string>();
 		const cwdRoot = repoRoot(ctx.cwd);
 		if (cwdRoot) roots.add(cwdRoot);
@@ -126,27 +108,17 @@ export default function (pi: ExtensionAPI) {
 		}
 		for (const root of roots) {
 			try {
-				// A registered subagent worktree is a crash leftover UNLESS another pi
-				// session still owns it (pid marker) — commit its work, keep the branch,
-				// drop the dir. Then reap merged branches and dirs git no longer tracks.
-				// Pass real ownership: in a long-lived process (pi `/new`) the previous
-				// session's markers carry THIS pid, and trusting them made those dirs
-				// unreapable until the process exited.
 				reapDeadWorktrees(root, (p) => ownerAlive(p, manager.ownsWorktree));
 				cleanupMerged(root, { skipBranches: manager.liveBranches() });
 				sweepStale(root);
-			} catch {
-				/* recovery is best-effort — never block session start */
-			}
+			} catch {}
 		}
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx?.hasUI) {
 			try {
 				ctx.ui.setWidget("subagents", [], { placement: "aboveEditor" });
-			} catch {
-				/* ignore */
-			}
+			} catch {}
 		}
 		manager.clearRuns();
 	});
@@ -154,8 +126,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool<typeof SubagentParams, RunDetails>({
 		name: "subagent",
 		label: "Subagent",
-		// ponytail: this string is billed on every request. No example block — an example
-		// biases the model toward one shape; guidelines + JSON schema describe all of them.
+
 		description:
 			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. If a user agent file in `.agents/agents`, `.claude/agents`, or `.pi/agents` (project dirs, then home) has a `description` matching the spawn goal (name + task), that file is authoritative: body = system prompt, frontmatter `model`/`tools` apply and inline prompt/model are ignored — except explicit per-call `tools`/`write`, which override the file's tools. No match → the inline definition stands. Write agents run in an isolated git worktree: on completion the result reports the branch + changed files — review, then merge with `git merge --no-ff <branch>` (merged branches are cleaned automatically). Every run is background: the call returns a runId immediately and completion notifies you — do NOT park waiting on it. If you have no other work, end your turn; the completion notice wakes you with the results. Set autoAwait:true only when the very next step in the SAME turn consumes the result. Children always carry talk tools: they can ask you questions, notify you, and message siblings.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
@@ -174,28 +145,22 @@ export default function (pi: ExtensionAPI) {
 			"await_subagent is for the rare case where you have parallel work of your own and need to sync at a specific point — not the default follow-up to a spawn.",
 		],
 		parameters: SubagentParams,
-		executionMode: "parallel", // sibling subagent calls run concurrently, not serialized
+		executionMode: "parallel",
 		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
 			const typed = params as SubagentParamsShape;
 			const details = manager.startInBackground(typed, ctx);
 			if (typed.autoAwait) {
-				// awaitRun wakes on every child→leader message (ask/notify/done). Re-park
-				// until terminal — but surface an ask_parent: the child is waiting on the
-				// leader, so break out, reply via reply_subagent, then await again.
 				let run = details.run;
-				// Each park gets a FRESH msgs array — accumulate, or every wake but the
-				// last is lost (they were consumed by the park, never sent as followUp).
+
 				const intercom: ParkedMsg[] = [];
 				while (!TERMINAL.includes(run.status)) {
 					const awaited = await manager.awaitRun(details.run.id);
-					if (!awaited) break; // run gone (session shutdown) — stop, no busy-spin
+					if (!awaited) break;
 					if (awaited.run) run = awaited.run;
 					intercom.push(...awaited.intercom);
 					if (awaited.intercom.some((m) => m.kind === "ask")) break;
 				}
-				// EVERY ask must surface: siblings that asked in the same wake got no
-				// followUp notice (the park swallowed it), so showing only the first
-				// leaves the rest blocked until their 10-minute timeout.
+
 				const asks = intercom.filter((m) => m.kind === "ask");
 				const heard = intercom.filter((m) => m.kind !== "ask");
 				const text = [
@@ -227,7 +192,6 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 		renderCall(args, theme) {
-			// ponytail: args stream in partially, so mode is unknowable until JSON closes. Show "preparing…" instead of a wrong "single ?".
 			const hasEdges = args.tasks?.some((t) => t.needs?.length);
 			const mode = args.chain?.length
 				? `chain ${args.chain.length}`
@@ -237,7 +201,7 @@ export default function (pi: ExtensionAPI) {
 						? `single ${args.agent}`
 						: "preparing…";
 			const flags = args.autoAwait ? "await" : "bg";
-			// Params used, dimmed: model, thinking, toolset, per-task write count.
+
 			const tasks = args.tasks ?? args.chain ?? [];
 			const writeCount = tasks.filter((t) => t.write).length;
 			const parts: string[] = [];
@@ -250,8 +214,7 @@ export default function (pi: ExtensionAPI) {
 			const params = parts.length > 0 ? `\n  ${theme.fg("dim", parts.join(" · "))}` : "";
 			const notation = waveNotation(tasks);
 			const graphLine = notation ? `\n  ${theme.fg("muted", notation)}` : "";
-			// The plan the model actually wrote: ids, edges, toolset. Streams in as args arrive,
-			// so a graph is visible before the first child spawns.
+
 			const plan = tasks
 				.filter((t) => t.agent || t.id)
 				.map((t, i: number) => {
@@ -259,7 +222,7 @@ export default function (pi: ExtensionAPI) {
 					const edge = t.needs?.length ? theme.fg("muted", ` ← ${t.needs.join(", ")}`) : "";
 					const mark = t.write ? theme.fg("warning", " ✎") : "";
 					const meta = [t.model ? t.model : "", t.thinking ? t.thinking : ""].filter(Boolean).join(" ");
-					// Plain clip, not truncateText — that one appends a multi-line session-file notice.
+
 					const flat = String(t.task ?? "")
 						.replace(/\s+/g, " ")
 						.trim();
@@ -276,11 +239,9 @@ export default function (pi: ExtensionAPI) {
 		renderResult(result, { expanded }, theme) {
 			const run = result.details?.run;
 			if (!run) return new Text(result.content[0]?.type === "text" ? result.content[0].text : "", 0, 0);
-			// ponytail: mode/count already shown on the call line above; result header only adds progress + status.
+
 			const header = `${statusIcon(run.status)} ${theme.fg("accent", `${run.tasks.filter((t) => t.status === "completed").length}/${run.tasks.length} done`)} ${theme.fg("muted", run.status)}`;
 			if (!expanded) {
-				// Every run is background: the spawn snapshot is always "0 tools" noise and the footer
-				// widget already shows live per-task state — keep the card to the header only.
 				const usage = formatUsage(run.aggregateUsage);
 				return new Text(usage ? `${header}\n${theme.fg("dim", usage)}` : header, 0, 0);
 			}
@@ -312,8 +273,7 @@ export default function (pi: ExtensionAPI) {
 			const { runId } = params as { runId: string };
 			const run = manager.getRun(runId);
 			if (!run) return { content: [{ type: "text", text: `Unknown runId: ${runId}` }], isError: true, details: {} };
-			// Session file paths are the one primitive an outside tool needs: `tail -f` it in a
-			// multiplexer pane, a log viewer, anything. Cheaper than owning a pane integration.
+
 			const files = run.tasks.filter((t) => t.sessionFile).map((t) => `${t.id} (${t.agent}): ${t.sessionFile}`);
 			const text = [
 				compactLines(run).join("\n"),

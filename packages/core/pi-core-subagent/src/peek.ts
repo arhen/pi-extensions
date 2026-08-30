@@ -1,16 +1,7 @@
-/**
- * Peek pane — quick, read-only look at what subagents are doing.
- *
- * shift+↑/↓ (or j/k) move between agents, enter opens a live tail of that
- * child's session file, esc goes back / closes. Never touches run state:
- * no abort except the explicit x + y confirmation.
- */
-
 import { closeSync, openSync, readSync, statSync } from "node:fs";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
-/** Tail window: last 64KB of the child session file is plenty for a peek. */
 const TAIL_BYTES = 64 * 1024;
 const POLL_MS = 700;
 const TAIL_ROWS = 18;
@@ -22,7 +13,7 @@ export interface PeekTask {
 	status: string;
 	running: boolean;
 	sessionFile?: string;
-	line: string; // pre-rendered stats line from the caller
+	line: string;
 }
 
 function readTail(path: string): string {
@@ -38,9 +29,6 @@ function readTail(path: string): string {
 	}
 }
 
-/** Reasoning markup is the model talking to itself, and empty `<think></think>`
- *  pairs are the commonest single line in a transcript — they filled the pane with
- *  rows carrying no information at all. */
 function stripThinking(text: string): string {
 	return text
 		.replace(/<think>[\s\S]*?<\/think>/g, " ")
@@ -51,15 +39,11 @@ function stripThinking(text: string): string {
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const CONTROL = /[\x00-\x08\x0b-\x1f\x7f]/g;
 
-/** Tool output is terminal output: it carries colour escapes and carriage returns
- *  that corrupt the pane's own styling (stray `[0m` mid-row, cursor jumps). */
 function clip(text: string, max: number): string {
 	const flat = text.replace(ANSI, "").replace(CONTROL, " ").replace(/\s+/g, " ").trim();
 	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
 }
 
-/** Long absolute paths are almost entirely prefix. The tail is what identifies
- *  the file, so shorten from the left and keep the last segments. */
 function shortenPath(text: string): string {
 	return text.replace(/(?:\/[\w.@+-]+){3,}/g, (path) => {
 		const parts = path.split("/").filter(Boolean);
@@ -69,8 +53,6 @@ function shortenPath(text: string): string {
 
 const PATH_ARGS = ["path", "file", "filePath", "command", "pattern", "query", "url", "task", "subject"];
 
-/** The argument that says WHAT a call does. Object.values() order is insertion
- *  order, so the old "first string wins" picked `oldText` blobs over `path`. */
 function callSummary(args: Record<string, unknown> | undefined): string {
 	for (const key of PATH_ARGS) {
 		const value = args?.[key];
@@ -82,8 +64,6 @@ function callSummary(args: Record<string, unknown> | undefined): string {
 
 export type PeekLine = { gutter: string; text: string; kind: "call" | "result" | "error" | "say" };
 
-/** One session-file entry → display lines. A turn with 4 tool calls is 4 lines:
- *  keeping only the first hid the parallel calls that explain what the child did. */
 function eventLines(raw: string): PeekLine[] {
 	let entry: any;
 	try {
@@ -101,7 +81,7 @@ function eventLines(raw: string): PeekLine[] {
 			out.push({ gutter: "→", kind: "call", text: `${block.name}${arg ? ` ${shortenPath(clip(arg, 110))}` : ""}` });
 		} else if (block.type === "text") {
 			const text = stripThinking(block.text ?? "");
-			if (!text) continue; // a turn that was pure reasoning has nothing to show
+			if (!text) continue;
 			if (isResult) {
 				const kind = msg.isError ? "error" : "result";
 				const name = msg.toolName ? `${msg.toolName}: ` : "";
@@ -114,7 +94,6 @@ function eventLines(raw: string): PeekLine[] {
 	return out;
 }
 
-/** The whole readable tail, unsliced — the viewport decides what is shown. */
 function tailLines(path: string): PeekLine[] {
 	let text: string;
 	try {
@@ -123,13 +102,11 @@ function tailLines(path: string): PeekLine[] {
 		return [{ gutter: "·", kind: "say", text: "(session file not readable yet)" }];
 	}
 	const lines: PeekLine[] = [];
-	// First line of a mid-file read is usually a fragment — drop it.
+
 	for (const raw of text.split("\n").slice(1)) lines.push(...eventLines(raw));
 	return lines;
 }
 
-/** Gutter colour carries the line's role, so the eye can skip to failures without
- *  reading: → call, ← result, ✗ error, · the child speaking. */
 function renderLine(line: PeekLine, theme: Theme): string {
 	if (line.kind === "error") return `${theme.fg("error", line.gutter)} ${theme.fg("error", line.text)}`;
 	if (line.kind === "call") {
@@ -142,7 +119,6 @@ function renderLine(line: PeekLine, theme: Theme): string {
 	return `${theme.fg("dim", line.gutter)} ${line.text}`;
 }
 
-/** Status as a coloured word, the way pi marks tool state. */
 function statusTag(status: string, theme: Theme): string {
 	if (status === "failed") return theme.fg("error", status);
 	if (status === "completed") return theme.fg("success", status);
@@ -157,10 +133,6 @@ export interface PeekPane {
 	dispose(): void;
 }
 
-/**
- * Build the peek component. `getTasks` is polled live, so the pane keeps
- * updating while agents run.
- */
 export function createPeekPane(
 	getTasks: () => PeekTask[],
 	theme: Theme,
@@ -171,48 +143,29 @@ export function createPeekPane(
 	let selected = 0;
 	let tailing = false;
 	let confirming = false;
-	/** Rows scrolled back from the newest line. 0 = pinned to live output.
-	 *  A tail that keeps jumping to the bottom while you read is unusable, so any
-	 *  scroll detaches from live and the 700ms poll stops moving the view. */
 	let scrollback = 0;
-	/** Content rows the last render could show — page keys need the real viewport,
-	 *  which only render() knows (it is given the width and derives the height). */
 	let viewport = TAIL_ROWS;
-	/** Tail length at the previous render, to keep a scrolled-back view pinned to
-	 *  the SAME lines as the child appends new ones. Without this the window is
-	 *  anchored to the end of a growing list, so the text you are reading crawls
-	 *  upward every poll. */
 	let lastTotal = 0;
 	const timer = setInterval(requestRender, POLL_MS);
 
 	const clamp = (n: number, len: number) => (len === 0 ? 0 : Math.max(0, Math.min(len - 1, n)));
-	/** Scrolling past either end is a no-op, never a wrap: the newest line is a
-	 *  hard floor, the oldest readable line a hard ceiling. */
 	const scrollBy = (rows: number) => {
 		const task = getTasks()[selected];
 		if (!tailing || !task?.sessionFile) return;
 		const total = tailLines(task.sessionFile).length;
-		// Anchor here as well as in render(): a scroll before the next render would
-		// otherwise be read as "the file grew by its whole length" and jump the view.
+
 		lastTotal = total;
 		scrollback = Math.max(0, Math.min(Math.max(0, total - viewport), scrollback + rows));
 	};
 
-	/**
-	 * Every row is a full-width bordered line: │ edge, one space of padding, the
-	 * text padded out, then the closing edge. Background-filled so the transcript
-	 * underneath never shows through the overlay, and edged so the pane reads as
-	 * one object instead of a floating block of colour.
-	 */
 	const row = (content: string, width: number): string => {
-		const inner = width - 4; // │ + space each side
+		const inner = width - 4;
 		const text = truncateToWidth(content, Math.max(0, inner), "…");
 		const pad = Math.max(0, inner - visibleWidth(text));
 		const edge = theme.fg("border", "│");
 		return theme.bg("selectedBg", `${edge} ${text}${" ".repeat(pad)} ${edge}`);
 	};
 
-	/** Top/bottom cap, and the ├───┤ divider between chrome and content. */
 	const edgeRow = (width: number, left: string, right: string): string =>
 		theme.bg("selectedBg", theme.fg("border", `${left}${"─".repeat(Math.max(0, width - 2))}${right}`));
 
@@ -236,8 +189,7 @@ export function createPeekPane(
 							? "↑↓ / jk scroll · ⇧ page · g/G top·live · esc back · x abort"
 							: "shift+↑↓ / jk move · enter tail · x abort · esc close",
 					);
-			// Breadcrumb, not a bare name: while tailing, WHERE you are is the thing you
-			// lose track of first, and the child's status belongs next to its name.
+
 			const crumb = tailing
 				? `${theme.fg("muted", "Subagents")}${theme.fg("dim", " › ")}${theme.fg("accent", theme.bold(task.agent))} ${statusTag(task.status, theme)}`
 				: theme.fg("accent", theme.bold("Subagents"));
@@ -252,20 +204,17 @@ export function createPeekPane(
 			} else if (!task.sessionFile) {
 				lines.push(row(theme.fg("dim", "(no session file — agent has not started yet)"), width));
 			} else {
-				// ponytail: re-reads the tail each render (700ms poll). A watcher only pays off for files far bigger than a child session.
 				const tail = tailLines(task.sessionFile);
 				viewport = TAIL_ROWS;
 				if (scrollback > 0 && lastTotal > 0 && tail.length > lastTotal) scrollback += tail.length - lastTotal;
 				lastTotal = tail.length;
-				// Clamp here too: the readable tail is a sliding 64KB window, so old lines
-				// fall off the front and a deep scrollback would render a blank window.
+
 				scrollback = Math.max(0, Math.min(Math.max(0, tail.length - viewport), scrollback));
 				const end = tail.length - scrollback;
 				const window = tail.slice(Math.max(0, end - viewport), end);
 				if (window.length === 0) lines.push(row(theme.fg("dim", "(no activity yet)"), width));
 				for (const line of window) lines.push(row(renderLine(line, theme), width));
-				// Scrolled-back views must say so: an unmoving tail is otherwise
-				// indistinguishable from a stalled child.
+
 				if (scrollback > 0) {
 					lines.push(edgeRow(width, "├", "┤"));
 					lines.push(row(theme.fg("warning", `↑ ${scrollback} older · G / end → live`), width));
@@ -278,7 +227,6 @@ export function createPeekPane(
 			const tasks = getTasks();
 			const len = tasks.length;
 			if (confirming) {
-				// Abort is irreversible, so it always costs a second keystroke.
 				confirming = false;
 				if (data === "y" || data === "Y") {
 					const task = tasks[selected];
@@ -292,11 +240,11 @@ export function createPeekPane(
 			} else if (matchesKey(data, Key.escape)) {
 				if (tailing) {
 					tailing = false;
-					scrollback = 0; // leaving the tail forgets where you were reading
+					scrollback = 0;
 				} else close();
 			} else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
 				tailing = true;
-				scrollback = 0; // a freshly opened tail always starts live
+				scrollback = 0;
 			} else if (matchesKey(data, Key.left)) {
 				tailing = false;
 				scrollback = 0;
@@ -305,12 +253,10 @@ export function createPeekPane(
 			} else if (matchesKey(data, Key.pageDown)) {
 				scrollBy(-viewport);
 			} else if (data === "g") {
-				scrollBy(Number.MAX_SAFE_INTEGER); // oldest readable line
+				scrollBy(Number.MAX_SAFE_INTEGER);
 			} else if (data === "G" || matchesKey(data, Key.end)) {
-				scrollback = 0; // back to live
+				scrollback = 0;
 			} else if (matchesKey(data, "shift+up") || matchesKey(data, Key.up) || data === "k") {
-				// In the tail the same keys scroll; in the list they move between agents.
-				// shift+↑↓ and j/k are the reliable pair: bare arrows can be eaten by prompt history.
 				if (tailing) scrollBy(1);
 				else selected = clamp(selected - 1, len);
 			} else if (matchesKey(data, "shift+down") || matchesKey(data, Key.down) || data === "j") {
@@ -319,9 +265,7 @@ export function createPeekPane(
 			}
 			requestRender();
 		},
-		invalidate(): void {
-			/* no cached strings */
-		},
+		invalidate(): void {},
 		dispose(): void {
 			clearInterval(timer);
 		},

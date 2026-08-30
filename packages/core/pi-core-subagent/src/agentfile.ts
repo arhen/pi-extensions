@@ -1,9 +1,3 @@
-/** Agent-file resolution — matched by description (goal), not by name.
- *  The model names a subagent with a goal (name + task); user agent files in
- *  `.agents/agents`, `.claude/agents`, `.pi/agents` are scored by token overlap
- *  between their `description` frontmatter and that goal. Best match wins;
- *  ties break by directory priority. A matched file is authoritative (file wins
- *  over inline prompt/model/tools). No match → inline on-demand definition. */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -13,7 +7,6 @@ export interface AgentFileInfo {
 	model?: string;
 	tools?: string[];
 	description?: string;
-	/** The matched file path — surfaced so the leader can audit which file won. */
 	path?: string;
 }
 
@@ -44,10 +37,7 @@ const STOP = new Set([
 	"how",
 	"what",
 	"who",
-	// Pure connectors only. Words like create/user/work/run were stopped here to
-	// kill one false positive and took real routing signal with them (a
-	// scaffolder agent is legitimately "creates", a research agent "user") — the
-	// coverage gate handles weak matches without blinding whole categories.
+
 	"from",
 	"into",
 	"this",
@@ -60,59 +50,35 @@ const STOP = new Set([
 	"other",
 ]);
 
-/** A body becomes the child's ENTIRE system prompt — an oversized reference file
- *  would blow the context window and kill the session with a cryptic error. */
 const MAX_BODY_CHARS = 64_000;
-/** A file takes over the prompt AND the model, so a weak match is expensive.
- *  Both gates must pass: distinct shared terms, and share of the description. */
 const MIN_SHARED_TERMS = 2;
 const MIN_COVERAGE = 0.4;
 
-/** Per-cwd memo of the ancestor walk (project dirs then home), since the files
- *  can't meaningfully change within one run and the walk costs 3 sync stats per
- *  ancestor dir per task otherwise. Keyed per (agentDir + cwd). */
 const walkCache = new Map<string, AgentFileInfo[]>();
 
-/** Test/diagnostic hook: flush the walk cache (files changed mid-session). */
 export function clearAgentFileCache(): void {
 	walkCache.clear();
 }
 
-/** Lowercase, split, drop stopwords, strip plural -s/-es. */
 function tokens(text: string): string[] {
 	return (text.toLowerCase().match(/[a-z0-9]+/g) ?? [])
 		.filter((t) => !STOP.has(t) && t.length > 1)
 		.map((t) => {
 			if (t.endsWith("ing") && t.length > 5) t = t.slice(0, -3);
-			// Only -es after a sibilant is a two-char plural (batches, boxes). Blindly
-			// stripping "es" mangles every -e noun — services→servic vs service→service
-			// never matched, silently breaking the most common routing words.
+
 			if (/(?:ch|sh|ss|x|z|s)es$/.test(t) && t.length > 4) t = t.slice(0, -2);
 			else if (t.endsWith("s") && !t.endsWith("ss") && t.length > 3) t = t.slice(0, -1);
 			return t;
 		});
 }
 
-/**
- * Overlap between the spawn goal and a file's description.
- *
- * Absolute count alone is a bad signal: two shared filler words bound unrelated
- * tasks to whichever agent file happened to share them, and the file then
- * overrode the model too (403s on a plan without that model). Require BOTH a
- * floor of distinct shared terms AND meaningful coverage of the description,
- * so a match means "this file is about that", not "these strings brushed past
- * each other".
- */
 function score(query: string[], desc: string[]): number {
 	if (desc.length === 0) return 0;
 	const q = new Set(query);
 	const shared = new Set<string>();
 	for (const t of desc) if (q.has(t)) shared.add(t);
 	if (shared.size < MIN_SHARED_TERMS) return 0;
-	// Normalize by the SMALLER side. Dividing by the description's length alone
-	// punished well-written descriptions: a 20-token description needed 4 shared
-	// terms while a lazy 3-token one needed 2, so better docs routed worse — and
-	// a 2-word goal could never match a detailed description at all.
+
 	const denom = Math.min(new Set(desc).size, q.size);
 	if (denom === 0 || shared.size / denom < MIN_COVERAGE) return 0;
 	return shared.size;
@@ -150,8 +116,6 @@ function readAgentFile(dir: string): AgentFileInfo[] {
 	return out;
 }
 
-/** Walk cwd's ancestors, then home, returning files in priority order (nearest
- *  first, each dir's 3 subdirs in AGENT_DIRS order). */
 function allAgentFiles(cwd: string, agentDir: string): AgentFileInfo[] {
 	const out: AgentFileInfo[] = [];
 	let dir = cwd;
@@ -161,12 +125,11 @@ function allAgentFiles(cwd: string, agentDir: string): AgentFileInfo[] {
 		if (parent === dir) break;
 		dir = parent;
 	}
-	const home = dirname(dirname(agentDir)); // ~/.pi/agent → ~
+	const home = dirname(dirname(agentDir));
 	for (const sub of AGENT_DIRS) out.push(...readAgentFile(join(home, sub)));
 	return out;
 }
 
-/** Best agent-file match for a spawn goal. Caches per (agentDir, cwd). */
 export function resolveAgentFile(name: string, task: string, cwd: string, agentDir: string): AgentFileInfo | undefined {
 	const query = tokens(`${name} ${task}`);
 	const cacheKey = `${agentDir}${cwd}`;
