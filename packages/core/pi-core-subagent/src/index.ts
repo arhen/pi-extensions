@@ -128,21 +128,18 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 
 		description:
-			"Run isolated subagents (own context, own session). You invent each agent: name, optional system prompt, toolset (read-only default, write:true to edit). Use `agent`+`task` for one, `tasks` for many. `needs` declares dependency edges: a task waits for its needs and receives their outputs prepended to its prompt. If a user agent file in `.agents/agents`, `.claude/agents`, or `.pi/agents` (project dirs, then home) has a `description` matching the spawn goal (name + task), that file is authoritative: body = system prompt, frontmatter `model`/`tools` apply and inline prompt/model are ignored — except explicit per-call `tools`/`write`, which override the file's tools. No match → the inline definition stands. Write agents run in an isolated git worktree: on completion the result reports the branch + changed files — review, then merge with `git merge --no-ff <branch>` (merged branches are cleaned automatically). Every run is background: the call returns a runId immediately and completion notifies you — do NOT park waiting on it. If you have no other work, end your turn; the completion notice wakes you with the results. Set autoAwait:true only when the very next step in the SAME turn consumes the result. Children always carry talk tools: they can ask you questions, notify you, and message siblings.",
+			"Run isolated subagents (own context, own session) in the background: returns a runId immediately, completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, or `chain` with `{previous}`). `needs` edges gate tasks and prepend upstream outputs to their prompts. A user agent file (`.agents/agents`, `.claude/agents`, `.pi/agents`; project dirs, then home) whose `description` matches the goal is authoritative: body = system prompt, frontmatter `model`/`tools` apply, but explicit per-call `tools`/`write` override the file's tools. Write agents get an isolated git worktree; the result reports the branch. Children always carry talk tools (ask/notify the leader, message siblings).",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
 			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
-			"Put every sub-task in ONE call: subagent({ tasks: [...] }). Never make multiple parallel subagent calls — one call, one run, N tasks.",
-			"Order comes from `needs`, not from separate calls: give tasks an `id`, list the ids each depends on. Tasks with no unmet needs run in parallel; dependents receive their upstream outputs automatically — do not restate them.",
-			"Prefer flat `tasks` (plain parallel) unless a real dependency exists — only add `needs` edges when ordering genuinely matters.",
-			"End each task with a runnable check, e.g. 'Verify: npx tsc --noEmit && bun test'. A subagent's claim of success is not evidence.",
-			"For write agents (write:true) in a git repo, the child works in an isolated worktree and its changes are committed to a branch — the result reports branch + changed files. Review the diff, then merge with `git merge --no-ff <branch>`; merged branches are cleaned up automatically. Never leave a worktree branch unmerged at the end of the task.",
-			"Define each agent yourself: invented name, focused system prompt, and read-only (default) or write:true. Prefer read-only. A user agent file (`.agents/agents`, `.claude/agents`, `.pi/agents` — project first, then home) whose `description` matches the spawn goal (name + task) takes over: its body is the system prompt, frontmatter `model`/`tools` apply and are validated against the model registry — explicit per-call `tools`/`write` still override the file's tools. Matching is by description, not name — name the agent whatever fits the goal.",
-			"Right after a background spawn, call subagent_status(runId) ONCE before any other work — confirm each task is running (or already progressing), not stuck queued or failed at startup. A child that dies on spawn otherwise stays invisible until far later.",
-			"If that first status shows a task failed or never started, fix or respawn immediately; do not move on assuming it runs.",
-			"Never block with nothing to do: if you have no work left after spawning, end your turn. Task completion notifies you and wakes a fresh turn with the results — await_subagent/autoAwait in that situation only burns time and tokens.",
-			"autoAwait:true only when the same turn must consume the result immediately (e.g. you spawn a reviewer and then must act on its verdict before replying). Otherwise spawn background and read results from the completion notice, or subagent_result when you come back.",
-			"await_subagent is for the rare case where you have parallel work of your own and need to sync at a specific point — not the default follow-up to a spawn.",
+			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls.",
+			"Declare ordering with `needs` edges on the tasks, never by splitting into separate calls; dependents receive upstream outputs automatically — do not restate them. Prefer flat `tasks` (plain parallel); add `needs` only when ordering genuinely matters.",
+			"End each task with a runnable check, e.g. 'Verify: bun test'. A subagent's claim of success is not evidence.",
+			"Write agents work in an isolated git worktree; their changes land on a branch — review the diff, then merge with `git merge --no-ff <branch>`. Never leave a worktree branch unmerged at the end of the task.",
+			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit). A matched agent file takes over (see description); matching is by description, not name — name the agent whatever fits the goal.",
+			"Right after spawning, call subagent_status(runId) ONCE before any other work — a child that died on spawn (or never started) is invisible until far later otherwise. If it shows a task failed/never started, fix or respawn immediately.",
+			"Never block with nothing to do: if you have no work left after spawning, end your turn — completion notifies you and wakes a fresh turn with the results. await_subagent/autoAwait while idle only burns time and tokens.",
+			"autoAwait:true only when this SAME turn must consume the result immediately. await_subagent is for syncing with your own parallel work — not the default follow-up to a spawn.",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel",
@@ -263,11 +260,8 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent_status",
 		label: "Subagent Status",
 		description:
-			"Live status of a subagent run (non-blocking): per-task state, plus each child's session file path (JSONL) so you can tail it from outside — e.g. in a terminal multiplexer pane. Call this once right after spawning to verify the children actually started.",
+			"Live per-task status of a subagent run (non-blocking), incl. each child's session file path (JSONL) to `tail -f` from outside. Call once right after spawning to verify children actually started.",
 		promptSnippet: "Check progress of a subagent run; use right after spawn as a health check.",
-		promptGuidelines: [
-			"Health-check every background spawn with one subagent_status(runId) before continuing — catch dead-on-arrival children early instead of at completion time.",
-		],
 		parameters: RunIdParam,
 		async execute(_id, params) {
 			const { runId } = params as { runId: string };
@@ -313,10 +307,7 @@ export default function (pi: ExtensionAPI) {
 		name: "await_subagent",
 		label: "Await Subagent",
 		description:
-			"Block until a run finishes (or timeoutMs elapses). Use ONLY when you have work of your own to sync with; if you have nothing else to do, end your turn instead — completion notifies you and wakes a new turn with the results. While parked, child→leader messages (asks, notifies, completions) wake the wait and arrive INSIDE the result.",
-		promptGuidelines: [
-			"Do not call await_subagent right after spawning with no other work pending — end the turn and let the completion notice wake you.",
-		],
+			"Block until a run finishes (or timeoutMs elapses). Only when you have your own work to sync — otherwise end your turn; completion notifies you. While parked, child→leader messages (asks, notifies, completions) wake the wait and arrive inside the result.",
 		parameters: AwaitParam,
 		async execute(_id, params) {
 			const { runId, timeoutMs } = params as { runId: string; timeoutMs?: number };

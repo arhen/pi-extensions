@@ -5,23 +5,17 @@ import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY } from "./manager.ts";
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const TaskItem = Type.Object({
 	id: Type.Optional(Type.String({ description: "Optional stable task id" })),
-	agent: Type.String({
-		minLength: 1,
-		description:
-			"Agent name you invent. Always define the agent inline: prompt (system prompt) + toolset (write: true for write access). Never create agent files.",
-	}),
+	agent: Type.String({ minLength: 1, description: "Agent name you invent (defined inline via `prompt`)" }),
 	task: Type.String({ minLength: 1, description: "Task for this agent" }),
-	prompt: Type.Optional(
-		Type.String({ description: "System prompt defining this agent's behavior. Optional — a minimal default is used." }),
-	),
+	prompt: Type.Optional(Type.String({ description: "System prompt defining this agent's behavior" })),
 	write: Type.Optional(
 		Type.Boolean({
-			description: "true = write toolset (read, bash, edit, write); default false = read-only (read, grep, find, ls)",
+			description: "true = write toolset (adds bash, edit, write); default false = read-only (read, grep, find, ls)",
 		}),
 	),
 	model: Type.Optional(Type.String({ description: "Model override (provider/model-id)" })),
 	thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Thinking level override" })),
-	cwd: Type.Optional(Type.String({ description: "Working directory for this task. Default: current project." })),
+	cwd: Type.Optional(Type.String({ description: "Working directory (default: current project)" })),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Explicit tool allowlist (overrides the toolset)" })),
 	maxRuntimeMs: Type.Optional(Type.Number({ description: "Per-task timeout (ms)" })),
 	needs: Type.Optional(
@@ -50,13 +44,12 @@ export const SubagentParams = Type.Object({
 	maxRuntimeMs: Type.Optional(
 		Type.Number({
 			description:
-				"Per-task timeout, ms. Omit unless a hard bound is genuinely required — a safety ceiling always applies (6 h, or 1 h with `/subagents auto-limit on`).",
+				"Per-task timeout, ms. Omit unless a hard bound is genuinely required — a ceiling always applies (6 h, or 1 h with `/subagents auto-limit on`).",
 		}),
 	),
 	autoAwait: Type.Optional(
 		Type.Boolean({
-			description:
-				"Start the run in the background, then park this tool call until it finishes and return the final result inline (runId + summary in one response). Default false.",
+			description: "Park this call until the run finishes and return the result inline. Default false.",
 		}),
 	),
 	notifyPerTask: Type.Optional(
