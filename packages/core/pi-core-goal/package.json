@@ -7,7 +7,7 @@
   "author": "arhen",
   "repository": {
     "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
+    "url": "git+https://github.com/arhen/pi-extensions.git",
     "directory": "packages/core/pi-core-goal"
   },
   "main": "./src/index.ts",
