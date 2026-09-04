@@ -30,6 +30,7 @@ export interface TaskSnapshot {
 	toolCalls: number;
 	lastActivity?: string;
 	finalText?: string;
+	notifiedParent?: boolean;
 	error?: string;
 	model?: string;
 	modelNote?: string;
