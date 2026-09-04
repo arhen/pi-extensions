@@ -35,7 +35,9 @@ export function mean(values: number[]): number {
 }
 
 /**
- * Tokens per second = all output tokens over the whole turn.
+ * Effective response t/s = all output tokens over the assistant response,
+ * from turn start through message end. This includes queue, prefill, and TTFT,
+ * but excludes tool execution, which happens after message end.
  *
  * There is deliberately only one rate here. The obvious alternative — divide by
  * the stream window, from first chunk to last — does not survive contact with
@@ -54,10 +56,10 @@ export function mean(values: number[]): number {
  * in a plausible band. Earlier versions shipped the window math and reported
  * four-digit rates (1777, 1490) that no local model could reach.
  *
- * `usage.output` counts thinking + text + tool-call arguments, and the turn
- * covers all of it, so numerator and denominator describe the same work.
- * Queue and prefill latency are included: this is the rate you actually wait
- * for, which is why it reads lower than a provider's marketing number.
+ * `usage.output` counts thinking + text + tool-call arguments, so numerator and
+ * denominator describe one assistant response. Queue and prefill latency are
+ * included: this is the rate you actually wait for, which is why it reads
+ * lower than a provider's marketing number. Tool execution is not included.
  */
 export function tps(
 	outputTokens: number,
@@ -109,7 +111,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const t = ctx.ui.theme;
-		let text = `${t.fg("dim", "med")} ${tpsColored(t, median(tpsValues))} ${t.fg("dim", "t/s")}`;
+		let text = `${t.fg("dim", "eff")} ${tpsColored(t, median(tpsValues))} ${t.fg("dim", "t/s")}`;
 		if (ttftValues.length > 0) {
 			text += ` | ${t.fg("warning", fmtDur(median(ttftValues)))} ${t.fg("dim", "ttft")}`;
 		}
@@ -138,8 +140,8 @@ export default function (pi: ExtensionAPI) {
 		}, 2000);
 	}
 
-	pi.on("turn_start", (_event: TurnStartEvent, _ctx: ExtensionContext) => {
-		turnStart = Date.now();
+	pi.on("turn_start", (event: TurnStartEvent, _ctx: ExtensionContext) => {
+		turnStart = event.timestamp;
 		streamStart = 0;
 	});
 
@@ -195,7 +197,7 @@ export default function (pi: ExtensionAPI) {
 			}
 			const sorted = [...tpsValues].sort((a, b) => a - b);
 			const lines = [
-				"t/s (all output tokens / full turn, prefill included)",
+				"effective t/s (output tokens / assistant response, prefill included)",
 				`Samples: ${n}`,
 				`Average: ${mean(tpsValues).toFixed(1)}`,
 				`Median:  ${median(tpsValues).toFixed(1)}`,

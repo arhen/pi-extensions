@@ -11,9 +11,9 @@ Requires the [pi coding agent](https://github.com/earendil-works/pi) — install
 pi install npm:@arhen/pi-core-tps-stats
 ```
 
-Live token-per-second stats for the active model. Status bar shows median t/s + median TTFT; `/tps-stats` shows full stats (samples, avg/median/min/max, TTFT). Stats reset on model change.
+Live token-per-second stats for active model. Status bar shows median effective t/s + median TTFT; `/tps-stats` shows full stats (samples, avg/median/min/max, TTFT). Stats reset on model change.
 
-**One rate, deliberately.** t/s is all output tokens (thinking + text + tool-call arguments) divided by the whole turn, prefill and queue latency included. It reads lower than a provider's marketing number because it is the rate you actually wait for.
+**One rate, deliberately.** Effective t/s is all output tokens (thinking + text + tool-call arguments) divided by assistant-response time from turn start to message end. Queue, prefill, and TTFT are included; tool execution is excluded. It reads lower than provider marketing numbers because it is rate you actually wait for.
 
 There is no separate "streaming t/s", because SSE arrival times measure the gateway's flush schedule rather than the model. Measured against `vantis/deepseek-v4-flash-0731-fast` (median inter-chunk gap: 0.01ms — chunks land in instant batches separated by long pauses):
 
