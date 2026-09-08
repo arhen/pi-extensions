@@ -251,3 +251,47 @@ describe("tool precedence (issue #3)", () => {
 		expect(src).toMatch(/task\.toolsNote = `explicit tools overrode agent-file tools/);
 	});
 });
+
+describe("resumeTask", () => {
+	function seeded(status: "failed" | "completed" | "running", sessionFile?: string) {
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		const task = run.tasks[0]!;
+		task.status = status;
+		task.sessionFile = sessionFile;
+		run.status = status === "running" ? "running" : status;
+		return { m, run, task };
+	}
+	test("refuses never-started task (no session file) — respawn is the right move", () => {
+		const { m, run, task } = seeded("failed");
+		const res = m.resumeTask(run.id, task.id, stubCtx);
+		expect(res.ok).toBe(false);
+		if (!res.ok) expect(res.reason).toMatch(/no session file/);
+	});
+	test("refuses completed task and still-running run", () => {
+		const dir = mkdtempSync(join(tmpdir(), "resume-"));
+		const file = join(dir, "s.jsonl");
+		writeFileSync(file, "");
+		const done = seeded("completed", file);
+		expect(done.m.resumeTask(done.run.id, done.task.id, stubCtx).ok).toBe(false);
+		const live = seeded("running", file);
+		expect(live.m.resumeTask(live.run.id, live.task.id, stubCtx).ok).toBe(false);
+		expect(makeManager().resumeTask("run_x", "task_1", stubCtx).ok).toBe(false);
+		rmSync(dir, { recursive: true, force: true });
+	});
+	test("failed task with a session file flips to queued and the run reopens", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "resume-"));
+		const file = join(dir, "s.jsonl");
+		writeFileSync(file, "");
+		const { m, run, task } = seeded("failed", file);
+		task.error = "usage limit";
+		task.tools = ["read", "bash", "ask_parent"];
+		const res = m.resumeTask(run.id, task.id, { ...stubCtx, modelRegistry: undefined } as unknown as ExtensionContext);
+		expect(res.ok).toBe(true);
+		expect(run.status).toBe("running");
+		expect(["queued", "starting", "running", "failed"]).toContain(task.status);
+		expect(task.error === undefined || task.error !== "usage limit").toBe(true);
+		await new Promise((r) => setTimeout(r, 300));
+		rmSync(dir, { recursive: true, force: true });
+	});
+});

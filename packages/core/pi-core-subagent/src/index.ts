@@ -8,6 +8,7 @@ import {
 	AwaitParam,
 	ReplyParam,
 	ResultParam,
+	ResumeParam,
 	RunIdParam,
 	SteerParam,
 	SubagentParams,
@@ -140,6 +141,7 @@ export default function (pi: ExtensionAPI) {
 			"Right after spawning, call subagent_status(runId) ONCE before any other work — a child that died on spawn (or never started) is invisible until far later otherwise. If it shows a task failed/never started, fix or respawn immediately.",
 			"Never block with nothing to do: if you have no work left after spawning, end your turn — completion notifies you and wakes a fresh turn with the results. await_subagent/autoAwait while idle only burns time and tokens.",
 			"autoAwait:true only when this SAME turn must consume the result immediately. await_subagent is for syncing with your own parallel work — not the default follow-up to a spawn.",
+			"A task that failed mid-work (provider error, rate limit, timeout) keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it with full context — prefer that over respawning. Respawn only when it never started (no session file).",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel",
@@ -182,7 +184,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Background run started: ${details.run.id} (${details.run.mode}, ${details.run.tasks.length} task${details.run.tasks.length > 1 ? "s" : ""}).\nNext: call subagent_status("${details.run.id}") now to confirm the tasks actually started before doing anything else.\nAfter that, completion will notify you — if you have no other work, end your turn instead of waiting.\nOther tools: subagent_result / reply_subagent / steer_subagent / subagent_cancel.`,
+						text: `Background run started: ${details.run.id} (${details.run.mode}, ${details.run.tasks.length} task${details.run.tasks.length > 1 ? "s" : ""}).\nNext: call subagent_status("${details.run.id}") now to confirm the tasks actually started before doing anything else.\nAfter that, completion will notify you — if you have no other work, end your turn instead of waiting.\nOther tools: subagent_result / reply_subagent / steer_subagent / resume_subagent / subagent_cancel.`,
 					},
 				],
 				details,
@@ -369,6 +371,34 @@ export default function (pi: ExtensionAPI) {
 					},
 				],
 				details: {},
+			};
+		},
+	});
+
+	pi.registerTool<typeof ResumeParam, { run?: RunSnapshot }>({
+		name: "resume_subagent",
+		label: "Resume Subagent",
+		description:
+			"Revive a failed/aborted task in its original session (full context + worktree branch preserved). Optional `model` swaps provider (e.g. after a rate limit); optional `message` replaces the default 'recap and continue' prompt. Refuses tasks that never started — respawn those.",
+		parameters: ResumeParam,
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const { runId, taskId, message, model } = params as {
+				runId: string;
+				taskId: string;
+				message?: string;
+				model?: string;
+			};
+			const res = manager.resumeTask(runId, taskId, ctx, { message, model });
+			if (!res.ok) return { content: [{ type: "text", text: res.reason }], isError: true, details: {} };
+			const run = manager.getRun(runId);
+			return {
+				content: [
+					{
+						type: "text",
+						text: `Resumed ${runId}/${taskId} (${res.task.agent})${model ? ` on ${model}` : ""} from ${res.task.sessionFile}${res.task.branch ? `, branch ${res.task.branch}` : ""}.\nNext: subagent_status("${runId}") to confirm it is running; completion will notify you.`,
+					},
+				],
+				details: { run: run ? cloneRun(run) : undefined },
 			};
 		},
 	});

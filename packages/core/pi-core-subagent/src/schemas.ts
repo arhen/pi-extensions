@@ -77,6 +77,19 @@ export const ReplyParam = Type.Object({
 	taskId: Type.String(),
 	message: Type.String({ description: "Answer for the child" }),
 });
+export const ResumeParam = Type.Object({
+	runId: Type.String(),
+	taskId: Type.String({ description: "Failed/aborted task to revive" }),
+	message: Type.Optional(
+		Type.String({ description: "Prompt delivered on resume (default: recap state, then continue the original task)" }),
+	),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"Model override for the resumed session (provider/model-id) — use when the original provider is rate-limited",
+		}),
+	),
+});
 export const SteerParam = Type.Object({
 	runId: Type.String(),
 	taskId: Type.Optional(Type.String({ description: "Specific task id; defaults to all still-running tasks" })),

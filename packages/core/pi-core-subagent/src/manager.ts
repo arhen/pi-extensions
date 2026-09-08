@@ -44,6 +44,7 @@ import {
 	type UsageStats,
 } from "./types.ts";
 import {
+	attachWorktree,
 	branchDiff,
 	claimWorktree,
 	cleanupMerged,
@@ -224,6 +225,12 @@ export function validateThinking(model: Model<Api> | undefined, level: string | 
 	if (!model.reasoning) {
 		throw new Error(`Model ${model.provider}/${model.id} does not support thinking. Use thinking: "off".`);
 	}
+}
+
+interface ResumeInput {
+	sessionFile: string;
+	branch?: string;
+	message: string;
 }
 
 interface ChildEventState {
@@ -709,6 +716,7 @@ export class SubagentManager {
 		ctx: ExtensionContext,
 		signal: AbortSignal | undefined,
 		onUpdate?: (partial: any) => void,
+		resume?: ResumeInput,
 	): Promise<void> {
 		if (TERMINAL.includes(task.status)) return;
 
@@ -757,7 +765,14 @@ export class SubagentManager {
 
 		let wt: Worktree | undefined;
 		let isolationReason: string | undefined;
-		if (canWrite) {
+		if (canWrite && resume?.branch) {
+			try {
+				wt = attachWorktree(task.cwd, resume.branch);
+				if (!wt) isolationReason = `branch ${resume.branch} no longer exists`;
+			} catch (err) {
+				isolationReason = `git worktree add failed: ${err instanceof Error ? err.message : String(err)}`;
+			}
+		} else if (canWrite) {
 			try {
 				const upstream = (task.needs ?? [])
 					.map((id) => run.tasks.find((t) => t.id === id))
@@ -850,7 +865,9 @@ export class SubagentManager {
 				agentDir: getAgentDir(),
 				modelRuntime: await createChildModelRuntime(ctx),
 				resourceLoader: loader,
-				sessionManager: SessionManager.create(childCwd, undefined, { parentSession: getParentSessionFile(ctx) }),
+				sessionManager: resume
+					? SessionManager.open(resume.sessionFile, undefined, childCwd)
+					: SessionManager.create(childCwd, undefined, { parentSession: getParentSessionFile(ctx) }),
 				model,
 				thinkingLevel: thinking as ThinkingLevel | undefined,
 				tools,
@@ -906,7 +923,7 @@ export class SubagentManager {
 			});
 
 			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS);
-			const promptPromise = child.prompt(task.task, { source: "extension" });
+			const promptPromise = child.prompt(resume?.message ?? task.task, { source: "extension" });
 			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise];
 			if (maxRuntimeMs > 0) {
 				races.push(
@@ -1302,6 +1319,107 @@ export class SubagentManager {
 				this.persist(ctx);
 			});
 		return { run: cloneRun(run) };
+	}
+
+	resumeTask(
+		runId: string,
+		taskId: string,
+		ctx: ExtensionContext,
+		opts: { message?: string; model?: string } = {},
+	): { ok: true; task: TaskSnapshot } | { ok: false; reason: string } {
+		const run = this.runs.get(runId);
+		const task = run?.tasks.find((t) => t.id === taskId);
+		if (!run || !task) return { ok: false, reason: `Unknown ${runId}/${taskId}.` };
+		if (!TERMINAL.includes(task.status))
+			return { ok: false, reason: `${taskId} is still ${task.status} — use steer_subagent.` };
+		if (task.status === "completed") return { ok: false, reason: `${taskId} completed — spawn a new task instead.` };
+		if (!task.sessionFile || !existsSync(task.sessionFile)) {
+			return { ok: false, reason: `${taskId} has no session file to resume (never started) — respawn it.` };
+		}
+		if (this.liveChildren.has(`${runId}:${taskId}`)) return { ok: false, reason: `${taskId} is already live.` };
+		// ponytail: resume only into a settled run — executeTasks' final sweep would abort a task revived mid-run. Upgrade: make the sweep skip tasks with a live child.
+		if (!TERMINAL.includes(run.status)) {
+			return { ok: false, reason: `Run ${runId} is still ${run.status} — wait for it to settle before resuming.` };
+		}
+
+		const tools = task.tools?.filter((t) => !(CHILD_TALK_TOOLS as readonly string[]).includes(t));
+		const write = tools?.some((t) => WRITE_CAPABLE.includes(t)) ?? false;
+		const input: TaskInput = {
+			id: task.id,
+			agent: task.agent,
+			task: task.task,
+			cwd: task.cwd,
+			write,
+			tools: tools?.length ? tools : undefined,
+			model: opts.model ?? task.model,
+			thinking: task.thinking as TaskInput["thinking"],
+			needs: task.needs,
+		};
+		const resume: ResumeInput = {
+			sessionFile: task.sessionFile,
+			branch: task.branch,
+			message:
+				opts.message?.trim() ||
+				`Your previous turn ended with an error (${task.error ?? "unknown"}). Resume where you left off: briefly recap what you already did and what remains, then continue and finish the original task.`,
+		};
+
+		this.cleared = false;
+		this.turnActivity = true;
+		Object.assign(task, {
+			status: "queued" as TaskStatus,
+			error: undefined,
+			endedAt: undefined,
+			finalText: undefined,
+			notifiedParent: false,
+			diffStat: undefined,
+			changedFiles: undefined,
+			worktreeError: undefined,
+		});
+		run.status = "running";
+		run.endedAt = undefined;
+		run.awaited = false;
+		this.settlers.set(run.id, true);
+		this.runControllers.set(run.id, new AbortController());
+		for (const t of run.tasks) this.mailboxes.open(`${run.id}:${t.id}`);
+		this.updateRun(run, ctx);
+		this.emit("subagent:task-resumed", { runId: run.id, taskId: task.id });
+
+		void this.runChild(run, task, input, task.task, ctx, undefined, undefined, resume)
+			.catch((err) => {
+				if (!TERMINAL.includes(task.status)) {
+					this.updateTask(
+						run,
+						task,
+						{ status: "failed", error: err instanceof Error ? err.message : String(err), endedAt: Date.now() },
+						ctx,
+					);
+				}
+			})
+			.then(() => {
+				if (run.notifyPerTask) this.notifyTask(run, task, task.status as "completed" | "failed" | "aborted");
+				this.finishRunIfSettled(run, ctx);
+			});
+		return { ok: true, task };
+	}
+
+	private finishRunIfSettled(run: RunSnapshot, ctx: ExtensionContext): void {
+		if (run.tasks.some((t) => !TERMINAL.includes(t.status))) return;
+		const failed = run.tasks.some((t) => t.status === "failed");
+		const aborted = run.tasks.some((t) => t.status === "aborted");
+		run.status = aborted ? "aborted" : failed ? "failed" : "completed";
+		run.endedAt = Date.now();
+		this.flushWidget(run, ctx);
+		this.emit("subagent:run-completed", {
+			runId: run.id,
+			status: run.status,
+			run: cloneRun(run),
+			aggregateUsage: run.aggregateUsage,
+		});
+		this.settleRun(run.id, run);
+		this.runControllers.delete(run.id);
+		for (const task of run.tasks) this.mailboxes.close(`${run.id}:${task.id}`);
+		this.persist(ctx);
+		this.notifyParent(run, run.status === "completed" ? "completed" : run.status === "aborted" ? "aborted" : "failed");
 	}
 
 	steerTask(runId: string, taskId: string | undefined, message: string): boolean {

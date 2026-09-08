@@ -274,3 +274,29 @@ describe("worktree", () => {
 		expect(git(["branch", "--list", wt.branch])).toBe(wt.branch);
 	});
 });
+
+describe("attachWorktree", () => {
+	test("re-attaches a committed branch after its dir was removed; base = merge-base", async () => {
+		const { attachWorktree } = await import("../src/worktree.ts");
+		const wt = createWorktree(repo, "run_att", "task_1")!;
+		writeFileSync(join(wt.path, "att.txt"), "x\n");
+		commitWorktree(wt, "partial");
+		removeWorktree(wt);
+		expect(existsSync(wt.path)).toBe(false);
+
+		const again = attachWorktree(repo, wt.branch)!;
+		expect(again).toBeDefined();
+		expect(again.branch).toBe(wt.branch);
+		expect(existsSync(join(again.path, "att.txt"))).toBe(true);
+		expect(again.base).toBe(git(["merge-base", "HEAD", wt.branch]));
+		expect(branchDiff(again).files).toContain("att.txt");
+
+		expect(attachWorktree(repo, again.branch)!.path).toBe(again.path);
+		removeWorktree(again);
+	});
+	test("refuses unknown branch and non-subagent prefix", async () => {
+		const { attachWorktree } = await import("../src/worktree.ts");
+		expect(attachWorktree(repo, "subagents/nope/x")).toBeUndefined();
+		expect(attachWorktree(repo, "main")).toBeUndefined();
+	});
+});

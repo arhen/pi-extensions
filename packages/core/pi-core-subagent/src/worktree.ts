@@ -98,6 +98,33 @@ export function createWorktree(cwd: string, runId: string, taskId: string, baseR
 	return { root, path, branch, base };
 }
 
+export function attachWorktree(cwd: string, branch: string): Worktree | undefined {
+	if (!branch.startsWith(BRANCH_PREFIX)) return undefined;
+	const root = repoRoot(cwd);
+	if (!root) return undefined;
+	const container = subagentsDir(root);
+	if (!container) return undefined;
+	if (!gitOk(root, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`])) return undefined;
+	const path = join(container, branch.slice(BRANCH_PREFIX.length));
+	if (!worktreePaths(root)?.some((p) => samePath(p, path))) {
+		if (existsSync(path)) rmSync(path, { recursive: true, force: true });
+		git(root, ["worktree", "add", path, branch]);
+	}
+	let base: string;
+	try {
+		base = git(root, ["merge-base", "HEAD", branch]);
+	} catch {
+		base = git(root, ["rev-parse", "HEAD"]);
+	}
+	const nm = join(root, "node_modules");
+	if (existsSync(nm) && !existsSync(join(path, "node_modules"))) {
+		try {
+			symlinkSync(nm, join(path, "node_modules"));
+		} catch {}
+	}
+	return { root, path, branch, base };
+}
+
 export function commitWorktree(wt: Worktree, message: string): "committed" | "empty" {
 	return commitIn(wt.path, message, wt.branch);
 }

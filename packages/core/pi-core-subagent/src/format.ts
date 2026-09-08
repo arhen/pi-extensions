@@ -228,7 +228,9 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 		`Goal: ${goal}${src}${swap}${tools}`,
 		isStartupFailure(task, kind)
 			? "Never started — stop and diagnose before spawning anything else: a config-level error (model, plan, auth, agent file) fails identically on every respawn."
-			: `Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`,
+			: kind === "completed"
+				? `Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`
+				: `Session file kept — resume_subagent(runId: "${run.id}", taskId: "${task.id}", model?: ...) revives it with full context. subagent_result for what it produced so far.`,
 	].join("\n");
 }
 export function makeNotice(run: RunSnapshot, kind: string): string {
