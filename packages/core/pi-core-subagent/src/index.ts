@@ -140,6 +140,7 @@ export default function (pi: ExtensionAPI) {
 			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit). A matched agent file takes over (see description); matching is by description, not name — name the agent whatever fits the goal.",
 			"Right after spawning, call subagent_status(runId) ONCE before any other work — a child that died on spawn (or never started) is invisible until far later otherwise. If it shows a task failed/never started, fix or respawn immediately.",
 			"Never block with nothing to do: if you have no work left after spawning, end your turn — completion notifies you and wakes a fresh turn with the results. await_subagent/autoAwait while idle only burns time and tokens.",
+			"A failed task interrupts you immediately as a steering message — handle it in the same turn (resume, swap model, re-dispatch) instead of finishing the plan on a broken intermediate result. Completes and aborts queue as follow-ups.",
 			"autoAwait:true only when this SAME turn must consume the result immediately. await_subagent is for syncing with your own parallel work — not the default follow-up to a spawn.",
 			"A task that failed mid-work (provider error, rate limit, timeout) keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it with full context — prefer that over respawning. Respawn only when it never started (no session file).",
 		],

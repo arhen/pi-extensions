@@ -437,7 +437,9 @@ export class SubagentManager {
 	}
 
 	private deliverMode(kind: string, task: TaskSnapshot): "steer" | "followUp" {
-		return isStartupFailure(task, kind) ? "steer" : "followUp";
+		// failures interrupt the leader's turn: it must decide immediately (resume, swap model, respawn)
+		// instead of finding out after its own turn ended. Aborts are user-initiated, so they queue.
+		return kind === "failed" || isStartupFailure(task, kind) ? "steer" : "followUp";
 	}
 
 	private notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: "completed" | "failed" | "aborted"): void {
@@ -470,7 +472,7 @@ export class SubagentManager {
 				? `A subagent is asking you a question (task ${extra?.taskId}): ${extra?.question ?? ""}\nReply with reply_subagent(runId: "${run.id}", taskId: "${extra?.taskId}", message: ...).`
 				: makeNotice(run, kind);
 		try {
-			this.pi.sendUserMessage(body, { deliverAs: "followUp" });
+			this.pi.sendUserMessage(body, { deliverAs: kind === "failed" ? "steer" : "followUp" });
 		} catch {}
 		this.emit("subagent:notification", { runId: run.id, kind, body });
 	}

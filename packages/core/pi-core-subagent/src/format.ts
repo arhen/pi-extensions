@@ -114,7 +114,8 @@ export function compactLines(run: RunSnapshot): string[] {
 	if (run.tasks.length > MAX_TASKS) lines.push(`… +${run.tasks.length - MAX_TASKS} more`);
 	return lines;
 }
-const WIDGET_MAX_LINES = 10;
+// header + 4 task rows; live tasks are ordered first, so the cap only ever hides finished work
+const WIDGET_MAX_LINES = 5;
 
 export class SubagentsWidget implements Component {
 	constructor(

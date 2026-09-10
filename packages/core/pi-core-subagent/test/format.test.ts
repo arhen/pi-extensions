@@ -86,7 +86,7 @@ describe("makeSummary merge safety", () => {
 });
 
 describe("SubagentsWidget", () => {
-	test("live tasks survive the line budget, finished ones go behind +n more", () => {
+	test("live tasks survive the 4-row budget, finished ones go behind +n more", () => {
 		const finished = Array.from({ length: 12 }, (_, i) =>
 			task({ id: `done_${i}`, agent: `done-${i}`, status: "completed" }),
 		);
@@ -100,7 +100,9 @@ describe("SubagentsWidget", () => {
 		expect(out).toContain("Subagents (12/14)");
 		expect(out).toContain("running-1");
 		expect(out).toContain("running-2");
-		expect(out).toContain("+5 more");
-		expect(out).not.toContain("done-11");
+		expect(out).toContain("+10 more");
+		expect(out).not.toContain("done-2");
+		// header + 4 rows + the "+n more" footer
+		expect(out.split("\n")).toHaveLength(6);
 	});
 });
