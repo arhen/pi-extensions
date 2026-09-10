@@ -139,17 +139,21 @@ export class SubagentsWidget implements Component {
 			),
 		];
 		const budget = WIDGET_MAX_LINES - 1;
+		// live tasks first so the budget never hides work in progress
+		const all = runs.flatMap((run) => run.tasks);
+		const ordered = [
+			...all.filter((t) => !TERMINAL.includes(t.status)),
+			...all.filter((t) => TERMINAL.includes(t.status)),
+		];
 		let shown = 0;
-		outer: for (const run of runs) {
-			for (const task of run.tasks) {
-				if (shown >= budget) break outer;
-				shown += 1;
-				const activity = task.lastActivity ? `${this.theme.fg("dim", `→ ${task.lastActivity}`)} · ` : "";
+		for (const task of ordered) {
+			if (shown >= budget) break;
+			shown += 1;
+			const activity = task.lastActivity ? `${this.theme.fg("dim", `→ ${task.lastActivity}`)} · ` : "";
 
-				lines.push(
-					truncateToWidth(`${this.theme.fg("dim", "├─")} ${themedTaskLine(task, this.theme, activity)}`, width, "…"),
-				);
-			}
+			lines.push(
+				truncateToWidth(`${this.theme.fg("dim", "├─")} ${themedTaskLine(task, this.theme, activity)}`, width, "…"),
+			);
 		}
 		const hidden = total - shown;
 		if (hidden > 0) {

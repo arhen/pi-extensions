@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { makeSummary } from "../src/format.ts";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import { makeSummary, SubagentsWidget } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
+
+const plain = { fg: (_c: string, s: string) => s } as unknown as Theme;
 
 const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 };
 
@@ -79,5 +82,25 @@ describe("makeSummary merge safety", () => {
 		const out = makeSummary(run([task({ isolation: "in-place", isolationReason: "not a git repository" })]));
 		expect(out).toContain("Applied IN PLACE (no branch)");
 		expect(out).toContain("not a git repository");
+	});
+});
+
+describe("SubagentsWidget", () => {
+	test("live tasks survive the line budget, finished ones go behind +n more", () => {
+		const finished = Array.from({ length: 12 }, (_, i) =>
+			task({ id: `done_${i}`, agent: `done-${i}`, status: "completed" }),
+		);
+		const live = [
+			task({ id: "live_1", agent: "running-1", status: "running" }),
+			task({ id: "live_2", agent: "running-2", status: "running" }),
+		];
+
+		const out = new SubagentsWidget(() => [run([...finished, ...live])], plain).render(200).join("\n");
+
+		expect(out).toContain("Subagents (12/14)");
+		expect(out).toContain("running-1");
+		expect(out).toContain("running-2");
+		expect(out).toContain("+5 more");
+		expect(out).not.toContain("done-11");
 	});
 });
