@@ -21,7 +21,6 @@ import {
 	activitySnippet,
 	describeCall,
 	getFirstText,
-	isStartupFailure,
 	isTalking,
 	makeNotice,
 	makeTaskNotice,
@@ -436,10 +435,11 @@ export class SubagentManager {
 		this.pi.events.emit(type, { type, timestamp: Date.now(), ...payload });
 	}
 
-	private deliverMode(kind: string, task: TaskSnapshot): "steer" | "followUp" {
-		// failures interrupt the leader's turn: it must decide immediately (resume, swap model, respawn)
-		// instead of finding out after its own turn ended. Aborts are user-initiated, so they queue.
-		return kind === "failed" || isStartupFailure(task, kind) ? "steer" : "followUp";
+	private deliverMode(): "steer" {
+		// Every child->leader message steers. `followUp` only surfaces once the leader stops calling
+		// tools, so a leader that keeps working (or never rests) sees completions too late to act on
+		// them, and the queue accumulates in the meantime. `steer` lands at the next model boundary.
+		return "steer";
 	}
 
 	private notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: "completed" | "failed" | "aborted"): void {
@@ -454,7 +454,7 @@ export class SubagentManager {
 			return;
 		}
 		try {
-			this.pi.sendUserMessage(body, { deliverAs: this.deliverMode(kind, task) });
+			this.pi.sendUserMessage(body, { deliverAs: this.deliverMode() });
 		} catch {}
 		this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body });
 	}
@@ -472,7 +472,7 @@ export class SubagentManager {
 				? `A subagent is asking you a question (task ${extra?.taskId}): ${extra?.question ?? ""}\nReply with reply_subagent(runId: "${run.id}", taskId: "${extra?.taskId}", message: ...).`
 				: makeNotice(run, kind);
 		try {
-			this.pi.sendUserMessage(body, { deliverAs: kind === "failed" ? "steer" : "followUp" });
+			this.pi.sendUserMessage(body, { deliverAs: "steer" });
 		} catch {}
 		this.emit("subagent:notification", { runId: run.id, kind, body });
 	}
@@ -595,7 +595,7 @@ export class SubagentManager {
 
 				if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text: message })) return;
 				try {
-					this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "followUp" });
+					this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "steer" });
 				} catch {}
 			},
 			onSendMessage: (_taskId, to, text) => {
@@ -609,7 +609,7 @@ export class SubagentManager {
 					});
 					if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text })) return true;
 					try {
-						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "followUp" });
+						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "steer" });
 					} catch {}
 					return true;
 				}
@@ -926,7 +926,7 @@ export class SubagentManager {
 				steer: (message) =>
 					void child?.prompt(message, { streamingBehavior: "steer" }).catch((err) =>
 						this.pi.sendUserMessage(`[steer_subagent] ${err instanceof Error ? err.message : String(err)}`, {
-							deliverAs: "followUp",
+							deliverAs: "steer",
 						}),
 					),
 			});
