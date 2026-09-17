@@ -60,8 +60,12 @@ function taskStatsWithUsage(task: TaskSnapshot): string {
 	const usage = formatUsage(task.usage);
 	return `${stats}${usage ? ` · ${usage}` : ""}`;
 }
+export function modelTag(task: TaskSnapshot): string {
+	const ref = [task.provider, task.model, task.thinking].filter(Boolean).join("/");
+	return ref ? ` [${ref}]` : "";
+}
 export function taskLine(task: TaskSnapshot): string {
-	return `${statusIcon(task.status)} ${task.agent} · ${taskStatsWithUsage(task)} · ${taskTimer(task)}`;
+	return `${statusIcon(task.status)} ${task.agent}${modelTag(task)} · ${taskStatsWithUsage(task)} · ${taskTimer(task)}`;
 }
 export function colorNums(text: string, theme: Theme): string {
 	return text.replace(/((?:\d+(?:\.\d+)?[a-zA-Z]*)+)|([^\d]+)/g, (_m, num?: string, rest?: string) =>
@@ -71,15 +75,16 @@ export function colorNums(text: string, theme: Theme): string {
 function themedTaskLine(task: TaskSnapshot, theme: Theme, activity = ""): string {
 	const tail = `${taskStatsWithUsage(task)} · ${taskTimer(task)}`;
 
+	const tag = theme.fg("dim", modelTag(task));
 	const gate =
 		task.status === "queued" && task.needs?.length ? `${theme.fg("muted", `↳ waits ${task.needs.join(", ")}`)} · ` : "";
 	if (TERMINAL.includes(task.status)) {
-		return theme.fg("dim", `${statusIcon(task.status)} ${task.agent} · ${tail}`);
+		return theme.fg("dim", `${statusIcon(task.status)} ${task.agent}${tag} · ${tail}`);
 	}
 
 	pulsePhase += 1;
 	const name = isTalking(task) ? theme.fg(pulsePhase % 2 === 0 ? "accent" : "dim", `${task.agent} ⇄`) : task.agent;
-	return `${statusIcon(task.status)} ${name} · ${gate}${activity}${colorNums(tail, theme)}`;
+	return `${statusIcon(task.status)} ${name}${tag} · ${gate}${activity}${colorNums(tail, theme)}`;
 }
 const ARG_KEYS = ["pattern", "query", "command", "path", "file_path", "filePath", "url", "name", "subject", "task"];
 export function describeCall(toolName: string, args: unknown, cwd?: string): string {

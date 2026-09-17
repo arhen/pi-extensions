@@ -33,6 +33,7 @@ export interface TaskSnapshot {
 	notifiedParent?: boolean;
 	error?: string;
 	model?: string;
+	provider?: string;
 	modelNote?: string;
 	toolsNote?: string;
 	thinking?: string;

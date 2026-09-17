@@ -827,6 +827,7 @@ export class SubagentManager {
 					task: input.task,
 
 					model: model?.id ?? input.model,
+					provider: model?.provider,
 					thinking,
 					tools,
 				},
@@ -880,7 +881,13 @@ export class SubagentManager {
 			this.updateTask(
 				run,
 				task,
-				{ status: "running", sessionId: child.sessionId, sessionFile: child.sessionFile },
+				{
+					status: "running",
+					sessionId: child.sessionId,
+					sessionFile: child.sessionFile,
+					provider: child.model?.provider ?? task.provider,
+					thinking: child.thinkingLevel,
+				},
 				ctx,
 				onUpdate,
 			);

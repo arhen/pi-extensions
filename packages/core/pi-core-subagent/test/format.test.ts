@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { makeSummary, SubagentsWidget } from "../src/format.ts";
+import { makeSummary, SubagentsWidget, taskLine } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 
 const plain = { fg: (_c: string, s: string) => s } as unknown as Theme;
@@ -82,6 +82,17 @@ describe("makeSummary merge safety", () => {
 		const out = makeSummary(run([task({ isolation: "in-place", isolationReason: "not a git repository" })]));
 		expect(out).toContain("Applied IN PLACE (no branch)");
 		expect(out).toContain("not a git repository");
+	});
+});
+
+describe("taskLine model tag", () => {
+	test("provider/model/effort ride after the agent name", () => {
+		expect(
+			taskLine(
+				task({ agent: "vendor-factchecker", provider: "openai-codex", model: "gpt-5.6-sol", thinking: "xhigh" }),
+			),
+		).toStartWith("✓ vendor-factchecker [openai-codex/gpt-5.6-sol/xhigh] ·");
+		expect(taskLine(task({ agent: "bare" }))).toStartWith("✓ bare ·");
 	});
 });
 
