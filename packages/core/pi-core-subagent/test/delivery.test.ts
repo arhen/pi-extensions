@@ -6,8 +6,12 @@ import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 };
 type Kind = "completed" | "failed" | "aborted";
 
-/** only the failed-task path should interrupt the leader mid-turn */
-describe("failure notices steer, everything else queues", () => {
+/**
+ * Every child->leader lifecycle notice steers. A `followUp` notice only surfaces once the leader
+ * stops calling tools, so a leader that keeps working — or never rests — sees completions too late
+ * to act on them while the queue accumulates.
+ */
+describe("all lifecycle notices steer", () => {
 	function capture(task: Partial<TaskSnapshot>, kind: Kind) {
 		const sent: { body: string; deliverAs?: string }[] = [];
 		const pi = {
@@ -46,8 +50,8 @@ describe("failure notices steer, everything else queues", () => {
 		expect(capture({ finalText: "", error: "Model not found: nope/x" }, "failed")?.deliverAs).toBe("steer");
 	});
 
-	test("completed and aborted stay queued as follow-ups", () => {
-		expect(capture({ finalText: "done" }, "completed")?.deliverAs).toBe("followUp");
-		expect(capture({ error: "cancelled" }, "aborted")?.deliverAs).toBe("followUp");
+	test("completed and aborted steer as well, so the leader sees them mid-turn", () => {
+		expect(capture({ finalText: "done" }, "completed")?.deliverAs).toBe("steer");
+		expect(capture({ error: "cancelled" }, "aborted")?.deliverAs).toBe("steer");
 	});
 });

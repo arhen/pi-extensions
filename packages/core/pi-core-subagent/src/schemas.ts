@@ -54,7 +54,7 @@ export const SubagentParams = Type.Object({
 	),
 	notifyPerTask: Type.Optional(
 		Type.Boolean({
-			description: "Wake you (queued follow-up turn) as each task completes. Default true.",
+			description: "Wake you (steering message) as each task completes. Default true.",
 			default: true,
 		}),
 	),
