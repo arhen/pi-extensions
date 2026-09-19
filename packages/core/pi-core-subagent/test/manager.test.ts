@@ -12,6 +12,7 @@ import {
 	SubagentManager,
 	validateThinking,
 } from "../src/manager.ts";
+import type { ModelPreferences } from "../src/modelconfig.ts";
 
 const stubPi = { events: { emit() {} }, sendUserMessage() {} } as unknown as ExtensionAPI;
 /** One fixture model, so every spawn in these scheduler tests can name a model it resolves against. */
@@ -716,5 +717,158 @@ describe("catalog is scoped to enabled models, with pricing", () => {
 		const catalog = listSelectableModels(ctx);
 		expect(catalog.scope).toBe("session");
 		expect(catalog.unavailable).toBe("the session's enabled models could not be resolved");
+	});
+});
+
+describe("preferences integrate with the catalog", () => {
+	test("hidden models are absent and the count explains why", () => {
+		const out = renderModelCatalog({
+			models: [
+				{
+					reference: "openai-codex/gpt-5.6-luna",
+					provider: "openai-codex",
+					id: "gpt-5.6-luna",
+					name: "Luna",
+					reasoning: true,
+					thinkingLevels: ["off"],
+					contextWindow: 1,
+					cost: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0 },
+				},
+			],
+			scope: "session",
+			hidden: 3,
+		});
+		expect(out.content[0]!.text).toContain("3 more model(s) are enabled but hidden by your model preferences");
+	});
+
+	test("a suggested default is offered as a preference, not a rule", () => {
+		const out = renderModelCatalog({
+			models: [
+				{
+					reference: "a/one",
+					provider: "a",
+					id: "one",
+					name: "One",
+					reasoning: false,
+					thinkingLevels: ["off"],
+					contextWindow: 1,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+			],
+			scope: "session",
+			preferredDefault: "a/one",
+		});
+		expect(out.content[0]!.text).toContain('suggests `model: "a/one"`');
+		expect(out.content[0]!.text).toContain("not a requirement");
+	});
+
+	test("a broken preferences file is reported, not silently ignored", () => {
+		const out = renderModelCatalog({
+			models: [
+				{
+					reference: "a/one",
+					provider: "a",
+					id: "one",
+					name: "One",
+					reasoning: false,
+					thinkingLevels: ["off"],
+					contextWindow: 1,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				},
+			],
+			scope: "session",
+			configError: "/x/subagent-models.json: unknown key(s): typo",
+		});
+		expect(out.content[0]!.text).toContain("WARNING: the model preferences file could not be used");
+		expect(out.content[0]!.text).toContain("unknown key(s): typo");
+	});
+
+	test("hiding every model explains the config rather than blaming credentials", () => {
+		expect(() =>
+			renderModelCatalog({
+				models: [],
+				scope: "session",
+				unavailable: "every available model is hidden by /x/subagent-models.json — unhide one or remove `hide`",
+			}),
+		).toThrow(/hidden by/);
+	});
+});
+
+describe("preferences reach the catalogue (file-to-catalog wiring)", () => {
+	const A = {
+		provider: "openai-codex",
+		id: "gpt-5.6-luna",
+		name: "Luna",
+		reasoning: true,
+		contextWindow: 1,
+		cost: { input: 0.2, output: 1.2, cacheRead: 0, cacheWrite: 0 },
+	};
+	const B = {
+		provider: "deepseek",
+		id: "deepseek-v4-pro",
+		name: "DS",
+		reasoning: true,
+		contextWindow: 1,
+		cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 },
+	};
+	const C = {
+		provider: "openai-codex",
+		id: "gpt-6-astra",
+		name: "Astra",
+		reasoning: true,
+		contextWindow: 1,
+		cost: { input: 10, output: 50, cacheRead: 0, cacheWrite: 0 },
+	};
+	const ctx = () =>
+		({
+			cwd: "/tmp",
+			hasUI: false,
+			scopedModels: [A, B, C].map((m) => ({ model: m })),
+			modelRegistry: {
+				getAvailable: () => [A, B, C],
+				find: (p: string, id: string) => [A, B, C].find((m) => m.provider === p && m.id === id),
+			},
+		}) as unknown as ExtensionContext;
+	const prefs = (o: Partial<ModelPreferences>): ModelPreferences => ({ prefer: [], hide: [], path: "test", ...o });
+
+	test("a hide pattern removes the model from the catalogue the tool returns", () => {
+		// Without this wiring the pure functions pass while the tool still shows hidden models.
+		const catalog = listSelectableModels(ctx(), prefs({ hide: ["openai-codex/gpt-6-astra"] }));
+		expect(catalog.models.map((m) => m.reference)).toEqual(["openai-codex/gpt-5.6-luna", "deepseek/deepseek-v4-pro"]);
+		expect(catalog.hidden).toBe(1);
+	});
+
+	test("a prefer pattern reorders the catalogue the tool returns", () => {
+		const catalog = listSelectableModels(ctx(), prefs({ prefer: ["openai-codex"] }));
+		expect(catalog.models.map((m) => m.reference)).toEqual([
+			"openai-codex/gpt-5.6-luna",
+			"openai-codex/gpt-6-astra",
+			"deepseek/deepseek-v4-pro",
+		]);
+	});
+
+	test("default and configError travel from the file into the catalogue", () => {
+		const catalog = listSelectableModels(
+			ctx(),
+			prefs({ default: "openai-codex/gpt-5.6-luna", error: "unknown key(s): typo" }),
+		);
+		expect(catalog.preferredDefault).toBe("openai-codex/gpt-5.6-luna");
+		expect(catalog.configError).toContain("typo");
+		const text = renderModelCatalog(catalog).content[0]!.text;
+		expect(text).toContain("suggests");
+		expect(text).toContain("WARNING");
+	});
+
+	test("hiding every model reports the config as the cause, not missing credentials", () => {
+		const catalog = listSelectableModels(ctx(), prefs({ hide: ["*"] }));
+		expect(catalog.models).toEqual([]);
+		expect(catalog.unavailable).toContain("hidden by");
+		expect(catalog.unavailable).toContain("unhide");
+	});
+
+	test("no preferences file leaves the full enabled set intact", () => {
+		const catalog = listSelectableModels(ctx(), prefs({}));
+		expect(catalog.models).toHaveLength(3);
+		expect(catalog.hidden).toBeUndefined();
 	});
 });

@@ -291,12 +291,30 @@ export function renderModelCatalog(catalog: ModelCatalog): {
 		? `\n\nDo not pass these references: ${catalog.ambiguous.join(", ")}. ${catalog.reason}`
 		: "";
 	const faults = catalog.unresolved?.length ? `\n\n${catalog.unresolvedReason}` : "";
+	const suggestion = catalog.preferredDefault
+		? `\n\nThis configuration suggests \`model: "${catalog.preferredDefault}"\`. It is a preference, not a requirement — any listed model works.`
+		: "";
+	const hidden =
+		catalog.hidden && catalog.hidden > 0
+			? `\n\n${catalog.hidden} more model(s) are enabled but hidden by your model preferences.`
+			: "";
+	const unused = catalog.unusedPatterns?.length
+		? `\n\nNOTE: these preference patterns matched no listed model and did nothing: ${catalog.unusedPatterns.join(", ")}. They may belong to models that are not enabled in pi.`
+		: "";
+	const configError = catalog.configError
+		? `\n\nWARNING: the model preferences file could not be used (${catalog.configError}). Continuing with no preferences; fix the file to apply it.`
+		: "";
 	const heading =
 		catalog.scope === "session"
 			? `${catalog.models.length} model(s) enabled for this session. Pass the \`model\` value verbatim in each subagent task:`
 			: `${catalog.models.length} model(s) available (this session has no model scoping, so every model with usable credentials is listed). Pass the \`model\` value verbatim in each subagent task:`;
 	return {
-		content: [{ type: "text", text: `${heading}\n${lines.join("\n")}${caution}${faults}` }],
+		content: [
+			{
+				type: "text",
+				text: `${heading}\n${lines.join("\n")}${suggestion}${hidden}${unused}${caution}${faults}${configError}`,
+			},
+		],
 		details: catalog,
 	};
 }

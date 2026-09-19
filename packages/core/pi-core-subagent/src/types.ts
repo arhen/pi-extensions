@@ -105,6 +105,14 @@ export interface ModelCatalog {
 	 * so this is normally the session's own enabled set rather than every model with credentials.
 	 */
 	scope: "session" | "all";
+	/** The config's suggested model, surfaced for the caller to weigh. Never applied automatically. */
+	preferredDefault?: string;
+	/** Set when the preferences file existed but was unusable, so a typo is reported, not silent. */
+	configError?: string;
+	/** How many models the config hid, so a surprising absence is explained. */
+	hidden?: number;
+	/** Preferred/hidden patterns that matched no listed model — inert config, reported not hidden. */
+	unusedPatterns?: string[];
 	/** References that are NOT safe to pass because another model's bare id would win resolution. */
 	ambiguous?: string[];
 	/** Why the ambiguous references are unsafe, in full, so the agent can act instead of retrying blindly. */

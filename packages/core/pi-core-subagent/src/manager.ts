@@ -31,6 +31,7 @@ import {
 } from "./format.ts";
 import { applyUpstream, resolveNeeds, runWaveScheduler } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
+import { applyPreferences, loadPreferences, type ModelPreferences } from "./modelconfig.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
 import {
 	DEFAULT_CONCURRENCY,
@@ -208,7 +209,7 @@ async function probeModel(
  * `provider/id` (see `resolveChildModel`), so building the string naively would advertise a
  * reference that silently selects a different model. Anything ambiguous is reported as such.
  */
-export function listSelectableModels(ctx: ExtensionContext): ModelCatalog {
+export function listSelectableModels(ctx: ExtensionContext, preferences?: ModelPreferences): ModelCatalog {
 	if (!ctx.modelRegistry) {
 		return { models: [], scope: "all", unavailable: "this context exposes no model registry" };
 	}
@@ -261,9 +262,19 @@ export function listSelectableModels(ctx: ExtensionContext): ModelCatalog {
 			},
 		});
 	}
+	// User preferences only reorder and hide; they never grant or remove permission. A model that is
+	// enabled in pi but hidden here still spawns, because pi owns what may run. `preferences` is
+	// injectable so the file-to-catalog path is testable without touching the user's real config.
+	const prefs = preferences ?? loadPreferences(getAgentDir());
+	const { entries: shown, unusedPatterns } = applyPreferences(models, prefs);
+	const hiddenCount = models.length - shown.length;
 	return {
-		models,
+		models: shown,
 		scope,
+		...(prefs.default ? { preferredDefault: prefs.default } : {}),
+		...(prefs.error ? { configError: `${prefs.path}: ${prefs.error}` } : {}),
+		...(hiddenCount > 0 ? { hidden: hiddenCount } : {}),
+		...(unusedPatterns.length > 0 ? { unusedPatterns } : {}),
 		...(ambiguous.length > 0
 			? {
 					ambiguous,
@@ -273,12 +284,14 @@ export function listSelectableModels(ctx: ExtensionContext): ModelCatalog {
 		...(unresolved.length > 0
 			? { unresolved, unresolvedReason: `the registry could not resolve these entries: ${unresolved.join(", ")}` }
 			: {}),
-		...(models.length === 0
+		...(shown.length === 0
 			? {
 					unavailable:
-						scope === "session"
-							? "the session's enabled models could not be resolved"
-							: "no model has usable credentials",
+						models.length > 0
+							? `every available model is hidden by ${prefs.path} — unhide one or remove \`hide\``
+							: scope === "session"
+								? "the session's enabled models could not be resolved"
+								: "no model has usable credentials",
 				}
 			: {}),
 	};

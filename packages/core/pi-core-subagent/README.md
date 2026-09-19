@@ -115,6 +115,32 @@ Chain — `{previous}` is replaced with the prior agent's output:
 }
 ```
 
+## Model preferences (optional)
+
+`~/.pi/agent/subagent-models.json` lets you shape what the model sees. Every field is optional; an
+absent file means no preferences.
+
+```json
+{
+  "prefer":  ["openai-codex/*"],
+  "hide":    ["mlx-lm/*", "mesh/*"],
+  "default": "openai-codex/gpt-5.6-luna"
+}
+```
+
+- `prefer` — patterns listed first, in declaration order. Everything else follows in its original order.
+- `hide` — patterns omitted from the catalog. They are still **usable**: pi owns what may run, and a
+  hidden model still spawns if named. This is a nudge, not a gate.
+- `default` — surfaced as `This configuration suggests model: "..."`. It is never applied
+  automatically, because a substitution would make "which model ran" unknowable.
+
+A bare provider name matches its models (`"openai-codex"` = `"openai-codex/*"`); `*` matches any run
+of characters and the pattern must match the whole `provider/id`. Matching is case-insensitive.
+
+Unusable config never breaks delegation: malformed JSON or an unknown key is reported in the tool
+output and preferences are skipped. A pattern that matches no listed model is reported too, so a
+`hide` entry for a model that is not enabled does not look like it worked.
+
 ## Agent files
 
 A user agent file in an agents directory is matched by its `description` frontmatter against the spawn goal (`agent` name + `task`) — not by name. When matched, the file is **authoritative**: body = system prompt, frontmatter `model`/`tools` apply, inline `prompt`/`model` are ignored — with one exception: explicit per-call `tools`/`write` override the file's tools (the file narrows defaults, it never displaces explicit intent, and it can never widen past the leader's read/write choice). An override is surfaced on the task's notice and summary. No match → the inline on-demand definition stands. The model stays in control: it names the agent and states the goal; user files that describe that goal take over.
