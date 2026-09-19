@@ -5,6 +5,9 @@ export type RunStatus = "queued" | "running" | "awaiting_parent" | "completed" |
 export const TERMINAL: TaskStatus[] = ["completed", "failed", "aborted"];
 
 export const MAX_TASKS = 16;
+/** Run-wide parallelism limits: shared by the scheduler, its schema description, and the catalog readers. */
+export const DEFAULT_CONCURRENCY = 3;
+export const MAX_CONCURRENCY = 8;
 
 export interface UsageStats {
 	input: number;
@@ -34,7 +37,6 @@ export interface TaskSnapshot {
 	error?: string;
 	model?: string;
 	provider?: string;
-	modelNote?: string;
 	toolsNote?: string;
 	thinking?: string;
 	tools?: string[];
@@ -70,4 +72,32 @@ export interface RunDetails {
 
 export interface PendingReply {
 	resolve: (message: string) => void;
+}
+
+/** One selectable model, as the agent needs it to choose: what to pass, and what it supports. */
+export interface SelectableModel {
+	/** The value to pass as `model` ("provider/id"). */
+	reference: string;
+	provider: string;
+	id: string;
+	name: string;
+	reasoning: boolean;
+	/** Levels the runtime honors, always including "off". Never empty for a resolved model. */
+	thinkingLevels: string[];
+	/** 0 when the provider did not report one. */
+	contextWindow: number;
+}
+
+export interface ModelCatalog {
+	models: SelectableModel[];
+	/** References that are NOT safe to pass because another model's bare id would win resolution. */
+	ambiguous?: string[];
+	/** Why the ambiguous references are unsafe, in full, so the agent can act instead of retrying blindly. */
+	reason?: string;
+	/** Entries the registry itself could not resolve — a registry fault, distinct from a name collision. */
+	unresolved?: string[];
+	/** Why those entries failed, so a registry fault is never mistaken for a collision. */
+	unresolvedReason?: string;
+	/** Set when the catalog could not be read, so the agent knows it is not looking at an empty catalog. */
+	unavailable?: string;
 }

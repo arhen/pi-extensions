@@ -85,8 +85,10 @@ describe("validateThinking", () => {
 	const noReasoningModel = { id: "m", name: "m", provider: "p", reasoning: false } as never;
 	const noMapModel = { id: "m", name: "m", provider: "p", reasoning: true } as never;
 
-	test("null in thinkingLevelMap → rejected with supported list", () => {
-		expect(() => validateThinking(reasoningModel, "low")).toThrow(/not supported.*Supported: high \| max/);
+	test("null in thinkingLevelMap → rejected with the levels the runtime actually supports", () => {
+		// Supported list comes from pi's getSupportedThinkingLevels, so a null-mapped level is
+		// excluded while unmapped ones remain available at their provider defaults.
+		expect(() => validateThinking(reasoningModel, "low")).toThrow(/not supported.*Supported: /);
 	});
 	test("supported level passes", () => {
 		expect(() => validateThinking(reasoningModel, "high")).not.toThrow();
@@ -134,8 +136,12 @@ describe("resolveChildModel", () => {
 	test("resolves a bare id", () => {
 		expect(resolveChildModel(ctx, "claude-opus-5")).toBe(models[1]);
 	});
-	test("inherits the parent model when unset", () => {
+	test("a caller that already resolved the model may pass it through as the fallback", () => {
+		// Spawning never reaches this branch (createRun rejects a task with no model); resume paths
+		// may pass an undefined ref when a task predates the required-model contract.
 		expect(resolveChildModel(ctx, undefined)).toMatchObject({ provider: "parent", id: "inherited" });
+		// The name says what it does even when the parent has no model to inherit:
+		expect(resolveChildModel({ modelRegistry: undefined } as never, undefined)).toBeUndefined();
 	});
 	test("throws on unknown refs", () => {
 		expect(() => resolveChildModel(ctx, "cc/nope")).toThrow("Model not found");
@@ -176,30 +182,31 @@ describe("ensureUsableModel", () => {
 		expect(await ensureUsableModel(ctx, session, undefined)).toMatchObject({ model: session });
 		expect(probes).toBe(0);
 	});
-	test("a model that answers is kept, with no note", async () => {
+	test("a model that answers is kept", async () => {
 		const ctx = makeCtx(async () => ({ stopReason: "stop" }));
 		const out = await ensureUsableModel(ctx, other, undefined);
 		expect(out.model).toBe(other);
-		expect(out.note).toBeUndefined();
 	});
-	test("a 403 falls back to the session model and says so", async () => {
+	test("a 403 fails the task instead of substituting the session model", async () => {
 		const ctx = makeCtx(async () => ({ stopReason: "error", errorMessage: "403 MODEL_NOT_IN_PLAN" }));
-		const out = await ensureUsableModel(ctx, other, undefined);
-		expect(out.model).toBe(session);
-		expect(out.note).toContain("MODEL_NOT_IN_PLAN");
-		expect(out.note).toContain("cc/claude-opus-5");
+		// The caller named this model, so running a different one would make "which model actually
+		// ran" unknowable. Naming it back in the error is the point.
+		await expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/MODEL_NOT_IN_PLAN/);
+		// The error names the model the caller asked for, not the one it would have substituted.
+		await expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/commandcode\/claude-sonnet-5/);
+		await expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/Nothing was started/);
 	});
-	test("a thrown transport error falls back too", async () => {
+	test("a thrown transport error fails too", async () => {
 		const ctx = makeCtx(async () => {
 			throw new Error("ECONNREFUSED");
 		});
-		expect(await ensureUsableModel(ctx, other, undefined)).toMatchObject({ model: session });
+		await expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/ECONNREFUSED/);
 	});
-	test("with no session model to fall back to, an unusable model throws", async () => {
+	test("an unusable model throws whether or not a session model exists", async () => {
 		const ctx = {
 			model: undefined,
 			modelRegistry: { complete: async () => ({ stopReason: "error", errorMessage: "401" }) },
 		} as never as Parameters<typeof ensureUsableModel>[0];
-		expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/unusable/);
+		await expect(ensureUsableModel(ctx, other, undefined)).rejects.toThrow(/unusable/);
 	});
 });

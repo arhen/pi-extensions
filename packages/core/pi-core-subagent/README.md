@@ -53,7 +53,7 @@ flowchart LR
 - **Agent files respected.** A spawn goal (name + task) that matches a user agent file's `description` (`.agents/agents`, `.claude/agents`, `.pi/agents` — project then home) loads that file — body = system prompt, frontmatter `model`/`tools` apply, file `model` validated against the pi model registry. File wins over inline; no match → on-demand definition.
 - **Two toolsets, plus explicit override.** Read-only (`read, grep, find, ls` — default) or write (`read, grep, find, ls, bash, edit, write` — `write: true`); `tools:` sets an explicit per-task allowlist.
 - **In-process** — children are `AgentSession`s in the same runtime. No process spawn, no context bleed.
-- **Zero parent-context injection.** No catalog, no context hook. 7 slim tools total.
+- **Zero parent-context injection.** No catalog, no context hook. 10 slim tools total.
 - **Throttled updates** — widget/stream updates coalesce to ~6/s; no per-event deep clones.
 - **Bounded always** — a child is limited only by wall clock: explicit `maxRuntimeMs`, else the 1 h ceiling with `/subagents auto-limit on`, else the 6 h safety ceiling (default).
 
@@ -82,12 +82,13 @@ The dotted arrows are the whole point: a child may burn 200k tokens reading file
 
 ## Usage — the leader invents the agents
 
-Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: explicit `model` → agent-file `model` (validated against the pi model registry) → the parent's current model → settings default.
+Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: agent-file `model` → explicit `model` → **rejected** (a matched agent file wins, so its frontmatter overrides the inline value). There is no default model: a task that names neither is a hard error, so every task states its model choice rather than silently inheriting the leader's. Call `subagent_models` for the list of references this machine accepts.
 
 ```json
 {
   "agent": "api-reviewer",
   "prompt": "You are a strict API reviewer. Check auth, rate limiting, and error handling. Cite file:line.",
+  "model": "anthropic/claude-sonnet-4-6",
   "task": "Review src/api/upload.ts"
 }
 ```
@@ -97,8 +98,8 @@ Parallel — mixed toolsets, siblings can talk via mailbox (intercom is always o
 ```json
 {
   "tasks": [
-    { "agent": "researcher", "prompt": "You find facts. Cite paths.", "task": "Map the auth flow", "write": false },
-    { "agent": "implementer", "prompt": "You make minimal changes.", "task": "Implement POST /api/upload", "write": true }
+    { "agent": "researcher", "prompt": "You find facts. Cite paths.", "task": "Map the auth flow", "write": false, "model": "anthropic/claude-sonnet-4-6" },
+    { "agent": "implementer", "prompt": "You make minimal changes.", "task": "Implement POST /api/upload", "write": true, "model": "anthropic/claude-sonnet-4-6" }
   ]
 }
 ```
@@ -108,8 +109,8 @@ Chain — `{previous}` is replaced with the prior agent's output:
 ```json
 {
   "chain": [
-    { "agent": "planner", "prompt": "You write a step list.", "task": "Plan the change", "write": false },
-    { "agent": "doer", "prompt": "You follow the plan exactly.", "task": "Execute: {previous}", "write": true }
+    { "agent": "planner", "prompt": "You write a step list.", "task": "Plan the change", "write": false, "model": "anthropic/claude-sonnet-4-6" },
+    { "agent": "doer", "prompt": "You follow the plan exactly.", "task": "Execute: {previous}", "write": true, "model": "anthropic/claude-sonnet-4-6" }
   ]
 }
 ```
@@ -133,7 +134,7 @@ You are a strict API reviewer. Check auth, rate limiting, and error handling. Ci
 1. `.agents/agents/` then `.claude/agents/` then `.pi/agents/` in each directory from the task `cwd` up to the filesystem root (nearest ancestor wins).
 2. Home: `~/.agents/agents/` (single source) → `~/.claude/agents/` → `~/.pi/agents/`.
 
-Within a directory the file with the highest description-overlap score wins (≥2 shared meaningful tokens). A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). Files without a `description` frontmatter never match.
+Within a directory the file with the highest description-overlap score wins (≥2 shared meaningful tokens). A file `model` is validated against the pi model registry; an unknown one fails the task with the registry's message (call `subagent_models` for the accepted references). Files without a `description` frontmatter never match.
 
 ## Worktree isolation (write agents)
 
@@ -172,9 +173,9 @@ Non-git repos fall back to in-place edits.
 ```json
 {
   "tasks": [
-    { "id": "api", "agent": "api-mapper", "task": "Map every route in src/api/" },
-    { "id": "db",  "agent": "db-mapper",  "task": "Map the schema in src/db/" },
-    { "id": "doc", "agent": "writer", "needs": ["api", "db"], "write": true,
+    { "id": "api", "agent": "api-mapper", "task": "Map every route in src/api/", "model": "anthropic/claude-sonnet-4-6" },
+    { "id": "db",  "agent": "db-mapper",  "task": "Map the schema in src/db/", "model": "anthropic/claude-sonnet-4-6" },
+    { "id": "doc", "agent": "writer", "needs": ["api", "db"], "write": true, "model": "anthropic/claude-sonnet-4-6",
       "task": "Write ARCHITECTURE.md from the maps above. Verify: test -s ARCHITECTURE.md" }
   ]
 }
@@ -276,6 +277,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 {
   "agent": "auditor",
   "prompt": "You audit dependencies.",
+  "model": "anthropic/claude-sonnet-4-6",
   "task": "Audit package.json for outdated deps"
 }
 ```
@@ -288,6 +290,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 | Tool | Purpose |
 |---|---|
+| `subagent_models` | list the models this machine accepts, each with the exact `model` value to pass, its thinking levels, and context window; call it before the first spawn and after a rejection |
 | `subagent` | single / `tasks` (parallel or graph via `needs`) / `chain` (`{previous}`); every run is background — returns a runId, completion notifies you; `autoAwait:true` parks the call until the run finishes and returns the final result inline; children always carry talk tools (ask/notify/mailbox); `notifyPerTask` (default true) wakes you as each task completes |
 | `subagent_status` | live per-task snapshot (non-blocking), including each child's session file path |
 | `subagent_result` | full output of a run or one task |
@@ -299,7 +302,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 ### Per-task fields
 
-`agent` (name you invent — required), `task` (required), `prompt` (system prompt, optional — minimal default used), `write` (toolset, default read-only), plus optional `model` (`provider/model-id`), `thinking` (validated enum: `off|minimal|low|medium|high|xhigh|max`), `tools` (explicit allowlist), `cwd`, `maxRuntimeMs`, `id`, `needs` (dependency edges — see [Graph mode](#graph-mode--needs)). Top-level only: `autoAwait`, `notifyPerTask`, `concurrency`.
+`agent` (name you invent — required), `task` (required), `model` (required unless an agent file declares one — see below), `prompt` (system prompt, optional — minimal default used), `write` (toolset, default read-only), plus optional `thinking` (validated enum: `off|minimal|low|medium|high|xhigh|max`), `tools` (explicit allowlist), `cwd`, `maxRuntimeMs`, `id`, `needs` (dependency edges — see [Graph mode](#graph-mode--needs)). Top-level only: `autoAwait`, `notifyPerTask`, `concurrency`.
 
 ### Child talk tools (always on)
 
@@ -354,9 +357,9 @@ The extension has no multiplexer integration and does not want one: it exposes t
 
 ## Context budget
 
-- Parent tools: 7 schemas with short descriptions. **No catalog, no context hook** — nothing injected per request.
+- Parent tools: 10 schemas with short descriptions. **No catalog, no context hook** — nothing injected per request.
 - Background completion: 3-line notice. Full text only via `subagent_result`.
-- Children: isolated sessions; talk tools always injected; each child's prompt states its own task id and its siblings' so mailbox addressing works. Model resolution: explicit `provider/model-id` or bare id via the pi model registry → the parent's current model → settings default. Thinking levels validated against the resolved model's `thinkingLevelMap`.
+- Children: isolated sessions; talk tools always injected; each child's prompt states its own task id and its siblings' so mailbox addressing works. Model resolution: agent-file `model` → explicit `provider/model-id` or bare id via the pi model registry → otherwise the task fails. No default is applied, so delegating never silently picks a model on the caller's behalf. Thinking levels validated against the levels the runtime actually honors (`getSupportedThinkingLevels`), so a level the catalog lists is never silently clamped.
 
 ## What this is built on
 
