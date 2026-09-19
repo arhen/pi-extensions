@@ -137,7 +137,7 @@ export default function (pi: ExtensionAPI) {
 		name: "subagent_models",
 		label: "Subagent Models",
 		description:
-			"List the models a subagent task may name, each with the exact `model` value to pass. Call this before the first subagent() call, and again whenever a spawn is rejected for a missing or unusable model. Only models this machine can resolve are listed, so a `reference` shown here is a valid `model` value that will not fail as unknown. It can still be refused if a matched agent file declares a different model, or if a live credential check fails.",
+			"List the models a subagent task may name, each with the exact `model` value to pass. Call this before the first subagent() call, and again whenever a spawn is rejected for a missing or unusable model. The list is scoped to the models enabled for this session (the same set `/scoped-models` shows), with each model's price per million tokens from pi's own catalogue; when the session has no model scoping, every model with usable credentials is listed and the output says so. Every `reference` shown is a valid `model` value that will not fail as unknown. It can still be refused if a matched agent file declares a different model, or if a live credential check fails.",
 		promptSnippet: "List the models a subagent task can name, before choosing one.",
 		promptGuidelines: [
 			"Call subagent_models before the first subagent() call: every task must name a `model`, and there is no default to fall back on.",

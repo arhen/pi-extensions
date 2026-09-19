@@ -4,6 +4,7 @@ import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	MAX_TASKS,
 	type ModelCatalog,
+	type ModelPricing,
 	type RunSnapshot,
 	type RunStatus,
 	type TaskSnapshot,
@@ -253,6 +254,14 @@ export function makeNotice(run: RunSnapshot, kind: string): string {
 	return lines.join("\n");
 }
 
+/** Per-million-token rates, terse. Free/zero-cost models read as "free" rather than "$0.0000". */
+function priceTag(cost: ModelPricing): string {
+	const r = (n: number) => (n === 0 ? "free" : `$${n.toFixed(n < 0.01 ? 4 : 2)}`);
+	const parts = [`in ${r(cost.input)}`, `out ${r(cost.output)}`];
+	if (cost.cacheRead > 0) parts.push(`cache-read ${r(cost.cacheRead)}`);
+	return `${parts.join(", ")} per Mtok`;
+}
+
 /**
  * Render the model catalog as the `subagent_models` tool result. Pure, so the exact text an agent
  * receives is testable: the tool handler holds no formatting of its own.
@@ -272,6 +281,7 @@ export function renderModelCatalog(catalog: ModelCatalog): {
 		[
 			`- model: "${m.reference}"`,
 			`    ${m.name}; ${m.contextWindow > 0 ? `${m.contextWindow.toLocaleString("en-US")} context` : "context window unreported"}`,
+			`    price: ${priceTag(m.cost)}`,
 			m.reasoning
 				? `    thinking levels: ${m.thinkingLevels.join(" | ") || "none"}`
 				: `    thinking: not supported — omit it or pass "off"`,
@@ -281,13 +291,12 @@ export function renderModelCatalog(catalog: ModelCatalog): {
 		? `\n\nDo not pass these references: ${catalog.ambiguous.join(", ")}. ${catalog.reason}`
 		: "";
 	const faults = catalog.unresolved?.length ? `\n\n${catalog.unresolvedReason}` : "";
+	const heading =
+		catalog.scope === "session"
+			? `${catalog.models.length} model(s) enabled for this session. Pass the \`model\` value verbatim in each subagent task:`
+			: `${catalog.models.length} model(s) available (this session has no model scoping, so every model with usable credentials is listed). Pass the \`model\` value verbatim in each subagent task:`;
 	return {
-		content: [
-			{
-				type: "text",
-				text: `${catalog.models.length} model(s) usable for subagents. Pass the \`model\` value verbatim in each subagent task:\n${lines.join("\n")}${caution}${faults}`,
-			},
-		],
+		content: [{ type: "text", text: `${heading}\n${lines.join("\n")}${caution}${faults}` }],
 		details: catalog,
 	};
 }

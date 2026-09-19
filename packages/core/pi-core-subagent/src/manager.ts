@@ -196,7 +196,12 @@ async function probeModel(
 }
 
 /**
- * Every model a task may name, read from the same registry the spawn resolves against.
+ * Models a task may name, scoped the way pi scopes them.
+ *
+ * The list is `ctx.scopedModels` — pi's own resolution of `enabledModels` and `--models`, the same
+ * set `/scoped-models` shows — so the tool offers what this session is actually allowed to use
+ * rather than every model with credentials. When no scoping is configured pi reports an empty list;
+ * only then does this fall back to the full available catalogue.
  *
  * A reference is emitted only when it resolves back to the model it describes. Resolution is not a
  * pure `provider/id` split: a model whose bare id contains a slash can shadow another provider's
@@ -205,19 +210,22 @@ async function probeModel(
  */
 export function listSelectableModels(ctx: ExtensionContext): ModelCatalog {
 	if (!ctx.modelRegistry) {
-		return { models: [], unavailable: "this context exposes no model registry" };
+		return { models: [], scope: "all", unavailable: "this context exposes no model registry" };
 	}
-	let available: Model<Api>[];
+	const scoped = ctx.scopedModels ?? [];
+	const scope: ModelCatalog["scope"] = scoped.length > 0 ? "session" : "all";
+
+	let candidate: Model<Api>[];
 	try {
-		available = ctx.modelRegistry.getAvailable() ?? [];
+		candidate = scoped.length > 0 ? scoped.map((s) => s.model) : (ctx.modelRegistry.getAvailable() ?? []);
 	} catch (err) {
-		return { models: [], unavailable: err instanceof Error ? err.message : String(err) };
+		return { models: [], scope, unavailable: err instanceof Error ? err.message : String(err) };
 	}
 
 	const models: SelectableModel[] = [];
 	const ambiguous: string[] = [];
 	const unresolved: string[] = [];
-	for (const m of available) {
+	for (const m of candidate) {
 		const reference = `${m.provider}/${m.id}`;
 		let resolved: Model<Api> | undefined;
 		let lookupError: string | undefined;
@@ -245,10 +253,17 @@ export function listSelectableModels(ctx: ExtensionContext): ModelCatalog {
 			reasoning: Boolean(m.reasoning),
 			thinkingLevels: supportedThinkingLevels(m),
 			contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : 0,
+			cost: {
+				input: m.cost?.input ?? 0,
+				output: m.cost?.output ?? 0,
+				cacheRead: m.cost?.cacheRead ?? 0,
+				cacheWrite: m.cost?.cacheWrite ?? 0,
+			},
 		});
 	}
 	return {
 		models,
+		scope,
 		...(ambiguous.length > 0
 			? {
 					ambiguous,
@@ -258,7 +273,14 @@ export function listSelectableModels(ctx: ExtensionContext): ModelCatalog {
 		...(unresolved.length > 0
 			? { unresolved, unresolvedReason: `the registry could not resolve these entries: ${unresolved.join(", ")}` }
 			: {}),
-		...(models.length === 0 ? { unavailable: "no model has usable credentials" } : {}),
+		...(models.length === 0
+			? {
+					unavailable:
+						scope === "session"
+							? "the session's enabled models could not be resolved"
+							: "no model has usable credentials",
+				}
+			: {}),
 	};
 }
 

@@ -410,10 +410,12 @@ describe("resumeTask", () => {
 });
 
 describe("listSelectableModels", () => {
+	/** No `scopedModels`: exercises the unscoped fallback to the full available catalogue. */
 	const withRegistry = (models: any[], extra: Record<string, unknown> = {}) =>
 		({
 			cwd: "/tmp",
 			hasUI: false,
+			scopedModels: [],
 			modelRegistry: {
 				getAvailable: () => models,
 				find: (p: string, id: string) => models.find((m) => m.provider === p && m.id === id),
@@ -475,6 +477,7 @@ describe("catalog truthfulness (regressions)", () => {
 			cwd: "/tmp",
 			hasUI: false,
 			model: undefined,
+			scopedModels: [],
 			modelRegistry: {
 				getAvailable: () => models,
 				find: (p: string, id: string) => models.find((m) => m.provider === p && m.id === id),
@@ -575,10 +578,10 @@ describe("registry faults are not misreported as collisions", () => {
 	test("an empty catalog throws, because the SDK drops a returned isError", () => {
 		// pi-agent-core returns {isError:false} for any execute that does not throw, so a returned
 		// flag would present an unusable catalog as success. The renderer must throw instead.
-		expect(() => renderModelCatalog({ models: [], unavailable: "no model has usable credentials" })).toThrow(
-			/no model has usable credentials/,
-		);
-		expect(() => renderModelCatalog({ models: [] })).toThrow(/registry returned no models/);
+		expect(() =>
+			renderModelCatalog({ models: [], scope: "all", unavailable: "no model has usable credentials" }),
+		).toThrow(/no model has usable credentials/);
+		expect(() => renderModelCatalog({ models: [], scope: "all" })).toThrow(/registry returned no models/);
 	});
 
 	test("a registry fault is reported as unavailable, not as a name collision", () => {
@@ -624,5 +627,94 @@ describe("model choice has one owner (DRY)", () => {
 		const src = readFileSync(new URL("../src/manager.ts", import.meta.url), "utf8");
 		expect(src).not.toMatch(/file\?\.model \?\? input\.model/);
 		expect(src.match(/chooseModel\(/g)?.length ?? 0).toBeGreaterThanOrEqual(3); // decl + 2 call sites
+	});
+});
+
+describe("catalog is scoped to enabled models, with pricing", () => {
+	const A = {
+		provider: "a",
+		id: "one",
+		name: "A One",
+		reasoning: true,
+		contextWindow: 100,
+		cost: { input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 },
+	};
+	const B = {
+		provider: "b",
+		id: "two",
+		name: "B Two",
+		reasoning: false,
+		contextWindow: 200,
+		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+	};
+	const scopedCtx = (all: any[], scoped: any[]) =>
+		({
+			cwd: "/tmp",
+			hasUI: false,
+			scopedModels: scoped.map((m) => ({ model: m })),
+			modelRegistry: {
+				getAvailable: () => all,
+				find: (p: string, id: string) => all.find((m) => m.provider === p && m.id === id),
+			},
+		}) as unknown as ExtensionContext;
+
+	test("lists only the session's enabled models, not every available one", () => {
+		// This is the scope rule: pi resolves enabledModels into scopedModels, so a model with
+		// usable credentials but not enabled must not be offered.
+		const catalog = listSelectableModels(scopedCtx([A, B], [A]));
+		expect(catalog.scope).toBe("session");
+		expect(catalog.models.map((m) => m.reference)).toEqual(["a/one"]);
+	});
+
+	test("falls back to all available models only when nothing is scoped", () => {
+		const catalog = listSelectableModels(scopedCtx([A, B], []));
+		expect(catalog.scope).toBe("all");
+		expect(catalog.models.map((m) => m.reference)).toEqual(["a/one", "b/two"]);
+	});
+
+	test("pricing comes from pi's own cost data", () => {
+		const catalog = listSelectableModels(scopedCtx([A, B], [A, B]));
+		expect(catalog.models[0]!.cost).toEqual({ input: 0.14, output: 0.28, cacheRead: 0.0028, cacheWrite: 0 });
+		expect(catalog.models[1]!.cost).toEqual({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 });
+	});
+
+	test("a missing cost object degrades to zeros rather than crashing", () => {
+		const catalog = listSelectableModels(scopedCtx([{ provider: "a", id: "free", name: "F", reasoning: true }], []));
+		expect(catalog.models[0]!.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+	});
+
+	test("the rendered catalog states the scope and shows a price per model", () => {
+		const scoped = renderModelCatalog(listSelectableModels(scopedCtx([A, B], [A])));
+		const text = scoped.content[0]!.text;
+		expect(text).toContain("1 model(s) enabled for this session");
+		expect(text).toContain("price: in $0.14, out $0.28, cache-read $0.0028 per Mtok");
+
+		const all = renderModelCatalog(listSelectableModels(scopedCtx([A, B], [])));
+		expect(all.content[0]!.text).toContain("no model scoping");
+	});
+
+	test("a zero-cost model reads as free, not as $0.0000", () => {
+		const free = {
+			provider: "a",
+			id: "free",
+			name: "Free",
+			reasoning: true,
+			contextWindow: 1,
+			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		};
+		const out = renderModelCatalog(listSelectableModels(scopedCtx([free], [free])));
+		expect(out.content[0]!.text).toContain("price: in free, out free per Mtok");
+	});
+
+	test("an empty scoped set that cannot resolve reports the scoping, not an empty catalogue", () => {
+		const ctx = {
+			cwd: "/tmp",
+			hasUI: false,
+			scopedModels: [{ model: { provider: "x", id: "gone" } }],
+			modelRegistry: { getAvailable: () => [], find: () => undefined },
+		} as unknown as ExtensionContext;
+		const catalog = listSelectableModels(ctx);
+		expect(catalog.scope).toBe("session");
+		expect(catalog.unavailable).toBe("the session's enabled models could not be resolved");
 	});
 });
