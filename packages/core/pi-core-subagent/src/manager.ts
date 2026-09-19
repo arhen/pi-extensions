@@ -3,6 +3,7 @@ import { rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { getSupportedThinkingLevels } from "@earendil-works/pi-ai/compat";
 import {
 	type AgentSessionEvent,
 	createAgentSession,
@@ -30,14 +31,19 @@ import {
 } from "./format.ts";
 import { applyUpstream, resolveNeeds, runWaveScheduler } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
+import { applyPreferences, loadPreferences, type ModelPreferences } from "./modelconfig.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
 import {
+	DEFAULT_CONCURRENCY,
+	MAX_CONCURRENCY,
 	MAX_TASKS,
+	type ModelCatalog,
 	type PendingReply,
 	type RunDetails,
 	type RunMode,
 	type RunSnapshot,
 	type RunStatus,
+	type SelectableModel,
 	type TaskSnapshot,
 	type TaskStatus,
 	TERMINAL,
@@ -55,8 +61,6 @@ import {
 	type Worktree,
 } from "./worktree.ts";
 
-export const DEFAULT_CONCURRENCY = 3;
-export const MAX_CONCURRENCY = 8;
 const DEFAULT_RUNTIME_MS = 3_600_000;
 const UNLIMITED_RUNTIME_MS = 21_600_000;
 const PARENT_REPLY_TIMEOUT_MS = 600_000;
@@ -136,6 +140,24 @@ function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): 
 export function cloneRun(run: RunSnapshot): RunSnapshot {
 	return JSON.parse(JSON.stringify(run)) as RunSnapshot;
 }
+interface ModelChoice {
+	/** The reference to resolve, or undefined when the caller named none. */
+	requested: string | undefined;
+	/** Set when an agent file supplied the model, so messages can say where it came from. */
+	sourceFile?: string;
+}
+/**
+ * Single owner of the model-precedence rule: a matched agent file's `model` wins over the inline
+ * one. Both the pre-creation check and the spawn resolve through this, so the two can never disagree
+ * about whether a model was supplied.
+ */
+export function chooseModel(
+	file: { model?: string; path?: string } | undefined,
+	inline: string | undefined,
+): ModelChoice {
+	const fromFile = file?.model?.trim();
+	return fromFile ? { requested: fromFile, sourceFile: file?.path } : { requested: inline };
+}
 export function resolveChildModel(ctx: ExtensionContext, explicit: string | undefined) {
 	if (!explicit?.trim()) return ctx.model;
 	const ref = explicit.trim();
@@ -174,21 +196,132 @@ async function probeModel(
 	}
 }
 
+/**
+ * Models a task may name, scoped the way pi scopes them.
+ *
+ * The list is `ctx.scopedModels` — pi's own resolution of `enabledModels` and `--models`, the same
+ * set `/scoped-models` shows — so the tool offers what this session is actually allowed to use
+ * rather than every model with credentials. When no scoping is configured pi reports an empty list;
+ * only then does this fall back to the full available catalogue.
+ *
+ * A reference is emitted only when it resolves back to the model it describes. Resolution is not a
+ * pure `provider/id` split: a model whose bare id contains a slash can shadow another provider's
+ * `provider/id` (see `resolveChildModel`), so building the string naively would advertise a
+ * reference that silently selects a different model. Anything ambiguous is reported as such.
+ */
+export function listSelectableModels(ctx: ExtensionContext, preferences?: ModelPreferences): ModelCatalog {
+	if (!ctx.modelRegistry) {
+		return { models: [], scope: "all", unavailable: "this context exposes no model registry" };
+	}
+	const scoped = ctx.scopedModels ?? [];
+	const scope: ModelCatalog["scope"] = scoped.length > 0 ? "session" : "all";
+
+	let candidate: Model<Api>[];
+	try {
+		candidate = scoped.length > 0 ? scoped.map((s) => s.model) : (ctx.modelRegistry.getAvailable() ?? []);
+	} catch (err) {
+		return { models: [], scope, unavailable: err instanceof Error ? err.message : String(err) };
+	}
+
+	const models: SelectableModel[] = [];
+	const ambiguous: string[] = [];
+	const unresolved: string[] = [];
+	for (const m of candidate) {
+		const reference = `${m.provider}/${m.id}`;
+		let resolved: Model<Api> | undefined;
+		let lookupError: string | undefined;
+		try {
+			resolved = resolveChildModel(ctx, reference);
+		} catch (err) {
+			resolved = undefined;
+			lookupError = err instanceof Error ? err.message : String(err);
+		}
+		if (!resolved) {
+			// A failed lookup is a registry fault, not a name collision. Do not conflate the two: the
+			// caller's fix differs (repair the registry vs. pick a different reference).
+			unresolved.push(lookupError ? `${reference} (${lookupError})` : reference);
+			continue;
+		}
+		if (resolved.provider !== m.provider || resolved.id !== m.id) {
+			ambiguous.push(reference);
+			continue;
+		}
+		models.push({
+			reference,
+			provider: m.provider,
+			id: m.id,
+			name: m.name ?? m.id,
+			reasoning: Boolean(m.reasoning),
+			thinkingLevels: supportedThinkingLevels(m),
+			contextWindow: typeof m.contextWindow === "number" ? m.contextWindow : 0,
+			cost: {
+				input: m.cost?.input ?? 0,
+				output: m.cost?.output ?? 0,
+				cacheRead: m.cost?.cacheRead ?? 0,
+				cacheWrite: m.cost?.cacheWrite ?? 0,
+			},
+		});
+	}
+	// User preferences only reorder and hide; they never grant or remove permission. A model that is
+	// enabled in pi but hidden here still spawns, because pi owns what may run. `preferences` is
+	// injectable so the file-to-catalog path is testable without touching the user's real config.
+	const prefs = preferences ?? loadPreferences(getAgentDir());
+	const { entries: shown, unusedPatterns } = applyPreferences(models, prefs);
+	const hiddenCount = models.length - shown.length;
+	return {
+		models: shown,
+		scope,
+		...(prefs.default ? { preferredDefault: prefs.default } : {}),
+		...(prefs.error ? { configError: `${prefs.path}: ${prefs.error}` } : {}),
+		...(hiddenCount > 0 ? { hidden: hiddenCount } : {}),
+		...(unusedPatterns.length > 0 ? { unusedPatterns } : {}),
+		...(ambiguous.length > 0
+			? {
+					ambiguous,
+					reason: `these references resolve to a different model because another model's bare id matches them: ${ambiguous.join(", ")}`,
+				}
+			: {}),
+		...(unresolved.length > 0
+			? { unresolved, unresolvedReason: `the registry could not resolve these entries: ${unresolved.join(", ")}` }
+			: {}),
+		...(shown.length === 0
+			? {
+					unavailable:
+						models.length > 0
+							? `every available model is hidden by ${prefs.path} — unhide one or remove \`hide\``
+							: scope === "session"
+								? "the session's enabled models could not be resolved"
+								: "no model has usable credentials",
+				}
+			: {}),
+	};
+}
+
+/** Names what the caller can pass, and the one call that lists them. Never hides the failure. */
+function modelHint(ctx: ExtensionContext): string {
+	const { models, unavailable } = listSelectableModels(ctx);
+	if (models.length === 0)
+		return ` Call subagent_models for the list${unavailable ? ` (currently unavailable: ${unavailable})` : ""}.`;
+	const shown = models.slice(0, 8).map((m) => m.reference);
+	const more = models.length > shown.length ? `, +${models.length - shown.length} more` : "";
+	return ` Call subagent_models for the full list. Available now: ${shown.join(", ")}${more}.`;
+}
+
 export async function ensureUsableModel(
 	ctx: ExtensionContext,
 	model: Model<Api> | undefined,
 	signal: AbortSignal | undefined,
-): Promise<{ model: Model<Api> | undefined; note?: string }> {
+): Promise<{ model: Model<Api> | undefined }> {
 	const session = ctx.model;
 	if (!model || !ctx.modelRegistry) return { model };
 	if (session && model.provider === session.provider && model.id === session.id) return { model };
 	const error = await probeModel(ctx, model, signal);
 	if (!error) return { model };
-	if (!session) throw new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`);
-	return {
-		model: session,
-		note: `${model.provider}/${model.id} failed preflight (${error}); using session model ${session.provider}/${session.id}`,
-	};
+	// Fail rather than substitute: the caller named this model, so silently running the session model
+	// would make "which model actually ran" unknowable. Naming it back makes the choice actionable.
+	throw new Error(
+		`Model ${model.provider}/${model.id} is unusable: ${error}. Nothing was started — retry, or name a different model.`,
+	);
 }
 
 async function createChildModelRuntime(ctx: ExtensionContext) {
@@ -212,19 +345,31 @@ async function createChildModelRuntime(ctx: ExtensionContext) {
 	return runtime;
 }
 
+/**
+ * The thinking levels a model actually honors at runtime. Delegated to pi's own resolver so the
+ * catalog cannot promise a level the runtime would silently clamp: `xhigh`/`max` count only when
+ * explicitly mapped, and `clampThinkingLevel` downgrades an unmapped level without erroring.
+ */
+export function supportedThinkingLevels(model: Model<Api> | undefined): string[] {
+	if (!model) return [];
+	const levels = [...getSupportedThinkingLevels(model)];
+	// "off" is always accepted (validateThinking returns early on it), so never omit it from the
+	// advertised set even when the model maps it to null.
+	return levels.includes("off") ? levels : ["off", ...levels];
+}
+
 export function validateThinking(model: Model<Api> | undefined, level: string | undefined): void {
-	if (!level || level === "off") return;
+	// An absent or non-string level is not a request to reason: nothing to validate, nothing to clamp.
+	if (typeof level !== "string" || !level || level === "off" || level === "undefined") return;
 	if (!model) return;
-	const map = model.thinkingLevelMap;
-	if (map && level in map && map[level as keyof typeof map] === null) {
-		const supported = Object.keys(map).filter((k) => map[k as keyof typeof map] !== null);
-		throw new Error(
-			`Thinking level "${level}" is not supported by ${model.provider}/${model.id}. Supported: ${supported.length ? supported.join(" | ") : 'none — use thinking: "off"'}.`,
-		);
-	}
+	const supported = supportedThinkingLevels(model);
 	if (!model.reasoning) {
 		throw new Error(`Model ${model.provider}/${model.id} does not support thinking. Use thinking: "off".`);
 	}
+	if (supported.includes(level)) return;
+	throw new Error(
+		`Thinking level "${level}" is not supported by ${model.provider}/${model.id}. Supported: ${supported.join(" | ")}.`,
+	);
 }
 
 interface ResumeInput {
@@ -739,17 +884,13 @@ export class SubagentManager {
 
 		let model: Model<Api> | undefined;
 		try {
-			model = resolveChildModel(ctx, file?.model ?? input.model);
+			model = resolveChildModel(ctx, chooseModel(file, input.model).requested);
 			validateThinking(model, thinking);
 
 			const checked = await ensureUsableModel(ctx, model, signal);
 			model = checked.model;
-			if (checked.note) {
-				task.modelNote = checked.note;
-				validateThinking(model, thinking);
-			}
 
-			if (model) this.updateTask(run, task, { model: model.id, modelNote: checked.note }, ctx, onUpdate);
+			if (model) this.updateTask(run, task, { model: model.id }, ctx, onUpdate);
 		} catch (err) {
 			this.updateTask(
 				run,
@@ -1126,12 +1267,17 @@ export class SubagentManager {
 			const input = inputs[i] as TaskInput;
 			const cwd = input.cwd ?? ctx.cwd;
 			const file = resolveAgentFile(input.agent, input.task, cwd, getAgentDir());
-			const requested = file?.model ?? input.model;
+			const choice = chooseModel(file, input.model);
+			if (!choice.requested?.trim()) {
+				throw new Error(
+					`Task ${input.id ?? `task_${i + 1}`} (${input.agent}): no model specified. Every subagent task must name its model explicitly — neither \`model\` nor an agent-file \`model\` was given. Pass \`model: "<provider>/<id>"\` per task.${modelHint(ctx)}`,
+				);
+			}
 			try {
-				validateThinking(resolveChildModel(ctx, requested), input.thinking);
+				validateThinking(resolveChildModel(ctx, choice.requested), input.thinking);
 			} catch (err) {
-				const where = file?.model
-					? ` (from agent file ${file.path}, which overrides the requested model${input.model ? ` "${input.model}"` : ""})`
+				const where = choice.sourceFile
+					? ` (from agent file ${choice.sourceFile}, which overrides the requested model${input.model ? ` "${input.model}"` : ""})`
 					: "";
 				throw new Error(
 					`Task ${input.id ?? `task_${i + 1}`} (${input.agent}): ${err instanceof Error ? err.message : String(err)}${where}`,
@@ -1353,6 +1499,15 @@ export class SubagentManager {
 
 		const tools = task.tools?.filter((t) => !(CHILD_TALK_TOOLS as readonly string[]).includes(t));
 		const write = tools?.some((t) => WRITE_CAPABLE.includes(t)) ?? false;
+		// Resume is a second way to start a run, so the explicit-model contract is enforced here too:
+		// a settled task with no recorded model must not silently inherit the session model.
+		const resumedModel = opts.model ?? task.model;
+		if (!resumedModel?.trim()) {
+			return {
+				ok: false,
+				reason: `${taskId} has no model recorded and none was supplied. Pass \`model: "<provider>/<id>"\` to resume — there is no default model.${modelHint(ctx)}`,
+			};
+		}
 		const input: TaskInput = {
 			id: task.id,
 			agent: task.agent,
@@ -1360,7 +1515,7 @@ export class SubagentManager {
 			cwd: task.cwd,
 			write,
 			tools: tools?.length ? tools : undefined,
-			model: opts.model ?? task.model,
+			model: resumedModel,
 			thinking: task.thinking as TaskInput["thinking"],
 			needs: task.needs,
 		};

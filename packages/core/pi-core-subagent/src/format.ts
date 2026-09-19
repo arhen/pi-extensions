@@ -3,6 +3,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	MAX_TASKS,
+	type ModelCatalog,
+	type ModelPricing,
 	type RunSnapshot,
 	type RunStatus,
 	type TaskSnapshot,
@@ -211,10 +213,9 @@ export function makeSummary(run: RunSnapshot): string {
 	for (const task of run.tasks) {
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
-		const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
 		const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
 		lines.push(
-			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${tools}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
+			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${tools}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
 		);
 	}
 
@@ -231,11 +232,10 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 		: "";
 
 	const src = task.agentFile ? `\nAgent file: ${task.agentFile}${task.model ? ` (model ${task.model})` : ""}` : "";
-	const swap = task.modelNote ? `\nModel: ${task.modelNote}` : "";
 	const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
 	return [
 		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}${wt}`,
-		`Goal: ${goal}${src}${swap}${tools}`,
+		`Goal: ${goal}${src}${tools}`,
 		isStartupFailure(task, kind)
 			? "Never started — stop and diagnose before spawning anything else: a config-level error (model, plan, auth, agent file) fails identically on every respawn."
 			: kind === "completed"
@@ -252,4 +252,69 @@ export function makeNotice(run: RunSnapshot, kind: string): string {
 	}
 	lines.push(`Use subagent_result(runId: "${run.id}") for full output.`);
 	return lines.join("\n");
+}
+
+/** Per-million-token rates, terse. Free/zero-cost models read as "free" rather than "$0.0000". */
+function priceTag(cost: ModelPricing): string {
+	const r = (n: number) => (n === 0 ? "free" : `$${n.toFixed(n < 0.01 ? 4 : 2)}`);
+	const parts = [`in ${r(cost.input)}`, `out ${r(cost.output)}`];
+	if (cost.cacheRead > 0) parts.push(`cache-read ${r(cost.cacheRead)}`);
+	return `${parts.join(", ")} per Mtok`;
+}
+
+/**
+ * Render the model catalog as the `subagent_models` tool result. Pure, so the exact text an agent
+ * receives is testable: the tool handler holds no formatting of its own.
+ */
+export function renderModelCatalog(catalog: ModelCatalog): {
+	content: { type: "text"; text: string }[];
+	details: ModelCatalog;
+} {
+	if (catalog.models.length === 0) {
+		// Throw rather than return isError: the SDK's tool loop reports isError:false for any execute
+		// that does not throw (pi-agent-core agent-loop.js), so a returned flag would surface as success.
+		throw new Error(
+			`No model can be used for subagents: ${catalog.unavailable ?? "the registry returned no models"}. This is not an empty catalog — pass an explicit \`model\` or fix model configuration before spawning; a task without one is rejected.`,
+		);
+	}
+	const lines = catalog.models.map((m) =>
+		[
+			`- model: "${m.reference}"`,
+			`    ${m.name}; ${m.contextWindow > 0 ? `${m.contextWindow.toLocaleString("en-US")} context` : "context window unreported"}`,
+			`    price: ${priceTag(m.cost)}`,
+			m.reasoning
+				? `    thinking levels: ${m.thinkingLevels.join(" | ") || "none"}`
+				: `    thinking: not supported — omit it or pass "off"`,
+		].join("\n"),
+	);
+	const caution = catalog.ambiguous?.length
+		? `\n\nDo not pass these references: ${catalog.ambiguous.join(", ")}. ${catalog.reason}`
+		: "";
+	const faults = catalog.unresolved?.length ? `\n\n${catalog.unresolvedReason}` : "";
+	const suggestion = catalog.preferredDefault
+		? `\n\nThis configuration suggests \`model: "${catalog.preferredDefault}"\`. It is a preference, not a requirement — any listed model works.`
+		: "";
+	const hidden =
+		catalog.hidden && catalog.hidden > 0
+			? `\n\n${catalog.hidden} more model(s) are enabled but hidden by your model preferences.`
+			: "";
+	const unused = catalog.unusedPatterns?.length
+		? `\n\nNOTE: these preference patterns matched no listed model and did nothing: ${catalog.unusedPatterns.join(", ")}. They may belong to models that are not enabled in pi.`
+		: "";
+	const configError = catalog.configError
+		? `\n\nWARNING: the model preferences file could not be used (${catalog.configError}). Continuing with no preferences; fix the file to apply it.`
+		: "";
+	const heading =
+		catalog.scope === "session"
+			? `${catalog.models.length} model(s) enabled for this session. Pass the \`model\` value verbatim in each subagent task:`
+			: `${catalog.models.length} model(s) available (this session has no model scoping, so every model with usable credentials is listed). Pass the \`model\` value verbatim in each subagent task:`;
+	return {
+		content: [
+			{
+				type: "text",
+				text: `${heading}\n${lines.join("\n")}${suggestion}${hidden}${unused}${caution}${faults}${configError}`,
+			},
+		],
+		details: catalog,
+	};
 }

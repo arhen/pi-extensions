@@ -5,6 +5,9 @@ export type RunStatus = "queued" | "running" | "awaiting_parent" | "completed" |
 export const TERMINAL: TaskStatus[] = ["completed", "failed", "aborted"];
 
 export const MAX_TASKS = 16;
+/** Run-wide parallelism limits: shared by the scheduler, its schema description, and the catalog readers. */
+export const DEFAULT_CONCURRENCY = 3;
+export const MAX_CONCURRENCY = 8;
 
 export interface UsageStats {
 	input: number;
@@ -34,7 +37,6 @@ export interface TaskSnapshot {
 	error?: string;
 	model?: string;
 	provider?: string;
-	modelNote?: string;
 	toolsNote?: string;
 	thinking?: string;
 	tools?: string[];
@@ -70,4 +72,55 @@ export interface RunDetails {
 
 export interface PendingReply {
 	resolve: (message: string) => void;
+}
+
+/** Per-million-token USD rates, as pi reports them. */
+export interface ModelPricing {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+}
+
+/** One selectable model, as the agent needs it to choose: what to pass, what it supports, what it costs. */
+export interface SelectableModel {
+	/** The value to pass as `model` ("provider/id"). */
+	reference: string;
+	provider: string;
+	id: string;
+	name: string;
+	reasoning: boolean;
+	/** Levels the runtime honors, always including "off". Never empty for a resolved model. */
+	thinkingLevels: string[];
+	/** 0 when the provider did not report one. */
+	contextWindow: number;
+	/** Per-million-token USD rates from pi's own model catalogue. */
+	cost: ModelPricing;
+}
+
+export interface ModelCatalog {
+	models: SelectableModel[];
+	/**
+	 * What the list was scoped to. pi resolves `enabledModels` (and `--models`) into scoped models,
+	 * so this is normally the session's own enabled set rather than every model with credentials.
+	 */
+	scope: "session" | "all";
+	/** The config's suggested model, surfaced for the caller to weigh. Never applied automatically. */
+	preferredDefault?: string;
+	/** Set when the preferences file existed but was unusable, so a typo is reported, not silent. */
+	configError?: string;
+	/** How many models the config hid, so a surprising absence is explained. */
+	hidden?: number;
+	/** Preferred/hidden patterns that matched no listed model — inert config, reported not hidden. */
+	unusedPatterns?: string[];
+	/** References that are NOT safe to pass because another model's bare id would win resolution. */
+	ambiguous?: string[];
+	/** Why the ambiguous references are unsafe, in full, so the agent can act instead of retrying blindly. */
+	reason?: string;
+	/** Entries the registry itself could not resolve — a registry fault, distinct from a name collision. */
+	unresolved?: string[];
+	/** Why those entries failed, so a registry fault is never mistaken for a collision. */
+	unresolvedReason?: string;
+	/** Set when the catalog could not be read, so the agent knows it is not looking at an empty catalog. */
+	unavailable?: string;
 }
