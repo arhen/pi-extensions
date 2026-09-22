@@ -4,8 +4,11 @@ import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@earendil-works/pi-ai";
+import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { MarkdownTheme, TUI } from "@earendil-works/pi-tui";
 import {
 	atomicWriteFile,
+	clearMode,
 	DEFAULT_PLAN_PATH,
 	filterTools,
 	latestPlanEntry,
@@ -15,8 +18,8 @@ import {
 	resolvePlanPath,
 	validatePlanMarkdown,
 } from "./config.ts";
-import { resolveThinkingLevel, selectableModels, supportedThinkingLevels } from "./models.ts";
-import { clampOffset, parseWheelInput, sliceViewport } from "./viewer.ts";
+import { isInconclusivePreflight, resolveThinkingLevel, selectableModels, supportedThinkingLevels } from "./models.ts";
+import { clampOffset, PlanViewer, parseWheelInput, sliceViewport } from "./viewer.ts";
 
 function model(provider: string, id: string, extra: Partial<Model<any>> = {}): Model<any> {
 	return { provider, id, reasoning: false, ...extra } as unknown as Model<any>;
@@ -211,6 +214,134 @@ describe("overlay viewport math", () => {
 		expect(parseWheelInput("\u001b[<65;10;5M")).toBe(1);
 		expect(parseWheelInput("\u001b[<0;10;5M")).toBeNull();
 		expect(parseWheelInput("j")).toBeNull();
+	});
+});
+
+describe("clear config", () => {
+	const advise = { model: { provider: "anthropic", id: "claude-sonnet-4-5" } };
+	const plan = { model: { provider: "openai", id: "gpt-5" }, path: "PLAN.md" };
+
+	test("clears only the requested mode and preserves the other", () => {
+		expect(clearMode({ advise, plan }, "advise")).toEqual({ plan });
+		expect(clearMode({ advise, plan }, "plan")).toEqual({ advise });
+	});
+
+	test("returns null when nothing remains or nothing is configured", () => {
+		expect(clearMode({ advise }, "advise")).toBeNull();
+		expect(clearMode({}, "plan")).toBeNull();
+		expect(clearMode(null, "advise")).toBeNull();
+	});
+});
+
+describe("preflight classification", () => {
+	test("opencode-go session-header probe failures are inconclusive", () => {
+		expect(isInconclusivePreflight("opencode-go", "400 MissingSessionID: Request is missing x-opencode-session")).toBe(
+			true,
+		);
+		expect(isInconclusivePreflight("opencode-go", "missing X-OpenCode-Session header")).toBe(true);
+	});
+
+	test("other providers and other errors stay fatal", () => {
+		expect(isInconclusivePreflight("anthropic", "MissingSessionID: Request is missing x-opencode-session")).toBe(false);
+		expect(isInconclusivePreflight("opencode-go", "401 invalid API key")).toBe(false);
+	});
+});
+
+function makeViewerHarness(content: string): { viewer: PlanViewer; renders: () => number; closed: () => boolean } {
+	let renders = 0;
+	let closed = false;
+	const identity = (text: string): string => text;
+	const tui = {
+		terminal: { rows: 30 },
+		requestRender: () => {
+			renders += 1;
+		},
+	} as unknown as TUI;
+	const theme = { fg: (_color: string, text: string) => text } as unknown as Theme;
+	const markdownTheme: MarkdownTheme = {
+		heading: identity,
+		link: identity,
+		linkUrl: identity,
+		code: identity,
+		codeBlock: identity,
+		codeBlockBorder: identity,
+		quote: identity,
+		quoteBorder: identity,
+		hr: identity,
+		listBullet: identity,
+		bold: identity,
+		italic: identity,
+		strikethrough: identity,
+		underline: identity,
+	};
+	const viewer = new PlanViewer({
+		tui,
+		theme,
+		markdownTheme,
+		title: "Plan",
+		path: "/tmp/PLAN.md",
+		content,
+		onClose: () => {
+			closed = true;
+		},
+	});
+	viewer.render(80);
+	return { viewer, renders: () => renders, closed: () => closed };
+}
+
+function viewerOffset(viewer: PlanViewer): number {
+	return (viewer as unknown as { offset: number }).offset;
+}
+
+describe("plan viewer input", () => {
+	const content = Array.from({ length: 100 }, (_, i) => `# Heading ${i}`).join("\n");
+	const DOWN = "\x1b[B";
+	const UP = "\x1b[A";
+	const HOME = "\x1b[H";
+	const END = "\x1b[F";
+	const WHEEL_DOWN = "\u001b[<65;10;5M";
+	const WHEEL_UP = "\u001b[<64;10;5M";
+
+	test("scroll keys and wheel move the offset and request a render", () => {
+		const harness = makeViewerHarness(content);
+		harness.viewer.handleInput(DOWN);
+		expect(viewerOffset(harness.viewer)).toBe(1);
+		expect(harness.renders()).toBe(1);
+		harness.viewer.handleInput(END);
+		const maxOffset = viewerOffset(harness.viewer);
+		expect(maxOffset).toBeGreaterThan(1);
+		expect(harness.renders()).toBe(2);
+		harness.viewer.handleInput(HOME);
+		expect(viewerOffset(harness.viewer)).toBe(0);
+		expect(harness.renders()).toBe(3);
+		harness.viewer.handleInput(WHEEL_DOWN);
+		expect(viewerOffset(harness.viewer)).toBe(3);
+		expect(harness.renders()).toBe(4);
+		harness.viewer.handleInput(WHEEL_UP);
+		expect(viewerOffset(harness.viewer)).toBe(0);
+		expect(harness.renders()).toBe(5);
+	});
+
+	test("boundary no-ops and close do not request a render", () => {
+		const harness = makeViewerHarness(content);
+		harness.viewer.handleInput(UP);
+		harness.viewer.handleInput(HOME);
+		expect(viewerOffset(harness.viewer)).toBe(0);
+		expect(harness.renders()).toBe(0);
+
+		harness.viewer.handleInput(END);
+		const maxOffset = viewerOffset(harness.viewer);
+		expect(maxOffset).toBeGreaterThan(1);
+		const atEnd = harness.renders();
+		harness.viewer.handleInput(END);
+		harness.viewer.handleInput(DOWN);
+		harness.viewer.handleInput(WHEEL_DOWN);
+		expect(viewerOffset(harness.viewer)).toBe(maxOffset);
+		expect(harness.renders()).toBe(atEnd);
+
+		harness.viewer.handleInput("q");
+		expect(harness.closed()).toBe(true);
+		expect(harness.renders()).toBe(atEnd);
 	});
 });
 
