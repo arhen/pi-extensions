@@ -184,6 +184,11 @@ export async function ensureUsableModel(
 	if (session && model.provider === session.provider && model.id === session.id) return { model };
 	const error = await probeModel(ctx, model, signal);
 	if (!error) return { model };
+	if (model.provider === "opencode-go" && /MissingSessionID|x-opencode-session/i.test(error)) {
+		// ponytail: opencode-go rejects stateless probes but accepts AgentSession requests, which add the session header.
+		// Upgrade path: remove this exception when modelRegistry.complete can carry AgentSession request transforms.
+		return { model, note: `preflight unavailable (${error}); child session will validate the model` };
+	}
 	if (!session) throw new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`);
 	return {
 		model: session,
