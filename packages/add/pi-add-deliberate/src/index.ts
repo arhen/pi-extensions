@@ -21,6 +21,7 @@ import {
 	atomicWriteFile,
 	CONFIG_FILE_NAME,
 	clearConfig,
+	clearMode,
 	DEFAULT_PLAN_PATH,
 	type DeliberateConfig,
 	type DeliberateMode,
@@ -36,7 +37,13 @@ import {
 	saveConfig,
 	validatePlanMarkdown,
 } from "./config.ts";
-import { modelRef, resolveThinkingLevel, selectableModels, supportedThinkingLevels } from "./models.ts";
+import {
+	isInconclusivePreflight,
+	modelRef,
+	resolveThinkingLevel,
+	selectableModels,
+	supportedThinkingLevels,
+} from "./models.ts";
 import { PlanViewer } from "./viewer.ts";
 
 type PrepareStatus = "unconfigured" | "dependency-missing" | "model-unavailable" | "ready";
@@ -133,6 +140,22 @@ async function prepareMode(
 			{ maxTokens: 16, signal },
 		);
 		if (response.stopReason === "error" || response.stopReason === "aborted") {
+			const message = response.errorMessage ?? `preflight failed (${response.stopReason})`;
+			if (!isInconclusivePreflight(model.provider, message)) {
+				return {
+					status: "model-unavailable",
+					mode,
+					reason: "preflight-failed",
+					model: ref,
+					thinking,
+					tools,
+					message,
+				};
+			}
+		}
+	} catch (error) {
+		const message = errorText(error);
+		if (!isInconclusivePreflight(model.provider, message)) {
 			return {
 				status: "model-unavailable",
 				mode,
@@ -140,19 +163,9 @@ async function prepareMode(
 				model: ref,
 				thinking,
 				tools,
-				message: response.errorMessage ?? `preflight failed (${response.stopReason})`,
+				message: `preflight failed: ${message}`,
 			};
 		}
-	} catch (error) {
-		return {
-			status: "model-unavailable",
-			mode,
-			reason: "preflight-failed",
-			model: ref,
-			thinking,
-			tools,
-			message: `preflight failed: ${errorText(error)}`,
-		};
 	}
 
 	const status: DeliberateStatus = {
@@ -343,6 +356,37 @@ function notifyConfigureResult(ctx: ExtensionContext, result: DeliberateStatus):
 	ctx.ui.notify(result.message ?? `Deliberate ${result.mode} was not configured.`, "warning");
 }
 
+const CONFIG_USAGE = "Usage: /deliberate-config [advise|plan|status|clear [advise|plan]]";
+
+async function configureModeWithNotify(mode: DeliberateMode, ctx: ExtensionContext): Promise<void> {
+	try {
+		notifyConfigureResult(ctx, await configureMode(mode, ctx));
+	} catch (error) {
+		ctx.ui.notify(`Configure failed: ${errorText(error)}`, "error");
+	}
+}
+
+async function clearModeWithNotify(mode: DeliberateMode, ctx: ExtensionContext): Promise<void> {
+	try {
+		const agentDir = getAgentDir();
+		const next = clearMode((await loadConfig(agentDir)).config, mode);
+		if (!next) {
+			await clearConfig(agentDir);
+			ctx.ui.notify(`Cleared deliberate ${mode} mode; config is empty, removed ${CONFIG_FILE_NAME}.`, "info");
+			return;
+		}
+		await saveConfig(agentDir, next);
+		ctx.ui.notify(`Cleared deliberate ${mode} mode; the other mode is preserved.`, "info");
+	} catch (error) {
+		ctx.ui.notify(`Clear failed: ${errorText(error)}`, "error");
+	}
+}
+
+async function chooseClearMode(ctx: ExtensionContext): Promise<DeliberateMode | undefined> {
+	const choice = await ctx.ui.select("Deliberate config: clear which mode?", ["advise", "plan"]);
+	return choice === "advise" || choice === "plan" ? choice : undefined;
+}
+
 function registerSkillDispatch(pi: ExtensionAPI, command: "advise" | "plan", skill: string, description: string): void {
 	pi.registerCommand(command, {
 		description,
@@ -375,35 +419,66 @@ export default function deliberateExtension(pi: ExtensionAPI): void {
 	pi.registerCommand("deliberate-config", {
 		description: "Configure deliberate advise/plan modes (model, thinking, tools, plan path)",
 		getArgumentCompletions: (prefix) => {
-			const items = ["advise", "plan", "status", "clear"]
-				.filter((value) => value.startsWith(prefix))
-				.map((value) => ({ value, label: value }));
+			const values = prefix.trimStart().startsWith("clear ")
+				? ["clear advise", "clear plan"].filter((value) => value.startsWith(prefix))
+				: ["advise", "plan", "status", "clear"].filter((value) => value.startsWith(prefix));
+			const items = values.map((value) => ({ value, label: value }));
 			return items.length > 0 ? items : null;
 		},
 		handler: async (args, ctx) => {
-			const arg = args.trim().toLowerCase();
-			if (arg === "clear") {
-				try {
-					await clearConfig(getAgentDir());
-					ctx.ui.notify(`Cleared ${CONFIG_FILE_NAME}.`, "info");
-				} catch (error) {
-					ctx.ui.notify(`Clear failed: ${errorText(error)}`, "error");
+			const tokens = args.trim().toLowerCase().split(/\s+/).filter(Boolean);
+			const head = tokens[0] ?? "";
+			const tail = tokens[1];
+			if (!head) {
+				if (!ctx.hasUI) {
+					ctx.ui.notify(CONFIG_USAGE, "warning");
+					return;
+				}
+				const choice = await ctx.ui.select("Deliberate config", [
+					"Configure advise",
+					"Configure plan",
+					"Status",
+					"Clear mode",
+				]);
+				if (choice === "Configure advise") await configureModeWithNotify("advise", ctx);
+				else if (choice === "Configure plan") await configureModeWithNotify("plan", ctx);
+				else if (choice === "Status") await showStatus(ctx);
+				else if (choice === "Clear mode") {
+					const mode = await chooseClearMode(ctx);
+					if (mode) await clearModeWithNotify(mode, ctx);
 				}
 				return;
 			}
-			if (arg === "advise" || arg === "plan") {
-				try {
-					notifyConfigureResult(ctx, await configureMode(arg, ctx));
-				} catch (error) {
-					ctx.ui.notify(`Configure failed: ${errorText(error)}`, "error");
+			if (head === "status") {
+				if (tail) {
+					ctx.ui.notify(CONFIG_USAGE, "warning");
+					return;
 				}
+				await showStatus(ctx);
 				return;
 			}
-			if (arg && arg !== "status") {
-				ctx.ui.notify("Usage: /deliberate-config [advise|plan|status|clear]", "warning");
+			if (head === "advise" || head === "plan") {
+				if (tail) {
+					ctx.ui.notify(CONFIG_USAGE, "warning");
+					return;
+				}
+				await configureModeWithNotify(head, ctx);
 				return;
 			}
-			await showStatus(ctx);
+			if (head === "clear") {
+				if (tail === "advise" || tail === "plan") {
+					await clearModeWithNotify(tail, ctx);
+					return;
+				}
+				if (tail || !ctx.hasUI) {
+					ctx.ui.notify(CONFIG_USAGE, "warning");
+					return;
+				}
+				const mode = await chooseClearMode(ctx);
+				if (mode) await clearModeWithNotify(mode, ctx);
+				return;
+			}
+			ctx.ui.notify(CONFIG_USAGE, "warning");
 		},
 	});
 

@@ -8,7 +8,7 @@ Configured **advise** and **plan** modes for the [pi coding agent](https://githu
 - **`/advise [extra context]`** — evidence-based second opinion: best practices, common patterns, efficient approaches, deeper analysis.
 - **`/plan [extra context]`** — research-first implementation plan; never implementation. The final standalone Markdown is saved to the configured path.
 - **`/plan-view`** or **`Ctrl+Alt+P`** — open the saved plan in a scrollable overlay (or print its path outside the TUI).
-- **`/deliberate-config [advise|plan|status|clear]`** — pick the model, thinking level, tools, and plan path.
+- **`/deliberate-config [advise|plan|status|clear [advise|plan]]`** — with no arguments, opens a menu: Configure advise / Configure plan / Status / Clear mode. `clear` asks which mode and removes only that mode (`clear advise` / `clear plan` skips the question); `status` prints the current config.
 
 ## Install
 
@@ -52,7 +52,7 @@ Stored at `${getAgentDir()}/deliberate.json` (usually `~/.pi/agent/deliberate.js
 2. The skill always calls `deliberate_mode` with `action: "prepare"` first:
    - `unconfigured` — skipped; the skill points to `/deliberate-config <mode>` and stops. No session-model fallback.
    - `dependency-missing` — the `subagent` tool is missing or inactive.
-   - `model-unavailable` — the configured model is not loaded, or a 16-token preflight call fails (auth/quota/provider).
+   - `model-unavailable` — the configured model is not loaded, or a 16-token preflight call fails (auth/quota/provider). Sole exception: `opencode-go` session-header probe errors keep `prepare` `ready` (see [Limitations](#limitations)).
    - `ready` — returns the exact provider/model ref, the configured supported thinking level, the filtered tools, and (plan) the resolved path.
 3. Only then does the main agent make exactly one `subagent` call with `model`, `thinking`, `tools`, `write: false`, the mode's inline prompt, and `autoAwait: true`.
 4. On a model failure the skill asks (`ask_user_question` when available): `Skip mode`, `Custom subagent`, `Reconfigure mode`, or `Main agent handles`.
@@ -72,7 +72,7 @@ The latest `deliberate-plan` custom entry on the current session branch is resto
 ## Limitations
 
 - The advise/plan subagents are read-only; they cannot run write tools or save plans themselves.
-- The preflight consumes a minimal request (`maxTokens: 16`) against the configured model each time `prepare` runs.
+- The preflight consumes a minimal request (`maxTokens: 16`) against the configured model each time `prepare` runs. For provider `opencode-go` only, a preflight error matching `MissingSessionID` or `x-opencode-session` is inconclusive — stateless `modelRegistry.complete` probes cannot carry the session header — so `prepare` stays `ready` and the child session validates the model. Every other preflight failure stays `model-unavailable`.
 - Mouse-wheel scrolling only works when the terminal emits SGR wheel events to the regular (non-alt-screen) TUI; keyboard scrolling always works.
 - `deliberate_mode configure` and `/deliberate-config` require interactive UI.
 

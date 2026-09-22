@@ -191,6 +191,14 @@ export async function clearConfig(agentDir: string): Promise<void> {
 	await rm(configFilePath(agentDir), { force: true });
 }
 
+/** Remove one mode; returns null when no mode remains (caller may delete the file). */
+export function clearMode(config: DeliberateConfig | null, mode: DeliberateMode): DeliberateConfig | null {
+	if (!config) return null;
+	const next: DeliberateConfig = { ...config };
+	delete next[mode];
+	return next.advise || next.plan ? next : null;
+}
+
 /** Latest saved plan on the current branch, ignoring entries with malformed data. */
 export function latestPlanEntry(
 	branch: readonly { type?: string; customType?: string; data?: unknown }[],

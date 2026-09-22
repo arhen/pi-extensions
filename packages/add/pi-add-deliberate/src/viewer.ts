@@ -108,39 +108,30 @@ export class PlanViewer implements Component {
 		return [...header, ...slice.lines, footer];
 	}
 
+	private scrollTo(next: number): void {
+		const clamped = clampOffset(next, this.bodyLength, this.bodyHeight());
+		if (clamped === this.offset) return;
+		this.offset = clamped;
+		this.options.tui.requestRender();
+	}
+
 	handleInput(data: string): void {
-		const height = this.bodyHeight();
-		const total = this.bodyLength;
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || data === "q") {
 			this.options.onClose();
 			return;
 		}
-		if (matchesKey(data, Key.up)) {
-			this.offset = clampOffset(this.offset - 1, total, height);
-			return;
+		let next: number | null = null;
+		if (matchesKey(data, Key.up)) next = this.offset - 1;
+		else if (matchesKey(data, Key.down)) next = this.offset + 1;
+		else if (matchesKey(data, Key.pageUp)) next = this.offset - this.bodyHeight();
+		else if (matchesKey(data, Key.pageDown)) next = this.offset + this.bodyHeight();
+		else if (matchesKey(data, Key.home)) next = 0;
+		else if (matchesKey(data, Key.end)) next = this.bodyLength;
+		else {
+			const wheel = parseWheelInput(data);
+			if (wheel !== null) next = this.offset + wheel * WHEEL_STEP;
 		}
-		if (matchesKey(data, Key.down)) {
-			this.offset = clampOffset(this.offset + 1, total, height);
-			return;
-		}
-		if (matchesKey(data, Key.pageUp)) {
-			this.offset = clampOffset(this.offset - height, total, height);
-			return;
-		}
-		if (matchesKey(data, Key.pageDown)) {
-			this.offset = clampOffset(this.offset + height, total, height);
-			return;
-		}
-		if (matchesKey(data, Key.home)) {
-			this.offset = 0;
-			return;
-		}
-		if (matchesKey(data, Key.end)) {
-			this.offset = clampOffset(total, total, height);
-			return;
-		}
-		const wheel = parseWheelInput(data);
-		if (wheel !== null) this.offset = clampOffset(this.offset + wheel * WHEEL_STEP, total, height);
+		if (next !== null) this.scrollTo(next);
 	}
 
 	invalidate(): void {
