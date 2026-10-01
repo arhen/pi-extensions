@@ -161,12 +161,13 @@ async function probeModel(
 	ctx: ExtensionContext,
 	model: Model<Api>,
 	signal: AbortSignal | undefined,
+	thinking: ThinkingLevel | undefined,
 ): Promise<string | undefined> {
 	try {
 		const reply = await ctx.modelRegistry.complete(
 			model,
 			{ messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
-			{ maxTokens: 16, signal },
+			{ maxTokens: 16, signal, reasoningEffort: thinking === "off" ? undefined : thinking },
 		);
 		return reply.stopReason === "error" ? (reply.errorMessage ?? "provider returned an error") : undefined;
 	} catch (err) {
@@ -178,11 +179,12 @@ export async function ensureUsableModel(
 	ctx: ExtensionContext,
 	model: Model<Api> | undefined,
 	signal: AbortSignal | undefined,
+	thinking?: ThinkingLevel,
 ): Promise<{ model: Model<Api> | undefined; note?: string }> {
 	const session = ctx.model;
 	if (!model || !ctx.modelRegistry) return { model };
 	if (session && model.provider === session.provider && model.id === session.id) return { model };
-	const error = await probeModel(ctx, model, signal);
+	const error = await probeModel(ctx, model, signal, thinking);
 	if (!error) return { model };
 	if (model.provider === "opencode-go" && /MissingSessionID|x-opencode-session/i.test(error)) {
 		// ponytail: opencode-go rejects stateless probes but accepts AgentSession requests, which add the session header.
@@ -747,7 +749,7 @@ export class SubagentManager {
 			model = resolveChildModel(ctx, file?.model ?? input.model);
 			validateThinking(model, thinking);
 
-			const checked = await ensureUsableModel(ctx, model, signal);
+			const checked = await ensureUsableModel(ctx, model, signal, thinking);
 			model = checked.model;
 			if (checked.note) {
 				task.modelNote = checked.note;

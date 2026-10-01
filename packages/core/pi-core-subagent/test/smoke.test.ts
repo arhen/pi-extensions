@@ -182,6 +182,32 @@ describe("ensureUsableModel", () => {
 		expect(out.model).toBe(other);
 		expect(out.note).toBeUndefined();
 	});
+	for (const thinking of ["medium", "high", "off"] as const) {
+		test(`preflight forwards ${thinking} thinking and the abort signal`, async () => {
+			const sol = { provider: "openai-codex", id: "gpt-6.1-sol" } as never;
+			const signal = new AbortController().signal;
+			let probes = 0;
+			const ctx = {
+				model: session,
+				modelRegistry: {
+					complete: async (model: unknown, _ping: unknown, options: unknown) => {
+						probes++;
+						expect(model).toBe(sol);
+						expect(options).toEqual({
+							maxTokens: 16,
+							signal,
+							reasoningEffort: thinking === "off" ? undefined : thinking,
+						});
+						return { stopReason: "stop" };
+					},
+				},
+			} as never as Parameters<typeof ensureUsableModel>[0];
+			const out = await ensureUsableModel(ctx, sol, signal, thinking);
+			expect(probes).toBe(1);
+			expect(out.model).toBe(sol);
+			expect(out.note).toBeUndefined();
+		});
+	}
 	test("a 403 falls back to the session model and says so", async () => {
 		const ctx = makeCtx(async () => ({ stopReason: "error", errorMessage: "403 MODEL_NOT_IN_PLAN" }));
 		const out = await ensureUsableModel(ctx, other, undefined);
