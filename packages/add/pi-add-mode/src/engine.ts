@@ -165,8 +165,19 @@ export class ModeEngine {
 
 	onBeforeAgentStart(event: BeforeAgentStartEvent): void {
 		const mode = this.current;
-		if (!mode?.instructions?.trim()) return;
-		event.systemPromptOptions.sections.mode = `Active mode: ${mode.name}\n\n${mode.instructions.trim()}`;
+		if (!mode) return;
+		const sections = [mode.instructions?.trim()].filter((text): text is string => Boolean(text));
+		const enforced = [
+			mode.subagentModel ? `model ${mode.subagentModel}` : undefined,
+			mode.subagentThinking ? `thinking ${mode.subagentThinking}` : undefined,
+		].filter((text): text is string => Boolean(text));
+		if (enforced.length > 0) {
+			sections.push(
+				`Subagent tasks always run on ${enforced.join(" with ")}; this mode enforces it, so do not pass a model or thinking level on subagent calls.`,
+			);
+		}
+		if (sections.length === 0) return;
+		event.systemPromptOptions.sections.mode = `Active mode: ${mode.name}\n\n${sections.join("\n\n")}`;
 	}
 
 	onToolCall(event: ToolCallEvent): void {

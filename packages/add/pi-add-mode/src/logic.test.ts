@@ -130,7 +130,7 @@ describe("cycle", () => {
 });
 
 describe("subagent model injection", () => {
-	test("patches tasks and chain without overriding explicit models", () => {
+	test("forces the mode model onto tasks and chain, overriding explicit models", () => {
 		const input: Record<string, unknown> = {
 			tasks: [
 				{ agent: "a", task: "t" },
@@ -141,9 +141,14 @@ describe("subagent model injection", () => {
 		expect(applySubagentModel(input, "openai-codex/gpt")).toBe(true);
 		expect(input.tasks).toEqual([
 			{ agent: "a", task: "t", model: "openai-codex/gpt" },
-			{ agent: "b", task: "t", model: "x/y" },
+			{ agent: "b", task: "t", model: "openai-codex/gpt" },
 		]);
 		expect(input.chain).toEqual([{ agent: "c", task: "t", model: "openai-codex/gpt" }]);
+	});
+
+	test("reports no change when tasks already use the mode model", () => {
+		const input: Record<string, unknown> = { tasks: [{ agent: "a", task: "t", model: "p/m" }] };
+		expect(applySubagentModel(input, "p/m")).toBe(false);
 	});
 
 	test("patches single mode", () => {
@@ -179,7 +184,7 @@ describe("thinking", () => {
 		]);
 	});
 
-	test("subagent thinking patched without overriding explicit values", () => {
+	test("subagent thinking forced over explicit values", () => {
 		const input: Record<string, unknown> = {
 			tasks: [
 				{ agent: "a", task: "t" },
@@ -189,7 +194,7 @@ describe("thinking", () => {
 		expect(applySubagentThinking(input, "xhigh")).toBe(true);
 		expect(input.tasks).toEqual([
 			{ agent: "a", task: "t", thinking: "xhigh" },
-			{ agent: "b", task: "t", thinking: "low" },
+			{ agent: "b", task: "t", thinking: "xhigh" },
 		]);
 	});
 
