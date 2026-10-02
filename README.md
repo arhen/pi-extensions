@@ -26,7 +26,8 @@ packages/
 │   ├── pi-add-code-diagnostic/
 │   ├── pi-add-commandcode/
 │   ├── pi-add-vantis/
-│   └── pi-add-wafer/
+│   ├── pi-add-wafer/
+│   └── pi-senja/
 └── pi-toolset/  → installer: manage the installed set
 ```
 
@@ -76,6 +77,7 @@ pi -e npm:@arhen/pi-core-vision
 | [`@arhen/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + subagent model, `/mode` and `ctrl+tab` |
 | [`@arhen/pi-add-vantis`](packages/add/pi-add-vantis) | Vantis integration |
 | [`@arhen/pi-add-wafer`](packages/add/pi-add-wafer) | Wafer integration |
+| [`@arhen/pi-senja`](packages/add/pi-senja) | Haiku-style header/footer with the Gruvbox Material Senja palette |
 
 ## 🔧 Manage the set
 
