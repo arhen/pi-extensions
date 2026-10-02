@@ -30,9 +30,26 @@ Enable ≠ activate: `space` in the panel toggles whether a mode is in the `ctrl
 
 ### Status line
 
-While a mode is active, pi's working line shows `<mode> is working...` and the editor border shows `<mode> standby`
-when idle — both tinted with the mode colour. The built-in `default` mode changes nothing at all: no instructions,
-no tool changes, no model change, no working-line change.
+While a mode is active, pi's working line shows `<mode> is working...`, and while idle the editor border shows
+`<mode> standby`. The whole editor border box (top and bottom lines, working indicator) is tinted with the mode
+colour. The built-in `default` mode changes nothing at all: no instructions, no tool changes, no model change, no
+border or working-line change.
+
+While a coloured mode is active, pi's own border cues are replaced by the mode colour: the thinking-level colour and
+the bash-mode colour while the input starts with `!`. The tint needs this extension's editor; if another editor
+extension owns the editor, only the `<mode> standby` widget line is shown.
+
+### Terminal notes
+
+`ctrl+tab` only reaches pi when the terminal does not consume it. Ghostty binds it to tab switching by default;
+add this to the Ghostty config and reload it:
+
+```ini
+keybind = ctrl+tab=unbind
+keybind = ctrl+shift+tab=unbind
+```
+
+Terminals without the Kitty keyboard protocol cannot distinguish `ctrl+tab` from `tab`; use `alt+m` there.
 
 ## Mode fields
 

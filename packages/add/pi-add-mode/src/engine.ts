@@ -191,6 +191,7 @@ export class ModeEngine {
 			ctx.ui.setWorkingMessage(undefined);
 			ctx.ui.setWorkingIndicator(undefined);
 			this.setStandby(ctx, undefined);
+			this.setBorder(ctx, undefined);
 			return;
 		}
 		ctx.ui.setWorkingMessage(colorize(formatWorkingMessage(mode.name), mode.color, theme));
@@ -198,14 +199,36 @@ export class ModeEngine {
 			mode.color ? { frames: SPINNER_FRAMES.map((frame) => colorize(frame, mode.color, theme)) } : undefined,
 		);
 		this.setStandby(ctx, colorize(formatStandby(mode.name), mode.color, theme));
+		this.setBorder(ctx, mode.color);
+	}
+
+	private setBorder(ctx: ExtensionContext, color: string | undefined): void {
+		const attached = this.liveEditor(ctx);
+		if (!attached) return;
+		const theme = ctx.ui.theme;
+		const valid = color ? colorize("x", color, theme) !== "x" : false;
+		attached.editor.setModeBorder(valid && color ? (text: string) => colorize(text, color, theme) : undefined);
+		attached.tui.requestRender();
 	}
 
 	private setStandby(ctx: ExtensionContext, text: string | undefined): void {
-		if (this.editor) {
-			this.editor.editor.setModeStandby(text);
-			this.editor.tui.requestRender();
+		const attached = this.liveEditor(ctx);
+		if (attached) {
+			attached.editor.setModeStandby(text);
+			attached.tui.requestRender();
 			return;
 		}
 		ctx.ui.setWidget(WIDGET_KEY, text ? [text] : undefined, { placement: "aboveEditor" });
+	}
+
+	/** Detach when pi no longer has any extension editor (another extension cleared or replaced it). */
+	private liveEditor(ctx: ExtensionContext): { editor: ModeEditor; tui: TUI } | undefined {
+		const attached = this.editor;
+		if (!attached) return undefined;
+		if (ctx.mode === "tui" && ctx.ui.getEditorComponent() === undefined) {
+			this.editor = undefined;
+			return undefined;
+		}
+		return attached;
 	}
 }
