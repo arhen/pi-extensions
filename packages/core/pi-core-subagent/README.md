@@ -305,12 +305,14 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 | Tool | Meaning |
 |---|---|
-| `ask_parent` | blocking question to the leader; parent answers via `reply_subagent` |
+| `ask_parent` | blocking question to the leader; delivered mid-turn as a **steering** message labelled `[URGENT]` or `[not urgent]`, parent answers via `reply_subagent` |
 | `notify_parent` | one-way message to the leader |
 | `send_agent_message` | message to a sibling subagent's mailbox (`to` = its task id, or `"leader"`) |
 | `poll_agent_messages` | drain this subagent's mailbox |
 
 > **Intercom anti-deadlock:** children are told to never block indefinitely on intercom replies — an unanswered `ask_parent` times out after 10 minutes (the child is told to proceed with best judgment), and sibling polls are capped (~5 tries) with the same fallback. Gated siblings (later waves) may not be running yet — waiting on them is the top stall cause, so children are instructed not to.
+
+> **Ask urgency:** `ask_parent` takes `urgent` (default `false`). Both variants steer into the leader's current turn so the question is never deferred to the end of a long turn. `[URGENT]` tells the leader to answer before its next step; `[not urgent]` tells it that the child keeps waiting, so it may finish its current step first. Failures steer for the same reason; completions and aborts queue as follow-ups.
 
 ## Commands
 

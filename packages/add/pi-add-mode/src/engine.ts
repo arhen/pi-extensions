@@ -173,7 +173,7 @@ export class ModeEngine {
 		].filter((text): text is string => Boolean(text));
 		if (enforced.length > 0) {
 			sections.push(
-				`Subagent tasks always run on ${enforced.join(" with ")}; this mode enforces it, so do not pass a model or thinking level on subagent calls.`,
+				`Subagent tasks default to ${enforced.join(" with ")} unless you pass your own model or thinking level. Treat them as preferred: override only on purpose.`,
 			);
 		}
 		if (sections.length === 0) return;

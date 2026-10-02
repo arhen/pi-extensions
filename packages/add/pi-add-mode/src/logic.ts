@@ -125,22 +125,23 @@ export function parseToolList(text: string): string[] {
 }
 
 /**
- * Force the mode's model onto every subagent task, including tasks that pin their own.
- * The mode is the user's explicit choice, so its subagent model wins over a model the
- * agent copied into the call. Returns true when the input was patched.
+ * Default the mode's model onto every subagent task that does not pin its own. A model the
+ * leader passed on purpose wins, so per-task overrides stay possible. Returns true when patched.
  */
 export function applySubagentModel(input: Record<string, unknown>, model: string): boolean {
 	return patchSubagentTasks(input, (task) => {
-		if (task.model === model) return false;
+		const current = task.model;
+		if (typeof current === "string" && current.trim()) return false;
 		task.model = model;
 		return true;
 	});
 }
 
-/** Force the mode's thinking level onto every subagent task. */
+/** Default the mode's thinking level onto every subagent task that does not pin its own. */
 export function applySubagentThinking(input: Record<string, unknown>, thinking: ModeThinking): boolean {
 	return patchSubagentTasks(input, (task) => {
-		if (task.thinking === thinking) return false;
+		const current = task.thinking;
+		if (typeof current === "string" && current.trim()) return false;
 		task.thinking = thinking;
 		return true;
 	});

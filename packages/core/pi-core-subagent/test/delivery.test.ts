@@ -6,8 +6,8 @@ import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 const usage: UsageStats = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 1 };
 type Kind = "completed" | "failed" | "aborted";
 
-/** only the failed-task path should interrupt the leader mid-turn */
-describe("failure notices steer, everything else queues", () => {
+/** failures and ask_parent questions interrupt the leader mid-turn; completions and aborts queue */
+describe("failure and ask notices steer, everything else queues", () => {
 	function capture(task: Partial<TaskSnapshot>, kind: Kind) {
 		const sent: { body: string; deliverAs?: string }[] = [];
 		const pi = {
@@ -49,5 +49,41 @@ describe("failure notices steer, everything else queues", () => {
 	test("completed and aborted stay queued as follow-ups", () => {
 		expect(capture({ finalText: "done" }, "completed")?.deliverAs).toBe("followUp");
 		expect(capture({ error: "cancelled" }, "aborted")?.deliverAs).toBe("followUp");
+	});
+
+	function captureAsk(extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean }) {
+		const sent: { body: string; deliverAs?: string }[] = [];
+		const pi = {
+			events: { emit() {} },
+			sendUserMessage(body: string, opts?: { deliverAs?: string }) {
+				sent.push({ body, deliverAs: opts?.deliverAs });
+			},
+		} as unknown as ExtensionAPI;
+		const run = { id: "run_x", mode: "parallel", status: "running", tasks: [] } as unknown as RunSnapshot;
+		const manager = new SubagentManager(pi) as unknown as {
+			notifyParent: (
+				run: RunSnapshot,
+				kind: "asked",
+				extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
+			) => void;
+		};
+		manager.notifyParent(run, "asked", extra);
+		return sent[0];
+	}
+
+	test("ask_parent steers, labelled not urgent until the child says otherwise", () => {
+		const ask = captureAsk({ taskId: "task_2", agent: "probe", question: "which branch?" });
+		expect(ask?.deliverAs).toBe("steer");
+		expect(ask?.body).toContain("[not urgent]");
+		expect(ask?.body).toContain("probe (task_2)");
+		expect(ask?.body).toContain("which branch?");
+		expect(ask?.body).toContain('reply_subagent(runId: "run_x", taskId: "task_2"');
+	});
+
+	test("an urgent ask tells the leader to answer before its next step", () => {
+		const ask = captureAsk({ taskId: "task_2", agent: "probe", question: "which branch?", urgent: true });
+		expect(ask?.deliverAs).toBe("steer");
+		expect(ask?.body).toContain("[URGENT]");
+		expect(ask?.body).toContain("Answer now");
 	});
 });

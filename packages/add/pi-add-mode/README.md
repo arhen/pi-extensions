@@ -63,17 +63,18 @@ binds both to tab switching — so they usually do nothing.
 | `tools` | `"default"`, `"plan"` (read-only), `"build"` (write set + extras) or an explicit list |
 | `model` | `provider/model-id` or unset = session model |
 | `thinking` | effort while the mode is active: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, unset = session level |
-| `subagentModel` | `provider/model-id`, forced onto every subagent task; unset = leave the call's own model |
-| `subagentThinking` | effort forced onto every subagent task; unset = leave the call's own level |
+| `subagentModel` | `provider/model-id`, the default for subagent tasks without their own; unset = leave the call's model |
+| `subagentThinking` | effort filled into subagent tasks without their own; unset = leave the call's level |
 
 Picking a model in the editor always asks for the effort right after; cancelling the effort picker aborts the model
 change. The effort list follows the model: `off` only for non-reasoning models, minus levels the model marks
 unsupported.
 
-`subagentModel` / `subagentThinking` are **enforced**: they overwrite `model` and `thinking` on every `subagent`
-task, including tasks where the agent passed its own. The active mode also states the enforced values in the system
-prompt, so the agent stops guessing. Leave them unset to keep per-call values. A model pinned in an agent file
-(`.pi/agents/*.md` frontmatter) still wins, because the subagent tool resolves that before the call's own model.
+`subagentModel` / `subagentThinking` are the **preferred defaults**: they fill in `model` and `thinking` on every
+`subagent` task that does not pin its own. The active mode also states them in the system prompt, so the agent stops
+copying a stale model from earlier in the session. Pass an explicit model or thinking level to override them on
+purpose. A model pinned in an agent file (`.pi/agents/*.md` frontmatter) still wins, because the subagent tool
+resolves that before the call's own model.
 
 ## Storage
 

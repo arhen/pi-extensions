@@ -29,6 +29,7 @@ import {
 	getFirstText,
 	isStartupFailure,
 	isTalking,
+	makeAskNotice,
 	makeNotice,
 	makeTaskNotice,
 	SubagentsWidget,
@@ -494,19 +495,21 @@ export class SubagentManager {
 	private notifyParent(
 		run: RunSnapshot,
 		kind: "completed" | "failed" | "aborted" | "asked",
-		extra?: { taskId?: string; question?: string },
+		extra?: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
 	): void {
 		if (kind !== "asked" && run.awaited) return;
 		// single-task completed run: the task notice already said everything (failure paths may not have notified per-task)
 		if (kind === "completed" && run.tasks.length === 1 && run.notifyPerTask) return;
-		const body =
-			kind === "asked"
-				? `A subagent is asking you a question (task ${extra?.taskId}): ${extra?.question ?? ""}\nReply with reply_subagent(runId: "${run.id}", taskId: "${extra?.taskId}", message: ...).`
-				: makeNotice(run, kind);
+		const body = kind === "asked" ? makeAskNotice(run, extra ?? {}) : makeNotice(run, kind);
+		// asks steer: the leader sees the question during its turn and the urgent flag tells it whether to
+		// answer now or after the current step. Failures steer for the same reason — a broken result must
+		// not be consumed. Completions and aborts queue as follow-ups.
 		try {
-			this.pi.sendUserMessage(body, { deliverAs: kind === "failed" ? "steer" : "followUp" });
+			this.pi.sendUserMessage(body, {
+				deliverAs: kind === "completed" || kind === "aborted" ? "followUp" : "steer",
+			});
 		} catch {}
-		this.emit("subagent:notification", { runId: run.id, kind, body });
+		this.emit("subagent:notification", { runId: run.id, taskId: extra?.taskId, kind, body });
 	}
 
 	private widgetTui: TUI | null = null;
@@ -614,14 +617,14 @@ export class SubagentManager {
 
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
 		return {
-			onAskParent: async (_taskId, question) => {
+			onAskParent: async (_taskId, question, urgent) => {
 				if (TERMINAL.includes(task.status)) {
 					return "(your task has already ended — stop work and return immediately)";
 				}
 				this.updateTask(run, task, { status: "awaiting_parent" }, ctx);
 
 				if (!this.collectParked(run.id, { kind: "ask", taskId: task.id, agent: task.agent, text: question })) {
-					this.notifyParent(run, "asked", { taskId: task.id, question });
+					this.notifyParent(run, "asked", { taskId: task.id, agent: task.agent, question, urgent });
 				}
 
 				const reply = await this.awaitParentReply(run.id, task.id, PARENT_REPLY_TIMEOUT_MS);
@@ -891,7 +894,7 @@ export class SubagentManager {
 			const worktreeNote = wt
 				? ` You work in an isolated git worktree (branch ${wt.branch})${task.stackedOn ? `, stacked on ${task.stackedOn} (its changes are already in your tree)` : ""}. Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes. node_modules is a SHARED symlink to the main checkout: never install, upgrade, or delete dependencies (no npm/bun/yarn/pnpm install, no \`rm -rf node_modules\`) — those writes escape your worktree and damage the user's project. If the task truly needs a dependency change, edit the manifest only and say so in your answer.`
 				: "";
-			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has; notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. An unanswered ask_parent times out after 10 minutes — proceed with your best judgment then. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`;
+			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has (set urgent: true only when nothing else can proceed while you wait); notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. An unanswered ask_parent times out after 10 minutes — proceed with your best judgment then. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`;
 
 			const loader = new DefaultResourceLoader({
 				cwd: childCwd,

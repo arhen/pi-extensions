@@ -250,6 +250,17 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 				: `Session file kept — resume_subagent(runId: "${run.id}", taskId: "${task.id}", model?: ...) revives it with full context. subagent_result for what it produced so far.`,
 	].join("\n");
 }
+export function makeAskNotice(
+	run: RunSnapshot,
+	extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
+): string {
+	const who = extra.agent ? `${extra.agent} (${extra.taskId ?? "task"})` : (extra.taskId ?? "a subagent");
+	const reply = `reply_subagent(runId: "${run.id}", taskId: "${extra.taskId ?? ""}", message: ...)`;
+	return extra.urgent
+		? `[URGENT] Subagent ${who} is blocked and cannot continue until you answer: ${extra.question ?? ""}\nAnswer now, before your next step, with ${reply}.`
+		: `[not urgent] Subagent ${who} asks: ${extra.question ?? ""}\nIt waits while you keep working — finish your current step first if you want, then answer with ${reply}.`;
+}
+
 export function makeNotice(run: RunSnapshot, kind: string): string {
 	const lines = [
 		`Background subagent run ${run.id} ${kind}: ${run.tasks.filter((t) => t.status === "completed").length}/${run.tasks.length} succeeded.`,

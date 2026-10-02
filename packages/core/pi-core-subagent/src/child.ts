@@ -6,7 +6,7 @@ import type { MailboxMessage } from "./mailbox.ts";
 export const CHILD_TALK_TOOLS = ["ask_parent", "notify_parent", "send_agent_message", "poll_agent_messages"] as const;
 
 export interface ChildHandlers {
-	onAskParent(taskId: string, question: string): Promise<string>;
+	onAskParent(taskId: string, question: string, urgent: boolean): Promise<string>;
 	onNotifyParent(taskId: string, message: string, level: "info" | "warning" | "error"): void;
 	onSendMessage(taskId: string, to: string, text: string): boolean;
 	onPollMailbox(taskId: string): MailboxMessage[];
@@ -18,18 +18,26 @@ export function createChildTools(taskId: string, handlers: ChildHandlers): ToolD
 			name: "ask_parent",
 			label: "Ask Parent",
 			description:
-				"Ask the parent agent a clarifying question and BLOCK until it replies (10 min cap — then proceed with best judgment). Use sparingly — only when you truly cannot proceed without information only the parent has. Prefer figuring it out yourself.",
+				"Ask the parent agent a clarifying question and BLOCK until it replies (10 min cap — then proceed with best judgment). Use sparingly — only when you truly cannot proceed without information only the parent has. Prefer figuring it out yourself. The parent sees the question mid-turn: set urgent when you cannot continue until it answers, leave it unset when the parent may finish its current step first.",
 			promptSnippet: "Ask the parent agent a question when truly blocked.",
 			promptGuidelines: [
 				"Use ask_parent only as a last resort when blocked on information only the parent has.",
 				"Ask one focused question at a time. The parent's reply resumes your work.",
+				"Set urgent: true only when you cannot keep working while waiting; otherwise the parent is told it may answer after its current step.",
 			],
 			parameters: Type.Object({
 				question: Type.String({ description: "A single, focused question for the parent agent" }),
+				urgent: Type.Optional(
+					Type.Boolean({
+						description:
+							"True when nothing else can proceed until the parent answers — it is told to stop and reply now",
+						default: false,
+					}),
+				),
 			}),
 			async execute(_toolCallId, params) {
-				const { question } = params as { question: string };
-				const answer = await handlers.onAskParent(taskId, question);
+				const { question, urgent } = params as { question: string; urgent?: boolean };
+				const answer = await handlers.onAskParent(taskId, question, urgent === true);
 				return { content: [{ type: "text" as const, text: answer || "(parent gave no answer)" }], details: {} };
 			},
 		},
