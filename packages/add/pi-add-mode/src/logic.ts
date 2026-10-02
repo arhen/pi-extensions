@@ -4,8 +4,10 @@ import {
 	MANAGED_TOOLS,
 	type Mode,
 	type ModeFileEntry,
+	type ModeThinking,
 	type ModeTools,
 	READ_ONLY_TOOLS,
+	THINKING_LEVELS,
 	TOOL_PRESETS,
 	type ToolPreset,
 	WRITE_TOOLS,
@@ -35,6 +37,21 @@ export function normalizeTools(value: unknown): ModeTools {
 	return "default";
 }
 
+export function normalizeThinking(value: unknown): ModeThinking | undefined {
+	return typeof value === "string" && (THINKING_LEVELS as readonly string[]).includes(value)
+		? (value as ModeThinking)
+		: undefined;
+}
+
+/** Thinking levels a model accepts: `off` only for non-reasoning models, minus explicitly unsupported levels. */
+export function thinkingLevelsFor(
+	model: { reasoning: boolean; thinkingLevelMap?: Record<string, string | null> } | undefined,
+): ModeThinking[] {
+	if (!model) return [...THINKING_LEVELS];
+	if (!model.reasoning) return ["off"];
+	return THINKING_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== null);
+}
+
 export function normalizeModeEntry(rawName: string, raw: unknown): Mode | undefined {
 	const name = rawName.trim();
 	if (!name || isDefaultModeName(name)) return undefined;
@@ -47,7 +64,9 @@ export function normalizeModeEntry(rawName: string, raw: unknown): Mode | undefi
 		instructions: typeof entry.instructions === "string" && entry.instructions.trim() ? entry.instructions : undefined,
 		tools: normalizeTools(entry.tools),
 		model: normalizeString(entry.model),
+		thinking: normalizeThinking(entry.thinking),
 		subagentModel: normalizeString(entry.subagentModel),
+		subagentThinking: normalizeThinking(entry.subagentThinking),
 	};
 }
 
@@ -110,6 +129,28 @@ export function parseToolList(text: string): string[] {
  * Returns true when the input was patched.
  */
 export function applySubagentModel(input: Record<string, unknown>, model: string): boolean {
+	return patchSubagentTasks(input, (task) => {
+		const current = task.model;
+		if (typeof current === "string" && current.trim()) return false;
+		task.model = model;
+		return true;
+	});
+}
+
+/** Default the thinking level of every subagent task that does not pin its own. */
+export function applySubagentThinking(input: Record<string, unknown>, thinking: ModeThinking): boolean {
+	return patchSubagentTasks(input, (task) => {
+		const current = task.thinking;
+		if (typeof current === "string" && current.trim()) return false;
+		task.thinking = thinking;
+		return true;
+	});
+}
+
+function patchSubagentTasks(
+	input: Record<string, unknown>,
+	patch: (task: Record<string, unknown>) => boolean,
+): boolean {
 	let changed = false;
 
 	for (const key of ["tasks", "chain"]) {
@@ -117,20 +158,11 @@ export function applySubagentModel(input: Record<string, unknown>, model: string
 		if (!Array.isArray(list)) continue;
 		for (const item of list) {
 			if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-			const task = item as Record<string, unknown>;
-			const current = task.model;
-			if (typeof current !== "string" || !current.trim()) {
-				task.model = model;
-				changed = true;
-			}
+			if (patch(item as Record<string, unknown>)) changed = true;
 		}
 	}
 
-	const single = input.model;
-	if (typeof input.task === "string" && input.task.trim() && (typeof single !== "string" || !single.trim())) {
-		input.model = model;
-		changed = true;
-	}
+	if (typeof input.task === "string" && input.task.trim() && patch(input)) changed = true;
 
 	return changed;
 }

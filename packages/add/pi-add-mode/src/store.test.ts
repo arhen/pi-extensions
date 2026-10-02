@@ -90,7 +90,15 @@ describe("ModeStore", () => {
 
 	test("round-trips through disk", () => {
 		const store = newStore();
-		store.upsert({ name: "review", enabled: false, tools: ["read", "bash"], color: "accent", subagentModel: "p/s" });
+		store.upsert({
+			name: "review",
+			enabled: false,
+			tools: ["read", "bash"],
+			color: "accent",
+			thinking: "xhigh",
+			subagentModel: "p/s",
+			subagentThinking: "low",
+		});
 		store.save();
 
 		const reloaded = newStore();
@@ -99,7 +107,9 @@ describe("ModeStore", () => {
 			enabled: false,
 			tools: ["read", "bash"],
 			color: "accent",
+			thinking: "xhigh",
 			subagentModel: "p/s",
+			subagentThinking: "low",
 			description: undefined,
 			instructions: undefined,
 			model: undefined,

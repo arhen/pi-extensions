@@ -4,6 +4,7 @@ export const WIDGET_KEY = "pi-mode-standby";
 
 export type ToolPreset = "default" | "plan" | "build";
 export type ModeTools = ToolPreset | string[];
+export type ModeThinking = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface Mode {
 	name: string;
@@ -13,7 +14,9 @@ export interface Mode {
 	instructions?: string;
 	tools: ModeTools;
 	model?: string;
+	thinking?: ModeThinking;
 	subagentModel?: string;
+	subagentThinking?: ModeThinking;
 }
 
 export interface ModeFileEntry {
@@ -23,8 +26,12 @@ export interface ModeFileEntry {
 	instructions?: unknown;
 	tools?: unknown;
 	model?: unknown;
+	thinking?: unknown;
 	subagentModel?: unknown;
+	subagentThinking?: unknown;
 }
+
+export const THINKING_LEVELS: readonly ModeThinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 export const TOOL_PRESETS: readonly ToolPreset[] = ["default", "plan", "build"];
 export const READ_ONLY_TOOLS = ["read", "bash", "grep", "find", "ls"];

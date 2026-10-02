@@ -44,9 +44,16 @@ no tool changes, no model change, no working-line change.
 | `instructions` | extra system-prompt section while the mode is active |
 | `tools` | `"default"`, `"plan"` (read-only), `"build"` (write set + extras) or an explicit list |
 | `model` | `provider/model-id` or unset = session model |
+| `thinking` | effort while the mode is active: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, unset = session level |
 | `subagentModel` | `provider/model-id` or unset = subagent call's own model |
+| `subagentThinking` | effort patched into subagent tasks that do not pin their own |
 
-`subagentModel` patches `model` into every `subagent`/`subagent` chain task that does not pin its own model.
+Picking a model in the editor always asks for the effort right after; cancelling the effort picker aborts the model
+change. The effort list follows the model: `off` only for non-reasoning models, minus levels the model marks
+unsupported.
+
+`subagentModel` / `subagentThinking` patch `model` and `thinking` into every `subagent` task that does not pin its
+own value.
 
 ## Storage
 
@@ -60,7 +67,9 @@ no tool changes, no model change, no working-line change.
     "instructions": "Review only. Do not edit files. Report findings with file:line.",
     "tools": "plan",
     "model": "openai-codex/gpt-6.1-sol",
-    "subagentModel": "openai-codex/gpt-6.1-luna"
+    "thinking": "xhigh",
+    "subagentModel": "openai-codex/gpt-6.1-luna",
+    "subagentThinking": "low"
   }
 }
 ```

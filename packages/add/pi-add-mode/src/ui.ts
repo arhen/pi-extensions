@@ -2,9 +2,23 @@ import { DynamicBorder, type ExtensionContext, getSelectListTheme } from "@earen
 import { Container, fuzzyFilter, Input, matchesKey, type SelectItem, SelectList, Text } from "@earendil-works/pi-tui";
 import { colorize, colorLabel } from "./colors.ts";
 import type { ModeEngine } from "./engine.ts";
-import { describeTools, isDefaultModeName, parseToolList } from "./logic.ts";
+import { describeTools, isDefaultModeName, parseToolList, thinkingLevelsFor } from "./logic.ts";
 import type { ModeStore } from "./store.ts";
-import { COLOR_PALETTE, DEFAULT_MODE_NAME, type Mode, type ModeTools, TOOL_PRESETS, type ToolPreset } from "./types.ts";
+import {
+	COLOR_PALETTE,
+	DEFAULT_MODE_NAME,
+	type Mode,
+	type ModeThinking,
+	type ModeTools,
+	THINKING_LEVELS,
+	TOOL_PRESETS,
+	type ToolPreset,
+} from "./types.ts";
+
+interface ThinkingModel {
+	reasoning: boolean;
+	thinkingLevelMap?: Record<string, string | null>;
+}
 
 type PanelAction = "activate" | "edit" | "toggle" | "delete" | "new";
 
@@ -16,8 +30,9 @@ interface PanelChoice {
 function modeSummary(mode: Mode, theme: ExtensionContext["ui"]["theme"]): string {
 	const parts: string[] = [mode.enabled ? "enabled" : theme.fg("dim", "disabled")];
 	parts.push(`tools: ${describeTools(mode.tools)}`);
-	parts.push(mode.model ?? "default model");
-	if (mode.subagentModel) parts.push(`sub: ${mode.subagentModel}`);
+	parts.push(mode.model ? `${mode.model}${mode.thinking ? `:${mode.thinking}` : ""}` : "default model");
+	if (mode.subagentModel)
+		parts.push(`sub: ${mode.subagentModel}${mode.subagentThinking ? `:${mode.subagentThinking}` : ""}`);
 	if (mode.instructions) parts.push("+instructions");
 	return parts.join(" · ");
 }
@@ -192,6 +207,32 @@ async function pickTools(ctx: ExtensionContext, current: ModeTools): Promise<Mod
 	return names.length > 0 ? names : "default";
 }
 
+function resolveModel(ctx: ExtensionContext, ref: string | undefined): ThinkingModel | undefined {
+	if (!ref) return ctx.model;
+	const slash = ref.indexOf("/");
+	if (slash <= 0 || slash === ref.length - 1) return undefined;
+	return ctx.modelRegistry.find(ref.slice(0, slash), ref.slice(slash + 1));
+}
+
+/** Effort picker. Returns undefined on cancel, "" for default/inherit, or a thinking level. */
+async function pickThinking(
+	ctx: ExtensionContext,
+	title: string,
+	current: ModeThinking | undefined,
+	model: ThinkingModel | undefined,
+): Promise<ModeThinking | "" | undefined> {
+	const available = thinkingLevelsFor(model);
+	const levels = THINKING_LEVELS.filter((level) => available.includes(level) || level === current);
+	const options = [
+		`${current ? "" : "✓ "}(default)`,
+		...levels.map((level) => `${current === level ? "✓ " : ""}${level}`),
+	];
+	const choice = await ctx.ui.select(title, options);
+	if (choice === undefined) return undefined;
+	const index = options.indexOf(choice);
+	return index <= 0 ? "" : (levels[index - 1] ?? "");
+}
+
 export async function pickModel(
 	ctx: ExtensionContext,
 	title: string,
@@ -281,7 +322,9 @@ export async function editMode(
 			`Colour: ${colorLabel(mode.color)}`,
 			`Tools: ${describeTools(mode.tools)}`,
 			`Model: ${mode.model ?? "(default)"}`,
+			`Thinking: ${mode.thinking ?? "(default)"}`,
 			`Subagent model: ${mode.subagentModel ?? "(default)"}`,
+			`Subagent thinking: ${mode.subagentThinking ?? "(default)"}`,
 			`Instructions: ${mode.instructions ? `${mode.instructions.split("\n").length} line(s)` : "(none)"}`,
 			`Description: ${mode.description ?? "(none)"}`,
 			"Rename…",
@@ -310,29 +353,89 @@ export async function editMode(
 			}
 			case 3: {
 				const model = await pickModel(ctx, `Model for "${name}"`, mode.model);
-				if (model === undefined) committed = false;
-				else mode.model = model || undefined;
+				if (model === undefined) {
+					committed = false;
+					break;
+				}
+				if (!model) {
+					mode.model = undefined;
+					mode.thinking = undefined;
+					break;
+				}
+				const thinking = await pickThinking(
+					ctx,
+					`Effort for "${name}" (${model})`,
+					mode.thinking,
+					resolveModel(ctx, model),
+				);
+				if (thinking === undefined) {
+					committed = false;
+					break;
+				}
+				mode.model = model;
+				mode.thinking = thinking || undefined;
 				break;
 			}
 			case 4: {
-				const model = await pickModel(ctx, `Subagent model for "${name}"`, mode.subagentModel);
-				if (model === undefined) committed = false;
-				else mode.subagentModel = model || undefined;
+				const thinking = await pickThinking(
+					ctx,
+					`Thinking for "${name}"`,
+					mode.thinking,
+					resolveModel(ctx, mode.model),
+				);
+				if (thinking === undefined) committed = false;
+				else mode.thinking = thinking || undefined;
 				break;
 			}
 			case 5: {
+				const model = await pickModel(ctx, `Subagent model for "${name}"`, mode.subagentModel);
+				if (model === undefined) {
+					committed = false;
+					break;
+				}
+				if (!model) {
+					mode.subagentModel = undefined;
+					mode.subagentThinking = undefined;
+					break;
+				}
+				const thinking = await pickThinking(
+					ctx,
+					`Subagent effort for "${name}" (${model})`,
+					mode.subagentThinking,
+					resolveModel(ctx, model),
+				);
+				if (thinking === undefined) {
+					committed = false;
+					break;
+				}
+				mode.subagentModel = model;
+				mode.subagentThinking = thinking || undefined;
+				break;
+			}
+			case 6: {
+				const thinking = await pickThinking(
+					ctx,
+					`Subagent thinking for "${name}"`,
+					mode.subagentThinking,
+					resolveModel(ctx, mode.subagentModel),
+				);
+				if (thinking === undefined) committed = false;
+				else mode.subagentThinking = thinking || undefined;
+				break;
+			}
+			case 7: {
 				const text = await ctx.ui.editor(`Instructions for mode "${name}"`, mode.instructions ?? "");
 				if (text === undefined) committed = false;
 				else mode.instructions = text.trim() ? text : undefined;
 				break;
 			}
-			case 6: {
+			case 8: {
 				const text = await ctx.ui.input("Mode description (optional)", mode.description ?? "");
 				if (text === undefined) committed = false;
 				else mode.description = text.trim() || undefined;
 				break;
 			}
-			case 7: {
+			case 9: {
 				const renamed = await renameMode(ctx, store, name);
 				if (!renamed) committed = false;
 				else {

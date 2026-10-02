@@ -17,7 +17,9 @@ export function serializeMode(mode: Mode): Record<string, unknown> {
 	if (mode.description) entry.description = mode.description;
 	if (mode.instructions) entry.instructions = mode.instructions;
 	if (mode.model) entry.model = mode.model;
+	if (mode.thinking) entry.thinking = mode.thinking;
 	if (mode.subagentModel) entry.subagentModel = mode.subagentModel;
+	if (mode.subagentThinking) entry.subagentThinking = mode.subagentThinking;
 	return entry;
 }
 

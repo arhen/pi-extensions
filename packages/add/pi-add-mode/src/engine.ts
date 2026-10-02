@@ -8,7 +8,13 @@ import type {
 import type { TUI } from "@earendil-works/pi-tui";
 import { colorize } from "./colors.ts";
 import type { ModeEditor } from "./editor.ts";
-import { applySubagentModel, formatStandby, formatWorkingMessage, resolveToolNames } from "./logic.ts";
+import {
+	applySubagentModel,
+	applySubagentThinking,
+	formatStandby,
+	formatWorkingMessage,
+	resolveToolNames,
+} from "./logic.ts";
 import type { ModeStore } from "./store.ts";
 import { DEFAULT_MODE_NAME, type Mode, STATE_ENTRY_TYPE, WIDGET_KEY } from "./types.ts";
 
@@ -104,6 +110,7 @@ export class ModeEngine {
 
 		const known = this.pi.getAllTools().map((tool) => tool.name);
 		this.pi.setActiveTools(resolveToolNames(target.tools, this.snapshot.tools, known));
+		this.pi.setThinkingLevel(target.thinking ?? this.snapshot.thinking);
 
 		this.current = target;
 		this.applyVisuals(ctx);
@@ -163,9 +170,11 @@ export class ModeEngine {
 	}
 
 	onToolCall(event: ToolCallEvent): void {
-		const model = this.current?.subagentModel;
-		if (!model || event.toolName !== "subagent") return;
-		applySubagentModel(event.input as Record<string, unknown>, model);
+		const mode = this.current;
+		if (!mode || event.toolName !== "subagent") return;
+		const input = event.input as Record<string, unknown>;
+		if (mode.subagentModel) applySubagentModel(input, mode.subagentModel);
+		if (mode.subagentThinking) applySubagentThinking(input, mode.subagentThinking);
 	}
 
 	private async restoreSnapshot(): Promise<void> {

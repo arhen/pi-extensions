@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	applySubagentModel,
+	applySubagentThinking,
 	cycleList,
 	describeTools,
 	formatStandby,
@@ -9,9 +10,11 @@ import {
 	isToolPreset,
 	nextInCycle,
 	normalizeModeEntry,
+	normalizeThinking,
 	normalizeTools,
 	parseToolList,
 	resolveToolNames,
+	thinkingLevelsFor,
 } from "./logic.ts";
 import type { Mode } from "./types.ts";
 
@@ -47,7 +50,7 @@ describe("normalizeModeEntry", () => {
 	});
 
 	test("fills defaults and trims", () => {
-		const mode = normalizeModeEntry(" review ", { instructions: "be careful", model: " p/m " });
+		const mode = normalizeModeEntry(" review ", { instructions: "be careful", model: " p/m ", thinking: "high" });
 		expect(mode).toEqual({
 			name: "review",
 			enabled: true,
@@ -56,8 +59,15 @@ describe("normalizeModeEntry", () => {
 			instructions: "be careful",
 			tools: "default",
 			model: "p/m",
+			thinking: "high",
 			subagentModel: undefined,
+			subagentThinking: undefined,
 		});
+	});
+
+	test("drops invalid thinking levels", () => {
+		expect(normalizeModeEntry("x", { thinking: "turbo", subagentThinking: 5 })?.thinking).toBeUndefined();
+		expect(normalizeModeEntry("x", { thinking: "turbo" })?.subagentThinking).toBeUndefined();
 	});
 
 	test("respects disabled", () => {
@@ -145,6 +155,48 @@ describe("subagent model injection", () => {
 	test("leaves unrelated input alone", () => {
 		const input: Record<string, unknown> = { command: "ls" };
 		expect(applySubagentModel(input, "p/m")).toBe(false);
+	});
+});
+
+describe("thinking", () => {
+	test("normalizeThinking accepts known levels only", () => {
+		expect(normalizeThinking("high")).toBe("high");
+		expect(normalizeThinking("off")).toBe("off");
+		expect(normalizeThinking("ultra")).toBeUndefined();
+		expect(normalizeThinking(3)).toBeUndefined();
+	});
+
+	test("thinkingLevelsFor follows model reasoning support", () => {
+		expect(thinkingLevelsFor(undefined)).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+		expect(thinkingLevelsFor({ reasoning: false })).toEqual(["off"]);
+		expect(thinkingLevelsFor({ reasoning: true })).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+		expect(thinkingLevelsFor({ reasoning: true, thinkingLevelMap: { minimal: null, low: null } })).toEqual([
+			"off",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+	});
+
+	test("subagent thinking patched without overriding explicit values", () => {
+		const input: Record<string, unknown> = {
+			tasks: [
+				{ agent: "a", task: "t" },
+				{ agent: "b", task: "t", thinking: "low" },
+			],
+		};
+		expect(applySubagentThinking(input, "xhigh")).toBe(true);
+		expect(input.tasks).toEqual([
+			{ agent: "a", task: "t", thinking: "xhigh" },
+			{ agent: "b", task: "t", thinking: "low" },
+		]);
+	});
+
+	test("subagent thinking patched in single mode", () => {
+		const input: Record<string, unknown> = { agent: "a", task: "t" };
+		expect(applySubagentThinking(input, "medium")).toBe(true);
+		expect(input.thinking).toBe("medium");
 	});
 });
 
