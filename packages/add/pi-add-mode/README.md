@@ -35,6 +35,10 @@ While a mode is active, pi's working line shows `<mode> is working...`, and whil
 colour. The built-in `default` mode changes nothing at all: no instructions, no tool changes, no model change, no
 border or working-line change.
 
+With `@arhen/pi-senja`, the live timer keeps the mode label and colour: `<mode> is working... 8s`.
+The extension publishes its styled working label (or `undefined` for default) on `pi.events` channel
+`pi-mode:working-message` whenever mode visuals change.
+
 While a coloured mode is active, pi's own border cues are replaced by the mode colour: the thinking-level colour and
 the bash-mode colour while the input starts with `!`. The tint needs this extension's editor; if another editor
 extension owns the editor, only the `<mode> standby` widget line is shown.

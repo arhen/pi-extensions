@@ -1,6 +1,7 @@
 export const DEFAULT_MODE_NAME = "default";
 export const STATE_ENTRY_TYPE = "pi-mode-state";
 export const WIDGET_KEY = "pi-mode-standby";
+export const WORKING_MESSAGE_EVENT = "pi-mode:working-message";
 
 export type ToolPreset = "default" | "plan" | "build";
 export type ModeTools = ToolPreset | string[];

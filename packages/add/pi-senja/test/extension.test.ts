@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
+import { ModeEngine } from "../../pi-add-mode/src/engine.ts";
+import type { ModeStore } from "../../pi-add-mode/src/store.ts";
+import { type Mode, WORKING_MESSAGE_EVENT } from "../../pi-add-mode/src/types.ts";
 import { assistantEntry, createHarness, plain } from "./harness.ts";
 
 let now: number;
@@ -129,6 +132,47 @@ describe("startup and toggle", () => {
 });
 
 describe("state and cleanup", () => {
+  for (const activation of ["before", "after"] as const) {
+    test(`mode label and color survive timer updates when activated ${activation} Senja startup`, async () => {
+      const h = createHarness();
+      const engine = new ModeEngine(h.api as unknown as ConstructorParameters<typeof ModeEngine>[0]);
+      const ctx = h.ctx as unknown as Parameters<ModeEngine["activate"]>[1];
+      const modes: Mode[] = [
+        { name: "review", enabled: true, color: "warning", tools: "default" },
+        { name: "build", enabled: true, tools: "default" },
+      ];
+      engine.setStore({ get: (name: string) => modes.find((mode) => mode.name === name) } as ModeStore);
+      if (activation === "before") await engine.activate("review", ctx);
+      await h.emit("session_start", { reason: "startup" });
+      if (activation === "after") await engine.activate("review", ctx);
+
+      await h.emit("agent_start");
+      const coloredLabel = h.ui.theme.fg("warning", "review is working...");
+      expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith(`${coloredLabel} 0s`);
+      tick(65_000);
+      expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith(`${coloredLabel} 1m 5s`);
+      await h.emit("agent_end");
+      expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("Worked for 1m 5s");
+
+      await engine.activate("build", ctx);
+      await h.emit("agent_start");
+      expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("build is working... 0s");
+      await h.emit("agent_end");
+
+      await engine.activate(undefined, ctx);
+      await h.emit("agent_start");
+      expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("Working… 0s");
+      await h.emit("agent_end");
+
+      await engine.activate("review", ctx);
+      engine.reset(ctx);
+      await h.emit("session_start", { reason: "new" });
+      await h.emit("agent_start");
+      expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("Working… 0s");
+      await h.emit("session_shutdown");
+    });
+  }
+
   test("live duration, completion, next prompt, and session reset", async () => {
     const h = createHarness();
     await h.emit("session_start", { reason: "startup" });
@@ -154,6 +198,21 @@ describe("state and cleanup", () => {
     expect(footerText(h)).toHaveLength(1);
   });
 
+  test("mode updates refresh on the next tick, ignore invalid payloads, and clear empty labels", async () => {
+    const h = createHarness();
+    await h.emit("agent_start");
+    h.events.emit(WORKING_MESSAGE_EVENT, "review is working...");
+    tick(1_000);
+    expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("review is working... 1s");
+    h.events.emit(WORKING_MESSAGE_EVENT, { invalid: true });
+    tick(1_000);
+    expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("review is working... 2s");
+    h.events.emit(WORKING_MESSAGE_EVENT, "");
+    tick(1_000);
+    expect(h.ui.setWorkingMessage).toHaveBeenLastCalledWith("Working… 3s");
+    await h.emit("session_shutdown");
+  });
+
   test("hour-long durations; timer replacement and teardown-safe UI calls", async () => {
     const h = createHarness();
     await h.emit("agent_start");
@@ -169,6 +228,7 @@ describe("state and cleanup", () => {
 
   test("branch subscriptions replace/dispose idempotently, including stale host disposal", async () => {
     const h = createHarness();
+    expect(h.bus.listenerCount(WORKING_MESSAGE_EVENT)).toBe(1);
     await h.emit("session_start", { reason: "startup" });
     const first = h.footer!;
     h.recreateFooter();
@@ -186,6 +246,7 @@ describe("state and cleanup", () => {
     await h.emit("session_shutdown");
     expect(intervals.size).toBe(0);
     expect(h.subscribers.size).toBe(0);
+    expect(h.bus.listenerCount(WORKING_MESSAGE_EVENT)).toBe(0);
     const afterShutdown = h.render.mock.calls.length;
     h.branchChanged();
     await h.emit("model_select");

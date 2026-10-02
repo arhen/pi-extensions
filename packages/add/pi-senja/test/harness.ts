@@ -1,4 +1,5 @@
 import { mock } from "bun:test";
+import { EventEmitter } from "node:events";
 import type {
   ContextUsage,
   ExtensionAPI,
@@ -19,6 +20,14 @@ type Handler = (event: Record<string, unknown>, ctx: ExtensionContext) => unknow
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
 
 export function createHarness(mode: ExtensionContext["mode"] = "tui") {
+  const bus = new EventEmitter();
+  const events = {
+    emit: (channel: string, data: unknown) => { bus.emit(channel, data); },
+    on: (channel: string, handler: (data: unknown) => void) => {
+      bus.on(channel, handler);
+      return () => { bus.off(channel, handler); };
+    },
+  };
   const handlers = new Map<string, Handler[]>();
   const commands = new Map<string, Command>();
   const roles: Array<[ThemeColor, string]> = [];
@@ -57,6 +66,9 @@ export function createHarness(mode: ExtensionContext["mode"] = "tui") {
     },
   };
   const ui = {
+    theme,
+    setWidget: mock(() => {}),
+    setWorkingIndicator: mock(() => {}),
     setFooter: mock((factory: typeof footerFactory) => {
       footer?.dispose?.();
       footerFactory = factory;
@@ -92,6 +104,12 @@ export function createHarness(mode: ExtensionContext["mode"] = "tui") {
     getContextUsage: () => usage,
   } as unknown as ExtensionContext;
   const api = {
+    events,
+    getActiveTools: () => ["read"],
+    getAllTools: () => [{ name: "read" }],
+    setActiveTools: mock(() => {}),
+    setThinkingLevel: mock(() => {}),
+    setModel: mock(async () => true),
     on: (event: string, handler: Handler) => {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
@@ -101,7 +119,7 @@ export function createHarness(mode: ExtensionContext["mode"] = "tui") {
   senja(api);
 
   return {
-    ctx, ui, roles, render, statuses, subscribers, commands,
+    api, events, bus, ctx, ui, roles, render, statuses, subscribers, commands,
     get footer() { return footer; },
     get header() { return header; },
     setEntries(value: SessionEntry[]) { entries = value; },

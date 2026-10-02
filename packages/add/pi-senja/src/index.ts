@@ -303,6 +303,11 @@ export default function (pi: ExtensionAPI) {
   let workingSince: number | undefined;
   let workingTimer: ReturnType<typeof setInterval> | undefined;
   let lastDoneIn: number | undefined;
+  let modeWorkingMessage: string | undefined;
+
+  const unsubscribeMode = pi.events.on("pi-mode:working-message", (message) => {
+    if (message === undefined || typeof message === "string") modeWorkingMessage = message || undefined;
+  });
 
   function requestFooterRender(): void {
     renderHandle?.requestRender();
@@ -331,7 +336,7 @@ export default function (pi: ExtensionAPI) {
       if (workingSince === undefined) return;
       const elapsed = formatDuration(Date.now() - workingSince);
       try {
-        ctx.ui.setWorkingMessage(`Working… ${elapsed}`);
+        ctx.ui.setWorkingMessage(`${modeWorkingMessage ?? "Working…"} ${elapsed}`);
       } catch {
         // Ignore if the UI is already torn down.
       }
@@ -585,6 +590,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", () => {
+    unsubscribeMode();
+    modeWorkingMessage = undefined;
     clearWorkingTimers();
     workingSince = undefined;
     lastDoneIn = undefined;

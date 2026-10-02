@@ -43,10 +43,24 @@ function resolveVariable(variable: string): string {
   return theme.vars[variable as keyof typeof theme.vars];
 }
 
+function luminance(hex: string): number {
+  const channels = [1, 3, 5].map((offset) => {
+    const value = parseInt(hex.slice(offset, offset + 2), 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722;
+}
+
+function contrast(foreground: string, background: string): number {
+  const light = luminance(foreground);
+  const dark = luminance(background);
+  return (Math.max(light, dark) + 0.05) / (Math.min(light, dark) + 0.05);
+}
+
 describe("package contract", () => {
-  test("1.0.0 public package uses explicit source/theme resources and scoped repository", () => {
+  test("public package uses explicit source/theme resources and scoped repository", () => {
     expect(manifest.name).toBe("@arhen/pi-senja");
-    expect(manifest.version).toBe("1.0.0");
+    expect(manifest.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(manifest.type).toBe("module");
     expect(manifest.license).toBe("MIT");
     expect(manifest.pi).toEqual({ extensions: ["./src/index.ts"], themes: ["./themes/senja.json"] });
@@ -118,6 +132,25 @@ describe("captured Gruvbox Material theme", () => {
     expect(theme.export).toEqual({ pageBg: "bg0", cardBg: "bg1", infoBg: "bg_dim" });
   });
 
+  test("quiet tool panels and editor syntax stay within the Gruvbox palette", () => {
+    expect(theme.colors.toolPendingBg).toBe("bg1");
+    expect(theme.colors.toolSuccessBg).toBe("bg0");
+    expect(theme.colors.toolErrorBg).toBe("bg_visual_red");
+    expect(theme.colors.success).toBe("green");
+    expect(luminance(resolveVariable(theme.colors.toolSuccessBg))).toBeLessThan(luminance(theme.vars.bg_visual_green));
+    const roles = {
+      toolTitle: "fg0", toolOutput: "fg0", syntaxComment: "grey2", syntaxKeyword: "purple",
+      syntaxFunction: "blue", syntaxVariable: "fg0", syntaxString: "green", syntaxNumber: "purple",
+      syntaxType: "yellow", syntaxOperator: "orange", syntaxPunctuation: "fg0",
+    } as const;
+    for (const [role, variable] of Object.entries(roles)) {
+      expect(theme.colors[role as keyof typeof roles]).toBe(variable);
+      for (const background of [theme.colors.toolPendingBg, theme.colors.toolSuccessBg]) {
+        expect(contrast(resolveVariable(variable), resolveVariable(background))).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
+
   test("matches Ghostty Senja foreground, selection, search, and ANSI hues", () => {
     expect(resolveVariable(theme.colors.text)).toBe("#d4be98");
     expect(resolveVariable(theme.colors.selectedBg)).toBe("#45403d");
@@ -146,5 +179,32 @@ describe("captured Gruvbox Material theme", () => {
     const resolved = api.getResolvedThemeColors("senja");
     for (const [role, variable] of Object.entries(theme.colors)) expect(resolved[role]).toBe(resolveVariable(variable));
     api.setRegisteredThemes([]);
+  });
+
+  test.skipIf(!currentHost)("actual Pi highlighting in streaming write calls and expanded read results", async () => {
+    const api = await import(pathToFileURL(join(currentHost!, "dist/modes/interactive/theme/theme.js")).href);
+    const read = await import(pathToFileURL(join(currentHost!, "dist/core/tools/renderers/read.js")).href);
+    const write = await import(pathToFileURL(join(currentHost!, "dist/core/tools/renderers/write.js")).href);
+    const loaded = api.loadThemeFromPath(themePath, "truecolor");
+    const previous = api.theme;
+    api.setThemeInstance(loaded);
+    try {
+      const code = 'import clsx from "clsx";\n// Gruvbox tool preview\nfunction mapRows(rows: string[]) {\n  return "ready";\n}';
+      const args = { path: "/project/preview.tsx", content: code };
+      const context = { args, cwd: "/project", expanded: true, isPartial: true, argsComplete: false, isError: false, showImages: false };
+      const components = [
+        write.writeRenderers.renderCall(args, loaded, context),
+        read.readRenderers.renderResult({ content: [{ type: "text", text: code }], details: {} }, { expanded: true, isPartial: false }, loaded, context),
+      ];
+      for (const component of components) {
+        const rendered = component.render(120).join("\n");
+        expect(rendered).toContain(loaded.fg("syntaxKeyword", "import"));
+        expect(rendered).toContain(loaded.fg("syntaxString", '"clsx"'));
+        expect(rendered).toContain(loaded.fg("syntaxFunction", "mapRows"));
+        expect(rendered).toContain(loaded.fg("syntaxComment", "// Gruvbox tool preview"));
+      }
+    } finally {
+      api.setThemeInstance(previous);
+    }
   });
 });

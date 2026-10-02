@@ -16,7 +16,7 @@ import {
 	resolveToolNames,
 } from "./logic.ts";
 import type { ModeStore } from "./store.ts";
-import { DEFAULT_MODE_NAME, type Mode, STATE_ENTRY_TYPE, WIDGET_KEY } from "./types.ts";
+import { DEFAULT_MODE_NAME, type Mode, STATE_ENTRY_TYPE, WIDGET_KEY, WORKING_MESSAGE_EVENT } from "./types.ts";
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
@@ -187,19 +187,21 @@ export class ModeEngine {
 	private applyVisuals(ctx: ExtensionContext): void {
 		const mode = this.current;
 		const theme = ctx.ui.theme;
+		const workingMessage = mode ? colorize(formatWorkingMessage(mode.name), mode.color, theme) : undefined;
+		ctx.ui.setWorkingMessage(workingMessage);
 		if (!mode) {
-			ctx.ui.setWorkingMessage(undefined);
 			ctx.ui.setWorkingIndicator(undefined);
 			this.setStandby(ctx, undefined);
 			this.setBorder(ctx, undefined);
+			this.pi.events.emit(WORKING_MESSAGE_EVENT, undefined);
 			return;
 		}
-		ctx.ui.setWorkingMessage(colorize(formatWorkingMessage(mode.name), mode.color, theme));
 		ctx.ui.setWorkingIndicator(
 			mode.color ? { frames: SPINNER_FRAMES.map((frame) => colorize(frame, mode.color, theme)) } : undefined,
 		);
 		this.setStandby(ctx, colorize(formatStandby(mode.name), mode.color, theme));
 		this.setBorder(ctx, mode.color);
+		this.pi.events.emit(WORKING_MESSAGE_EVENT, workingMessage);
 	}
 
 	private setBorder(ctx: ExtensionContext, color: string | undefined): void {

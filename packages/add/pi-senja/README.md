@@ -9,7 +9,9 @@ Forked from [pi-haiku](https://github.com/nnocte/pi-haiku) **0.2.0** by **nocte*
 - **Gruvbox Material dark/medium/material** — exact colors captured from Neovim, matching the Ghostty Senja theme. Background `#282828`, foreground `#d4be98`, orange accent `#e78a4e`. All 56 Pi roles and HTML export backgrounds use palette variables.
 - **A header** with shortcuts grouped by control, models, view, and input.
 - **A footer** with location, Git branch, session name, provider, model, thinking effort (including `max`), context bar, token usage, latest cache-hit rate, cost, OAuth subscription marker, and extension statuses.
-- **A live timer** while Pi works, plus elapsed-time completion message and notification.
+- **Quiet tool panels** — successful tools use the editor charcoal `#282828`, running tools use warm `#32302f`; green stays on success marks rather than washing the whole panel.
+- **Editor-style code colors** — pink keywords, olive strings, aqua function names, amber types, warm beige identifiers and punctuation, readable muted comments. Applies to code in tool calls/results and Markdown code blocks through Pi's syntax roles.
+- **A live timer** while Pi works, plus elapsed-time completion message and notification. Preserves the active mode label and colour from `@arhen/pi-add-mode` (`review is working... 8s`).
 - **A fresh start** — clear the visible screen on initial terminal startup without clearing scrollback.
 
 Enabled by default in terminal UI mode. Print, JSON, SDK, and RPC modes do not install terminal components, switch themes, clear the screen, or start UI timers. `/senja` in RPC mode reports that terminal UI is required.
