@@ -299,7 +299,8 @@ export default function (pi: ExtensionAPI) {
 							? `\nApplied IN PLACE (no branch) — ${t.isolationReason ?? "worktree unavailable"}. The changes are already in your working tree.`
 							: "";
 					const wtErr = t.worktreeError ? `\nWorktree: ${t.worktreeError}` : "";
-					return `\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}${wtErr}\n${formatUsage(t.usage)}`;
+					const modelNote = t.modelNote ? `\nModel: ${t.modelNote}` : "";
+					return `\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}${wtErr}${modelNote}\n${formatUsage(t.usage)}`;
 				}),
 			].join("\n");
 			return { content: [{ type: "text", text: truncateText(text) }], details: { run: cloneRun(run) } };

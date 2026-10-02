@@ -2,7 +2,13 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync 
 import { rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import {
+	type Api,
+	type AssistantMessage,
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Model,
+} from "@earendil-works/pi-ai";
 import {
 	type AgentSessionEvent,
 	createAgentSession,
@@ -160,21 +166,19 @@ export function resolveChildModel(ctx: ExtensionContext, explicit: string | unde
 const PROBE_THINKING_LEVELS: ThinkingLevel[] = ["low", "minimal", "medium", "high", "xhigh", "max"];
 
 /**
- * Thinking level for the usability probe: the one the task asked for, else the cheapest
- * the model accepts. Providers that require adaptive thinking reject a probe without one
- * (9router claude models answer `thinking.type.disabled is not supported`), which used to
- * make every preflight fail and fall back to the session model.
+ * Thinking level for the usability probe: exactly what the child session will send — the clamped
+ * requested level, or the cheapest the model accepts when none was requested. Probing without a
+ * level makes adaptive-thinking providers reject the request (9router claude models answer
+ * "thinking.type.disabled is not supported"), which used to make every preflight fail and fall
+ * back to the session model.
  */
 function probeThinking(model: Model<Api>, thinking?: string): ThinkingLevel | undefined {
-	if (thinking && thinking !== "off") return thinking as ThinkingLevel;
 	if (!model.reasoning) return undefined;
-	const map = model.thinkingLevelMap;
-	if (!map) return "low";
-	for (const level of PROBE_THINKING_LEVELS) {
-		const mapped = map[level as keyof typeof map];
-		if (mapped !== null && mapped !== undefined) return level;
-	}
-	return undefined;
+	const supported = getSupportedThinkingLevels(model);
+	if (thinking && thinking !== "off") return clampThinkingLevel(model, thinking as ThinkingLevel);
+	// the child clamps an unsupported "off" up to its cheapest level, so probe that instead
+	if (thinking === "off") return supported.includes("off") ? undefined : supported[0];
+	return PROBE_THINKING_LEVELS.find((level) => supported.includes(level));
 }
 
 async function probeModel(
@@ -325,10 +329,10 @@ export class SubagentManager {
 		return false;
 	}
 
-	clearWidget(ctx: ExtensionContext): void {
+	clearWidget(ctx?: ExtensionContext): void {
 		this.widgetRuns = [];
 		this.widgetTui = null;
-		if (ctx.hasUI) {
+		if (ctx?.hasUI) {
 			try {
 				ctx.ui.setWidget("subagents", undefined);
 			} catch {}
@@ -506,8 +510,14 @@ export class SubagentManager {
 	}
 
 	private widgetTui: TUI | null = null;
+
+	/** Settled runs are history (subagent_status/result still reach them) — the widget shows live work only. */
+	private pruneSettledWidget(): void {
+		this.widgetRuns = this.widgetRuns.filter((r) => !TERMINAL.includes(r.status));
+	}
 	private upsertWidgetRun(run: RunSnapshot | undefined): void {
-		if (!run) return;
+		this.pruneSettledWidget();
+		if (!run || TERMINAL.includes(run.status)) return;
 		const idx = this.widgetRuns.findIndex((r) => r.id === run.id);
 		if (idx >= 0) this.widgetRuns[idx] = run;
 		else this.widgetRuns.push(run);
@@ -547,12 +557,17 @@ export class SubagentManager {
 				this.widgetTimers.delete(run.id);
 			}
 		}
-		if (!run || this.widgetRuns.length === 0) return;
-		if (ctx?.hasUI) {
-			this.ensureWidget(ctx);
-			this.widgetTui?.requestRender();
+		this.pruneSettledWidget();
+		if (this.widgetRuns.length === 0) {
+			if (this.widgetTui) this.clearWidget(ctx);
+		} else {
+			if (ctx?.hasUI) {
+				this.ensureWidget(ctx);
+				this.widgetTui?.requestRender();
+			}
+			this.maybePulse(ctx);
 		}
-		this.maybePulse(ctx);
+		if (!run) return;
 
 		onUpdate?.({
 			content: [

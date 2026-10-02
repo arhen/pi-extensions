@@ -111,10 +111,17 @@ export function isTalking(task: TaskSnapshot): boolean {
 	return TALK_TOOLS.some((t) => a.startsWith(t));
 }
 let pulsePhase = 0;
+const NOTE_CAP = 240;
+function noteSnippet(note: string): string {
+	return note.length > NOTE_CAP ? `${note.slice(0, NOTE_CAP)}…` : note;
+}
 export function compactLines(run: RunSnapshot): string[] {
 	const lines: string[] = [];
 	for (const task of run.tasks.slice(0, MAX_TASKS)) {
 		lines.push(taskLine(task));
+		// a swapped model or toolset changes what the task did, so it cannot stay out of the status view
+		if (task.modelNote) lines.push(`   ↳ Model: ${noteSnippet(task.modelNote)}`);
+		if (task.toolsNote) lines.push(`   ↳ Tools: ${noteSnippet(task.toolsNote)}`);
 	}
 	if (run.tasks.length > MAX_TASKS) lines.push(`… +${run.tasks.length - MAX_TASKS} more`);
 	return lines;
