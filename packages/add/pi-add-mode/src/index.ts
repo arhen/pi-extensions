@@ -51,20 +51,20 @@ export default function piMode(pi: ExtensionAPI): void {
 
 	pi.registerFlag("start-mode", { description: "Start with this pi mode active", type: "string" });
 
-	pi.registerShortcut(Key.ctrl("tab"), {
+	pi.registerShortcut(Key.alt("m"), {
 		description: "Cycle pi modes",
 		handler: (ctx) => cycle(ctx, 1),
 	});
 
-	pi.registerShortcut(Key.ctrlShift("tab"), {
-		description: "Cycle pi modes backwards",
-		handler: (ctx) => cycle(ctx, -1),
+	// Aliases for terminals that report ctrl+tab and do not consume it.
+	pi.registerShortcut(Key.ctrl("tab"), {
+		description: "Cycle pi modes (ctrl+tab alias)",
+		handler: (ctx) => cycle(ctx, 1),
 	});
 
-	// Fallback for terminals that cannot report ctrl+tab.
-	pi.registerShortcut(Key.alt("m"), {
-		description: "Cycle pi modes (fallback)",
-		handler: (ctx) => cycle(ctx, 1),
+	pi.registerShortcut(Key.ctrlShift("tab"), {
+		description: "Cycle pi modes backwards (alias)",
+		handler: (ctx) => cycle(ctx, -1),
 	});
 
 	pi.registerCommand("mode", {

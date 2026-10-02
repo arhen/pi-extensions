@@ -20,8 +20,8 @@ pi install npm:@arhen/pi-add-mode
 | `/mode new` | Create a mode |
 | `/mode edit` | Edit a mode (picks from a list) |
 | `/mode list` | Print modes with enabled/active state |
-| `ctrl+tab` / `ctrl+shift+tab` | Cycle forward/back over **enabled** modes (default first) |
-| `alt+m` | Cycle forward (fallback for terminals that cannot report `ctrl+tab`) |
+| `alt+m` | Cycle forward over **enabled** modes (default first) |
+| `ctrl+tab` / `ctrl+shift+tab` | Aliases, only where the terminal does not consume them |
 
 Enable ≠ activate: `space` in the panel toggles whether a mode is in the `ctrl+tab` rotation; `enter` (or
 `/mode <name>`) activates it. Disabled modes can still be activated by name.
@@ -41,15 +41,12 @@ extension owns the editor, only the `<mode> standby` widget line is shown.
 
 ### Terminal notes
 
-`ctrl+tab` only reaches pi when the terminal does not consume it. Ghostty binds it to tab switching by default;
-add this to the Ghostty config and reload it:
+`alt+m` is the primary shortcut. Ghostty leaves plain `alt` chords free, Herdr reserves only its `ctrl+b` prefix, and pi
+uses `alt+b/f/d/enter/up/left/right/backspace` but not `alt+m`. It also works without the Kitty keyboard protocol, so it
+survives plain tmux and old terminals.
 
-```ini
-keybind = ctrl+tab=unbind
-keybind = ctrl+shift+tab=unbind
-```
-
-Terminals without the Kitty keyboard protocol cannot distinguish `ctrl+tab` from `tab`; use `alt+m` there.
+`ctrl+tab` / `ctrl+shift+tab` are registered as aliases, but most terminals consume them before pi sees them — Ghostty
+binds both to tab switching — so they usually do nothing.
 
 ## Mode fields
 
