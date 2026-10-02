@@ -1,0 +1,167 @@
+import { describe, expect, test } from "bun:test";
+import {
+	applySubagentModel,
+	cycleList,
+	describeTools,
+	formatStandby,
+	formatWorkingMessage,
+	isDefaultModeName,
+	isToolPreset,
+	nextInCycle,
+	normalizeModeEntry,
+	normalizeTools,
+	parseToolList,
+	resolveToolNames,
+} from "./logic.ts";
+import type { Mode } from "./types.ts";
+
+const KNOWN = ["read", "bash", "edit", "write", "grep", "find", "ls", "questionnaire", "subagent"];
+
+function mode(name: string, enabled = true): Mode {
+	return { name, enabled, tools: "default" };
+}
+
+describe("normalizeTools", () => {
+	test("accepts presets", () => {
+		expect(normalizeTools("plan")).toBe("plan");
+		expect(normalizeTools("build")).toBe("build");
+		expect(normalizeTools("default")).toBe("default");
+	});
+
+	test("sanitizes custom lists", () => {
+		expect(normalizeTools(["read", "edit"])).toEqual(["read", "edit"]);
+		expect(normalizeTools([])).toBe("default");
+		expect(normalizeTools("nonsense")).toBe("default");
+	});
+
+	test("isToolPreset", () => {
+		expect(isToolPreset("plan")).toBe(true);
+		expect(isToolPreset("nope")).toBe(false);
+	});
+});
+
+describe("normalizeModeEntry", () => {
+	test("skips the reserved default name", () => {
+		expect(normalizeModeEntry("default", {})).toBeUndefined();
+		expect(normalizeModeEntry("  ", {})).toBeUndefined();
+	});
+
+	test("fills defaults and trims", () => {
+		const mode = normalizeModeEntry(" review ", { instructions: "be careful", model: " p/m " });
+		expect(mode).toEqual({
+			name: "review",
+			enabled: true,
+			color: undefined,
+			description: undefined,
+			instructions: "be careful",
+			tools: "default",
+			model: "p/m",
+			subagentModel: undefined,
+		});
+	});
+
+	test("respects disabled", () => {
+		expect(normalizeModeEntry("x", { enabled: false })?.enabled).toBe(false);
+	});
+});
+
+describe("resolveToolNames", () => {
+	test("default keeps the base set", () => {
+		expect(resolveToolNames("default", ["read", "bash", "subagent"], KNOWN)).toEqual(["read", "bash", "subagent"]);
+	});
+
+	test("plan drops write tools and keeps read-only ones", () => {
+		expect(resolveToolNames("plan", ["read", "bash", "edit", "write", "subagent"], KNOWN)).toEqual([
+			"read",
+			"bash",
+			"subagent",
+			"grep",
+			"find",
+			"ls",
+		]);
+	});
+
+	test("build restores write tools and keeps extras", () => {
+		expect(resolveToolNames("build", ["read", "subagent"], KNOWN)).toEqual([
+			"read",
+			"bash",
+			"edit",
+			"write",
+			"subagent",
+		]);
+	});
+
+	test("custom filters unknown tools", () => {
+		expect(resolveToolNames(["read", "ghost", "edit", "edit"], ["read"], KNOWN)).toEqual(["read", "edit"]);
+	});
+
+	test("empty custom falls back to build", () => {
+		expect(resolveToolNames(["ghost"], [], KNOWN)).toEqual(["read", "bash", "edit", "write"]);
+	});
+});
+
+describe("cycle", () => {
+	const modes = [mode("alpha"), mode("beta", false), mode("gamma")];
+
+	test("only enabled modes plus default", () => {
+		expect(cycleList(modes)).toEqual(["default", "alpha", "gamma"]);
+	});
+
+	test("forward wraps", () => {
+		const list = cycleList(modes);
+		expect(nextInCycle(list, undefined, 1)).toBe("alpha");
+		expect(nextInCycle(list, "gamma", 1)).toBe("default");
+		expect(nextInCycle(list, "default", -1)).toBe("gamma");
+	});
+
+	test("unknown current starts at an edge", () => {
+		expect(nextInCycle(["default", "a"], "ghost", 1)).toBe("default");
+	});
+});
+
+describe("subagent model injection", () => {
+	test("patches tasks and chain without overriding explicit models", () => {
+		const input: Record<string, unknown> = {
+			tasks: [
+				{ agent: "a", task: "t" },
+				{ agent: "b", task: "t", model: "x/y" },
+			],
+			chain: [{ agent: "c", task: "t" }],
+		};
+		expect(applySubagentModel(input, "openai-codex/gpt")).toBe(true);
+		expect(input.tasks).toEqual([
+			{ agent: "a", task: "t", model: "openai-codex/gpt" },
+			{ agent: "b", task: "t", model: "x/y" },
+		]);
+		expect(input.chain).toEqual([{ agent: "c", task: "t", model: "openai-codex/gpt" }]);
+	});
+
+	test("patches single mode", () => {
+		const input: Record<string, unknown> = { agent: "a", task: "t" };
+		expect(applySubagentModel(input, "p/m")).toBe(true);
+		expect(input.model).toBe("p/m");
+	});
+
+	test("leaves unrelated input alone", () => {
+		const input: Record<string, unknown> = { command: "ls" };
+		expect(applySubagentModel(input, "p/m")).toBe(false);
+	});
+});
+
+describe("formatting", () => {
+	test("working and standby text", () => {
+		expect(formatWorkingMessage("review")).toBe("review is working...");
+		expect(formatStandby("review")).toBe("review standby");
+	});
+
+	test("tool list parsing and describe", () => {
+		expect(parseToolList("read, bash\nedit  read")).toEqual(["read", "bash", "edit"]);
+		expect(describeTools(["read", "bash"])).toBe("read, bash");
+		expect(describeTools("plan")).toBe("plan");
+	});
+
+	test("default name check", () => {
+		expect(isDefaultModeName(" default ")).toBe(true);
+		expect(isDefaultModeName("other")).toBe(false);
+	});
+});
