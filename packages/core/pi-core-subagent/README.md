@@ -51,7 +51,7 @@ flowchart LR
 - **Proof is an exit code, never a self-report.** Tasks are asked for a runnable `Verify:` command; the leader checks `git diff --stat`. Agents auditing their own work score ~0. ([why](#why-9-is-a-verification-command-not-a-self-report))
 - **No ceremony without edges.** Six independent reviewers stay six independent reviewers — no waves, no gates, no graph vocabulary imposed on flat work.
 - **Agent files respected.** A spawn goal (name + task) that matches a user agent file's `description` (`.agents/agents`, `.claude/agents`, `.pi/agents` — project then home) loads that file — body = system prompt, frontmatter `model`/`tools` apply, file `model` validated against the pi model registry. File wins over inline; no match → on-demand definition.
-- **Two toolsets, plus explicit override.** Read-only (`read, grep, find, ls` — default) or write (`read, grep, find, ls, bash, edit, write` — `write: true`); `tools:` sets an explicit per-task allowlist.
+- **Two toolsets, plus explicit override.** Read-only (`read, grep, find, ls, codemode` — default) or write (`read, grep, find, ls, bash, edit, write, codemode` — `write: true`); `tools:` sets an explicit per-task allowlist. Children run with `noExtensions`, so `codemode` is the one extension they get: it lets a child batch `tools.*` calls instead of spending a model turn per call.
 - **In-process** — children are `AgentSession`s in the same runtime. No process spawn, no context bleed.
 - **Zero parent-context injection.** No catalog, no context hook. 7 slim tools total.
 - **Throttled updates** — widget/stream updates coalesce to ~6/s; no per-event deep clones.
@@ -294,7 +294,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 | `await_subagent` | block until a run finishes (optional `timeoutMs`) |
 | `reply_subagent` | answer a child's `ask_parent` question |
 | `steer_subagent` | inject a steering message into a running child's session (queues as steer if mid-turn; lands at its next model boundary) |
-| `resume_subagent` | revive a failed/aborted task in its original session (context + branch preserved); optional `model` swap and custom `message` |
+| `resume_subagent` | revive a failed/aborted task in its original session (context + branch preserved); optional `model` swap, `thinking` override (the task's stored level is clamped to what the target model accepts), custom `message`. Waits for the reopened session to go idle before prompting, so a task killed mid-turn can still be resumed |
 | `subagent_cancel` | abort a running/queued run |
 
 ### Per-task fields

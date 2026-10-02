@@ -1010,6 +1010,9 @@ export class SubagentManager {
 			});
 
 			const maxRuntimeMs = input.maxRuntimeMs ?? (this.autoLimit ? DEFAULT_RUNTIME_MS : UNLIMITED_RUNTIME_MS);
+			// A resumed session can still be draining the turn that failed or timed out. Prompting while
+			// its agent is mid-run is rejected outright ("already processing a prompt"), so wait first.
+			if (resume) await child.waitForIdle();
 			const promptPromise = child.prompt(resume?.message ?? task.task, { source: "extension" });
 			const races: Promise<unknown>[] = [promptPromise, childFailurePromise, childEndPromise];
 			if (maxRuntimeMs > 0) {
