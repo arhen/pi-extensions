@@ -54,7 +54,7 @@
     },
     "packages/add/pi-add-mode": {
       "name": "@arhen/pi-add-mode",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "devDependencies": {
         "@biomejs/biome": "^2.5.8",
         "@earendil-works/pi-ai": "^1.0.0",
@@ -92,7 +92,7 @@
     },
     "packages/add/pi-senja": {
       "name": "@arhen/pi-senja",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "devDependencies": {
         "@earendil-works/pi-ai": "^1.0.0",
         "@earendil-works/pi-coding-agent": "^1.0.0",
