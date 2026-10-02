@@ -1,6 +1,6 @@
 {
 	"name": "@arhen/pi-add-mode",
-	"version": "1.0.0",
+	"version": "1.0.1",
 	"description": "pi extension: named modes bundling instructions, tool set, model, subagent model and colour — create/enable/disable with /mode, switch with ctrl+tab.",
 	"license": "MIT",
 	"type": "module",
