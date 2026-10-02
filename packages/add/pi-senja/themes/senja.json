@@ -61,7 +61,7 @@
     "customMessageText": "fg0",
     "customMessageLabel": "blue",
     "toolPendingBg": "bg_visual_yellow",
-    "toolSuccessBg": "bg_visual_green",
+    "toolSuccessBg": "bg3",
     "toolErrorBg": "bg_visual_red",
     "toolTitle": "fg0",
     "toolOutput": "fg0",

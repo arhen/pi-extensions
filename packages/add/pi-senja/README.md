@@ -9,7 +9,7 @@ Forked from [pi-haiku](https://github.com/nnocte/pi-haiku) **0.2.0** by **nocte*
 - **Gruvbox Material dark/medium/material** — exact colors captured from Neovim, matching the Ghostty Senja theme. Background `#282828`, foreground `#d4be98`, orange accent `#e78a4e`. All 56 Pi roles and HTML export backgrounds use palette variables.
 - **A header** with shortcuts grouped by control, models, view, and input.
 - **A footer** with location, Git branch, session name, provider, model, thinking effort (including `max`), context bar, token usage, latest cache-hit rate, cost, OAuth subscription marker, and extension statuses.
-- **State-tinted tool panels** — running tools use amber `#4f422e`, successful tools moss green `#3b4439`, failed tools maroon `#4c3432`, so each state reads apart from the `#282828` page and from the warm `#32302f` user message. Adjacent tool blocks of different states now have a visible seam.
+- **State-tinted tool panels** — running tools use amber `#4f422e`, successful tools the warm grey `#45403d`, failed tools maroon `#4c3432`. All three stay clear of the `#282828` page and the `#32302f` user message, so every block type has its own panel and adjacent tools show a visible seam.
 - **Editor-style code colors** — pink keywords, olive strings, aqua function names, amber types, warm beige identifiers and punctuation, readable muted comments. Applies to code in tool calls/results and Markdown code blocks through Pi's syntax roles.
 - **A live timer** while Pi works, plus elapsed-time completion message and notification. Preserves the active mode label and colour from `@arhen/pi-add-mode` (`review is working... 8s`).
 - **A fresh start** — clear the visible screen on initial terminal startup without clearing scrollback.
