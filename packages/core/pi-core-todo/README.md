@@ -2,59 +2,102 @@
 
 [![npm version](https://img.shields.io/npm/v/@arhen%2Fpi-core-todo?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-core-todo)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
-[![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://github.com/earendil-works/pi)
+
+Flat or arbitrarily nested todos for [Pi](https://github.com/earendil-works/pi), with explicit statuses, dependency links, a compact widget, and a scrollable tree browser.
 
 ## Install
-
-Requires the [pi coding agent](https://github.com/earendil-works/pi) — install it first: `npm install -g @earendil-works/pi-coding-agent`.
 
 ```sh
 pi install npm:@arhen/pi-core-todo
 ```
 
-> Registers the `todo` tool — conflicts with other todo extensions (`@juicesharp/rpiv-todo`). Run one at a time.
+Registers `todo` and `/todos`; use only one todo extension at a time.
 
-Minimalist pi todo extension: `todo` tool with a 4-state machine and `blockedBy` dependencies, `/todos` command, persistent tree widget. Fork of `@juicesharp/rpiv-todo`, cut to the core — no i18n, no branch replay, no config, no lazy-loading machinery.
+## Nested todos
 
-## Widget
+Nesting is optional. Existing flat tasks and saved sessions continue to work.
 
-![Todos widget](docs/todo-widget.png)
+```json
+{ "action": "create", "subject": "Build feature" }
+{ "action": "create", "subject": "Add validation", "parentId": 1 }
+{ "action": "create", "subject": "Check inputs", "parentId": 2 }
+```
 
-Above-editor tree: `● Todos (2/5)` heading, `✓` strikethrough for completed, `◐` for in-progress with `activeForm` in parens, `○` for pending.
+Tool headings identify those tasks as `#1`, `#1.a`, and `#1.a.a`. Todo rows show clean titles without ID prefixes. Each nesting level uses sibling letters, continuing through `z`, `aa`, `ab`, etc. Deleted siblings reserve their letters so surviving siblings do not get renamed. Reparenting intentionally changes display paths.
 
-## What's kept
+Tool arguments still use stable **numeric IDs**. Model-facing results include numeric references for children, while tool headings use hierarchical display paths and todo rows contain no IDs.
 
-- `todo` tool: create / update / list / get / delete / clear
-- 4-state machine: `pending → in_progress → completed`, `deleted` tombstone (legal-transition validation)
-- `blockedBy` dependencies: create with initial set, `addBlockedBy` / `removeBlockedBy` additive updates, self-block and cycle rejection
-- `/todos` command: grouped status listing
-- Tree widget above the editor: `● Todos (n/m)` heading, `├─/└─` rows, status glyphs, `#id` + `⛓` deps when present, completed rows hide one turn after completion
-- Per-session state isolation (detached/child sessions never clobber each other)
-- Sidecar persistence (`~/.pi/agent/pi-todo-state.json`, debounced) — survives restarts
+- Set `parentId` on create/update to attach a task at any depth.
+- Set `parentId: null` to move a task and its subtree to the root.
+- Omit `parentId` to leave existing behavior unchanged.
+- Missing/deleted parents, self-parenting, and hierarchy cycles are rejected.
+- Nesting and `blockedBy` dependencies are separate relationships.
 
-## What's cut (vs rpiv-todo)
+### Status and progress
 
-- i18n/locales — inline English
-- Branch/fork replay — replaced by sidecar persistence (no replay of history across forked sessions)
-- Config dialog, collapse shortcut, guidance validation — fixed behavior
-- Lazy overlay loader + stale-module detection — direct import, register-once widget
+Statuses stay explicit: `pending → in_progress → completed`, plus immutable `deleted` tombstones. Completing a child does not change its parent's status. A parent cannot be completed while any live descendant is unfinished, and unfinished subtrees cannot be attached under completed parents.
+
+Each parent displays **`[completed direct children / total live direct children]`**. Grandchildren and deeper descendants are not counted in that parent's counter; leaves have no counter.
+
+Deleting a parent, including `update` with `status: "deleted"`, promotes its live direct children to the nearest live ancestor, or the root. It never deletes their subtrees. Existing dependency cleanup still removes links to the deleted task.
+
+## Bounded UI
+
+```text
+todo → #7.b.b
+
+● Todos (2/12)
+├─ ○ Build nested todos [1/2]
+│  ├─ ✓ Parent links
+│  └─ ○ Safe reparenting [1/2]
+│     ├─ ✓ Validate parents
+│     └─ ◐ Reject cycles
+└─ +7 hidden · /todos
+```
+
+The above-editor widget uses at most **8 total lines or one quarter of the terminal height**, whichever is smaller. Short panes shrink it to a summary/active row; panes below four rows hide it. Active tasks and their ancestor context take priority over unrelated rows. Completed rows hide after the next agent turn without changing progress totals.
+
+Deep indentation compresses with an explicit depth marker; long display paths compress in tool headings. Subjects are sanitized and truncated by visible terminal columns, including ANSI styling, wide characters, and emoji.
+
+Tool calls are single-line previews. Results remain bounded even when expanded: at most 5 collapsed or 8 expanded lines, reduced further for short panes. Mutations show the affected task rather than repeating the whole list. Model-facing `list` output shows up to 100 tasks; `get` provides individual details.
+
+### `/todos` browser
+
+Open the full tree in a bounded overlay: at most 24 lines or 70% of terminal height. All tasks remain reachable by scrolling and folding; no long notification consumes the screen.
+
+| Key | Action |
+| --- | --- |
+| ↑ / ↓ | Move selection |
+| ← | Collapse branch, or select its parent |
+| → | Expand branch, or select its first child |
+| Enter / Space | Toggle branch |
+| PgUp / PgDn | Scroll one page |
+| Home / End | First / last visible task |
+| Esc / Ctrl+C | Close and return to the editor |
+
+Selection stays visible when the terminal resizes. The browser is read-only; the agent manages task state through `todo`.
 
 ## Tool contract
 
-Same LLM-facing schema as rpiv-todo: `action` (required) + per-action fields (`subject`, `status`, `id`, `blockedBy`, `addBlockedBy`, `removeBlockedBy`, `activeForm`, `description`, `owner`, `metadata`, `includeDeleted`). Prompt guidelines preserved verbatim (never batch completions, one task in_progress at a time, keep it in_progress on failure).
+Actions: `create`, `update`, `list`, `get`, `delete`, `clear`.
+
+Fields: `subject`, `description`, `activeForm`, `status`, `parentId`, `id`, `blockedBy`, `addBlockedBy`, `removeBlockedBy`, `owner`, `metadata`, `includeDeleted`.
+
+Create produces a pending task; update sets its explicit status. Dependency updates are additive, with self-block/cycle rejection. List hides deleted tasks unless `includeDeleted: true` and supports a status filter.
+
+## Persistence
+
+Per-session state is isolated and saved in `~/.pi/agent/pi-todo-state.json`. Parent links survive restarts; old snapshots without them remain valid. There is no branch-history replay. Sidecar persistence assumes one Pi process per agent directory; concurrent processes can overwrite one another's state.
 
 ## Development
 
 ```sh
-bun install
-npx tsc --noEmit
-bun test   # pure-logic: reducer, transitions, cycles, sanitize
+bun test packages/core/pi-core-todo/test
+bunx tsc -p packages/core/pi-core-todo/tsconfig.json --noEmit
 ```
+
+Tests cover reducers, deep hierarchy operations, deletion, display paths, direct-child counters, narrow/short rendering, keyboard folding/scrolling, resize, and hostile terminal text.
 
 ## License
 
-MIT.
-
-## Notes
-
-- Sidecar persistence assumes a **single pi process** per agent dir; concurrent processes overwrite each other's todo state.
+MIT. Forked from `@juicesharp/rpiv-todo`.

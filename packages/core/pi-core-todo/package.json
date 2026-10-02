@@ -2,7 +2,11 @@
   "name": "@arhen/pi-core-todo",
   "version": "1.0.7",
   "type": "module",
-  "description": "Minimalist pi todo extension: todo tool with 4-state machine and blockedBy dependencies, /todos command, persistent tree widget. Fork of @juicesharp/rpiv-todo, cut to the core.",
+  "description": "Flat or arbitrarily nested Pi todos with explicit statuses, direct-child progress, dependencies, a compact widget, and a scrollable tree browser.",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
   "license": "MIT",
   "author": "arhen",
   "repository": {

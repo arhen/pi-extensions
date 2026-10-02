@@ -1,8 +1,3 @@
-/**
- * Domain types + TypeBox schema. Field names and descriptions are the LLM
- * contract — kept verbatim from rpiv-todo.
- */
-
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 

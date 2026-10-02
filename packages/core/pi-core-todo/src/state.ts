@@ -4,6 +4,7 @@
  */
 
 import type { Task, TaskAction, TaskDetails, TaskMutationParams, TaskState, TaskStatus } from "./types.ts";
+import { TaskTree } from "./tree.ts";
 
 // ── transitions ──────────────────────────────────────────────────────────
 
@@ -360,19 +361,31 @@ export function sanitizeTerminalText(value: string): string {
 
 // ── formatting ───────────────────────────────────────────────────────────
 
-function formatListLine(t: Task): string {
-	const block = t.blockedBy?.length ? ` ⛓ ${t.blockedBy.map((id) => `#${id}`).join(",")}` : "";
+function formatReference(tree: TaskTree, id: number): string {
+	return tree.label(id, 8) + (tree.parent.has(id) ? ` (id: ${id})` : "");
+}
+
+function formatListLine(t: Task, tree: TaskTree): string {
+	const block = t.blockedBy?.length ? ` ⛓ ${t.blockedBy.map((id) => formatReference(tree, id)).join(", ")}` : "";
 	const form = t.status === "in_progress" && t.activeForm ? ` (${sanitizeTerminalText(t.activeForm)})` : "";
-	return `[${t.status}] #${t.id} ${sanitizeTerminalText(t.subject)}${form}${block}`;
+	const { done, total } = tree.progress(t.id);
+	const progress = total ? ` [${done}/${total}]` : "";
+	return `[${t.status}] ${formatReference(tree, t.id)} ${sanitizeTerminalText(t.subject)}${progress}${form}${block}`;
 }
 
 function formatGetLines(task: Task, state: TaskState): string {
 	const blocks = deriveBlocks(state.tasks).get(task.id) ?? [];
-	const lines = [`#${task.id} [${task.status}] ${sanitizeTerminalText(task.subject)}`];
+	const tree = new TaskTree(state.tasks);
+	const { done, total } = tree.progress(task.id);
+	const lines = [`${formatReference(tree, task.id)} [${task.status}] ${sanitizeTerminalText(task.subject)}${total ? ` [${done}/${total}]` : ""}`];
+	const parent = tree.parent.get(task.id);
+	lines.push(`  parent: ${parent === undefined ? "root" : formatReference(tree, parent)}`);
+	const children = (tree.children.get(task.id) ?? []).filter((child) => child.status !== "deleted");
+	if (children.length) lines.push(`  children: ${children.map((child) => formatReference(tree, child.id)).join(", ")}`);
 	if (task.description) lines.push(`  description: ${sanitizeTerminalText(task.description)}`);
 	if (task.activeForm) lines.push(`  activeForm: ${sanitizeTerminalText(task.activeForm)}`);
-	if (task.blockedBy?.length) lines.push(`  blockedBy: ${task.blockedBy.map((id) => `#${id}`).join(", ")}`);
-	if (blocks.length) lines.push(`  blocks: ${blocks.map((id) => `#${id}`).join(", ")}`);
+	if (task.blockedBy?.length) lines.push(`  blockedBy: ${task.blockedBy.map((id) => formatReference(tree, id)).join(", ")}`);
+	if (blocks.length) lines.push(`  blocks: ${blocks.map((id) => formatReference(tree, id)).join(", ")}`);
 	if (task.owner) lines.push(`  owner: ${sanitizeTerminalText(task.owner)}`);
 	return lines.join("\n");
 }
@@ -381,22 +394,26 @@ export function formatContent(op: Op, state: TaskState): string {
 	switch (op.kind) {
 		case "create": {
 			const t = state.tasks.find((x) => x.id === op.taskId);
-			return t ? `Created #${t.id}: ${sanitizeTerminalText(t.subject)} (pending)` : `Created #${op.taskId}`;
+			return t ? `Created ${formatReference(new TaskTree(state.tasks), t.id)}: ${sanitizeTerminalText(t.subject)} (pending)` : `Created #${op.taskId}`;
 		}
 		case "update": {
-			if (!op.changed) return `No change: #${op.id} already matches the requested values (status: ${op.toStatus})`;
+			const label = formatReference(new TaskTree(state.tasks), op.id);
+			if (!op.changed) return `No change: ${label} already matches the requested values (status: ${op.toStatus})`;
 			const transition = op.fromStatus !== op.toStatus ? ` (${op.fromStatus} → ${op.toStatus})` : "";
-			return `Updated #${op.id}${transition}`;
+			return `Updated ${label}${transition}`;
 		}
 		case "delete":
-			return `Deleted #${op.id}: ${sanitizeTerminalText(op.subject)}`;
+			return `Deleted ${formatReference(new TaskTree(state.tasks), op.id)}: ${sanitizeTerminalText(op.subject)}`;
 		case "clear":
 			return `Cleared ${op.count} tasks`;
 		case "list": {
 			let view = state.tasks;
 			if (!op.includeDeleted) view = view.filter((t) => t.status !== "deleted");
 			if (op.statusFilter) view = view.filter((t) => t.status === op.statusFilter);
-			return view.length === 0 ? "No tasks" : view.map(formatListLine).join("\n");
+			const tree = new TaskTree(state.tasks);
+			const lines = view.slice(0, 100).map((task) => formatListLine(task, tree));
+			if (view.length > 100) lines.push(`+${view.length - 100} more tasks; use get with a numeric id for details`);
+			return lines.length ? lines.join("\n") : "No tasks";
 		}
 		case "get":
 			return formatGetLines(op.task, state);
