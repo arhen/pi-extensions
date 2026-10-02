@@ -1,21 +1,43 @@
 {
   "name": "@arhen/pi-senja",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Senja Gruvbox Material theme with Haiku's structured header, footer, and live timer for Pi.",
   "license": "MIT",
   "author": "arhen",
-  "contributors": ["nocte <nocte19@gmail.com>"],
+  "contributors": [
+    "nocte <nocte19@gmail.com>"
+  ],
   "type": "module",
   "main": "./src/index.ts",
-  "files": ["src", "themes", "README.md", "LICENSE"],
-  "keywords": ["pi-package", "pi", "pi-coding-agent", "pi-extension", "pi-theme", "gruvbox-material", "senja", "footer", "header", "tui"],
+  "files": [
+    "src",
+    "themes",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "pi-extension",
+    "pi-theme",
+    "gruvbox-material",
+    "senja",
+    "footer",
+    "header",
+    "tui"
+  ],
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test test"
   },
   "pi": {
-    "extensions": ["./src/index.ts"],
-    "themes": ["./themes/senja.json"]
+    "extensions": [
+      "./src/index.ts"
+    ],
+    "themes": [
+      "./themes/senja.json"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -23,9 +45,15 @@
     "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": { "optional": true },
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true }
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@earendil-works/pi-ai": "^1.0.0",
@@ -40,7 +68,9 @@
     "directory": "packages/add/pi-senja"
   },
   "homepage": "https://github.com/arhen/pi-extensions/tree/main/packages/add/pi-senja#readme",
-  "bugs": { "url": "https://github.com/arhen/pi-extensions/issues" },
+  "bugs": {
+    "url": "https://github.com/arhen/pi-extensions/issues"
+  },
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"

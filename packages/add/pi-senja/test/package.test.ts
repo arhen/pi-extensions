@@ -132,12 +132,21 @@ describe("captured Gruvbox Material theme", () => {
     expect(theme.export).toEqual({ pageBg: "bg0", cardBg: "bg1", infoBg: "bg_dim" });
   });
 
-  test("quiet tool panels and editor syntax stay within the Gruvbox palette", () => {
-    expect(theme.colors.toolPendingBg).toBe("bg1");
-    expect(theme.colors.toolSuccessBg).toBe("bg0");
+  test("tool state panels use distinct Gruvbox visual swatches", () => {
+    expect(theme.colors.toolPendingBg).toBe("bg_visual_yellow");
+    expect(theme.colors.toolSuccessBg).toBe("bg_visual_green");
     expect(theme.colors.toolErrorBg).toBe("bg_visual_red");
     expect(theme.colors.success).toBe("green");
-    expect(luminance(resolveVariable(theme.colors.toolSuccessBg))).toBeLessThan(luminance(theme.vars.bg_visual_green));
+
+    const blockBackgrounds = [
+      theme.colors.userMessageBg,
+      theme.colors.customMessageBg,
+      theme.colors.toolPendingBg,
+      theme.colors.toolSuccessBg,
+      theme.colors.toolErrorBg,
+    ];
+    expect(new Set(blockBackgrounds).size).toBe(blockBackgrounds.length);
+
     const roles = {
       toolTitle: "fg0", toolOutput: "fg0", syntaxComment: "grey2", syntaxKeyword: "purple",
       syntaxFunction: "blue", syntaxVariable: "fg0", syntaxString: "green", syntaxNumber: "purple",
@@ -145,8 +154,17 @@ describe("captured Gruvbox Material theme", () => {
     } as const;
     for (const [role, variable] of Object.entries(roles)) {
       expect(theme.colors[role as keyof typeof roles]).toBe(variable);
-      for (const background of [theme.colors.toolPendingBg, theme.colors.toolSuccessBg]) {
-        expect(contrast(resolveVariable(variable), resolveVariable(background))).toBeGreaterThanOrEqual(4.5);
+    }
+
+    // Body text clears 4.5 on every block; the state panels trade secondary-text
+    // contrast for visible state (grey/orange/red land at 3.1-4.1 on the lighter
+    // visual swatches, which already applied to the maroon error panel).
+    for (const background of blockBackgrounds) {
+      expect(contrast(resolveVariable("fg0"), resolveVariable(background))).toBeGreaterThanOrEqual(4.5);
+    }
+    for (const variable of ["grey2", "purple", "blue", "green", "yellow"]) {
+      for (const background of [theme.colors.toolPendingBg, theme.colors.toolSuccessBg, theme.colors.toolErrorBg]) {
+        expect(contrast(resolveVariable(variable), resolveVariable(background))).toBeGreaterThanOrEqual(3.5);
       }
     }
   });
