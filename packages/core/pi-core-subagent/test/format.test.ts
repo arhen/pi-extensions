@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { makeSummary, SubagentsWidget, taskLine } from "../src/format.ts";
+import { compactLines, makeSummary, SubagentsWidget, taskLine } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 
 const plain = { fg: (_c: string, s: string) => s } as unknown as Theme;
@@ -93,6 +93,26 @@ describe("taskLine model tag", () => {
 			),
 		).toStartWith("✓ vendor-factchecker [openai-codex/gpt-5.6-sol/xhigh] ·");
 		expect(taskLine(task({ agent: "bare" }))).toStartWith("✓ bare ·");
+	});
+});
+
+describe("compactLines notes", () => {
+	test("a model swap stays visible in subagent_status", () => {
+		const out = compactLines(
+			run([
+				task({
+					id: "task_1",
+					model: "cc/claude-opus-5-5",
+					modelNote:
+						"9router/cc/claude-sonnet-5-5 failed preflight (400); using session model 9router/cc/claude-opus-5-5",
+				}),
+			]),
+		).join("\n");
+		expect(out).toContain("↳ Model: 9router/cc/claude-sonnet-5-5 failed preflight");
+	});
+
+	test("no note line is added when nothing was swapped", () => {
+		expect(compactLines(run([task({ id: "task_1" })]))).toHaveLength(1);
 	});
 });
 

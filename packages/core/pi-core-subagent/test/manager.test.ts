@@ -295,3 +295,46 @@ describe("resumeTask", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 });
+
+describe("widget auto-prune", () => {
+	interface WidgetInternals {
+		widgetRuns: { id: string }[];
+		upsertWidgetRun(run: unknown): void;
+		flushWidget(run: unknown, ctx?: unknown, onUpdate?: (partial: unknown) => void): void;
+	}
+	const internals = (m: SubagentManager): WidgetInternals => m as unknown as WidgetInternals;
+
+	test("a settled run leaves the widget as soon as it settles", () => {
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		internals(m).upsertWidgetRun(run);
+		expect(internals(m).widgetRuns).toHaveLength(1);
+
+		run.status = "failed";
+		run.tasks[0]!.status = "failed";
+		internals(m).flushWidget(run, stubCtx);
+		expect(internals(m).widgetRuns).toHaveLength(0);
+	});
+
+	test("a terminal run never enters the widget (restored or cancelled history)", () => {
+		const m = makeManager();
+		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		run.status = "aborted";
+		run.tasks[0]!.status = "aborted";
+		internals(m).upsertWidgetRun(run);
+		expect(internals(m).widgetRuns).toHaveLength(0);
+	});
+
+	test("settling one run keeps a live sibling in the widget", () => {
+		const m = makeManager();
+		const settled = m.createRun({ agent: "a", task: "t" }, stubCtx).run;
+		const live = m.createRun({ agent: "b", task: "t2" }, stubCtx).run;
+		internals(m).upsertWidgetRun(settled);
+		internals(m).upsertWidgetRun(live);
+
+		settled.status = "completed";
+		settled.tasks[0]!.status = "completed";
+		internals(m).flushWidget(settled, stubCtx);
+		expect(internals(m).widgetRuns.map((r) => r.id)).toEqual([live.id]);
+	});
+});
