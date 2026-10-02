@@ -62,6 +62,89 @@ export function deriveBlocks(taskList: readonly Task[]): Map<number, number[]> {
 	return blocks;
 }
 
+// ── hierarchy ────────────────────────────────────────────────────────────
+
+function isTaskId(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function unfinishedDescendant(taskList: readonly Task[], taskId: number): Task | undefined {
+	const children = new Map<number, Task[]>();
+	for (const task of taskList) {
+		if (!isTaskId(task.parentId)) continue;
+		const siblings = children.get(task.parentId) ?? [];
+		siblings.push(task);
+		children.set(task.parentId, siblings);
+	}
+	const visited = new Set([taskId]);
+	const stack = [...(children.get(taskId) ?? [])];
+	while (stack.length) {
+		const task = stack.pop()!;
+		if (visited.has(task.id)) continue;
+		visited.add(task.id);
+		if (task.status !== "completed" && task.status !== "deleted") return task;
+		for (const child of children.get(task.id) ?? []) stack.push(child);
+	}
+	return undefined;
+}
+
+function validateParent(taskList: readonly Task[], taskId: number, parentId: number | null, unfinished: boolean): string | undefined {
+	if (parentId === null) return undefined;
+	if (!isTaskId(parentId)) return "parentId must be a positive safe integer or null";
+	if (parentId === taskId) return `cannot parent #${taskId} to itself`;
+	const byId = new Map(taskList.map((task) => [task.id, task]));
+	const parent = byId.get(parentId);
+	if (!parent) return `parentId: #${parentId} not found`;
+	if (parent.status === "deleted") return `parentId: #${parentId} is deleted`;
+	const visited = new Set([taskId]);
+	let ancestor: Task | undefined = parent;
+	while (ancestor) {
+		if (visited.has(ancestor.id)) return "parentId would create a cycle in the task hierarchy";
+		visited.add(ancestor.id);
+		if (unfinished && ancestor.status === "completed") {
+			return `cannot place an unfinished subtree under completed ancestor #${ancestor.id}`;
+		}
+		if (ancestor.parentId == null) break;
+		if (!isTaskId(ancestor.parentId)) return `parentId: invalid ancestry at #${ancestor.id}`;
+		const ancestorId = ancestor.parentId;
+		ancestor = byId.get(ancestorId);
+		if (!ancestor) return `parentId: ancestor #${ancestorId} not found`;
+	}
+	return undefined;
+}
+
+function nearestLiveParent(taskList: readonly Task[], task: Task): number | undefined {
+	const byId = new Map(taskList.map((item) => [item.id, item]));
+	const visited = new Set([task.id]);
+	let parentId = task.parentId;
+	let nearest: number | undefined;
+	while (isTaskId(parentId)) {
+		if (visited.has(parentId)) return undefined;
+		visited.add(parentId);
+		const parent = byId.get(parentId);
+		if (!parent) break;
+		if (nearest === undefined && parent.status !== "deleted") nearest = parent.id;
+		parentId = parent.parentId;
+	}
+	return nearest;
+}
+
+function removeDeletedRelations(taskList: readonly Task[], deleted: Task): Task[] {
+	const parentId = nearestLiveParent(taskList, deleted);
+	return taskList.map((task) => {
+		let updated = task;
+		if (task.status !== "deleted" && task.parentId === deleted.id) {
+			updated = { ...task };
+			if (parentId === undefined) delete updated.parentId;
+			else updated.parentId = parentId;
+		}
+		if (updated.blockedBy?.includes(deleted.id)) {
+			updated = { ...updated, blockedBy: updated.blockedBy.filter((id) => id !== deleted.id) };
+		}
+		return updated;
+	});
+}
+
 // ── reducer ──────────────────────────────────────────────────────────────
 
 export type Op =
@@ -92,6 +175,7 @@ function taskChanged(before: Task, after: Task): boolean {
 	return (
 		before.subject !== after.subject ||
 		before.status !== after.status ||
+		before.parentId !== after.parentId ||
 		before.description !== after.description ||
 		before.activeForm !== after.activeForm ||
 		before.owner !== after.owner ||
@@ -104,9 +188,13 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 	switch (action) {
 		case "create": {
 			if (params.status !== undefined || params.addBlockedBy !== undefined || params.removeBlockedBy !== undefined || params.includeDeleted !== undefined || params.id !== undefined) {
-				return errorResult(state, "create accepts only: subject, description, activeForm, blockedBy, owner, metadata");
+				return errorResult(state, "create accepts only: subject, description, activeForm, parentId, blockedBy, owner, metadata");
 			}
 			if (!params.subject?.trim()) return errorResult(state, "subject required for create");
+			if (params.parentId !== undefined) {
+				const error = validateParent(state.tasks, state.nextId, params.parentId, true);
+				if (error) return errorResult(state, error);
+			}
 			if (params.blockedBy?.length) {
 				for (const dep of params.blockedBy) {
 					const depTask = state.tasks.find((t) => t.id === dep);
@@ -115,6 +203,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 				}
 			}
 			const newTask: Task = { id: state.nextId, subject: params.subject, status: "pending" };
+			if (params.parentId != null) newTask.parentId = params.parentId;
 			if (params.description) newTask.description = params.description;
 			if (params.activeForm) newTask.activeForm = params.activeForm;
 			if (params.blockedBy?.length) newTask.blockedBy = [...new Set(params.blockedBy)];
@@ -138,6 +227,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 				params.description !== undefined ||
 				params.activeForm !== undefined ||
 				params.status !== undefined ||
+				params.parentId !== undefined ||
 				params.owner !== undefined ||
 				params.metadata !== undefined ||
 				(params.addBlockedBy && params.addBlockedBy.length > 0) ||
@@ -145,7 +235,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			if (!hasMutation) {
 				return errorResult(
 					state,
-					"update requires at least one mutable field: subject, description, activeForm, status, owner, metadata, addBlockedBy, or removeBlockedBy",
+					"update requires at least one mutable field: subject, description, activeForm, status, parentId, owner, metadata, addBlockedBy, or removeBlockedBy",
 				);
 			}
 			if (params.blockedBy !== undefined) {
@@ -161,6 +251,15 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			}
 			if (params.subject !== undefined && !params.subject.trim()) {
 				return errorResult(state, "subject must not be blank");
+			}
+			if (params.status === "completed") {
+				const descendant = unfinishedDescendant(state.tasks, current.id);
+				if (descendant) return errorResult(state, `cannot complete #${current.id}: descendant #${descendant.id} is unfinished`);
+			}
+			if (params.parentId !== undefined) {
+				const unfinished = (newStatus !== "completed" && newStatus !== "deleted") || unfinishedDescendant(state.tasks, current.id) !== undefined;
+				const error = validateParent(state.tasks, current.id, params.parentId, unfinished);
+				if (error) return errorResult(state, error);
 			}
 
 			let newBlockedBy = current.blockedBy ? [...current.blockedBy] : [];
@@ -192,6 +291,8 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			}
 
 			const updated: Task = { ...current, status: newStatus };
+			if (params.parentId === null) delete updated.parentId;
+			else if (params.parentId !== undefined) updated.parentId = params.parentId;
 			if (newStatus !== "in_progress") delete updated.activeForm; // stale spinner label
 			if (params.subject !== undefined) updated.subject = params.subject;
 			if (params.description !== undefined) updated.description = params.description;
@@ -202,17 +303,9 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			if (newMetadata === undefined) delete updated.metadata;
 			else updated.metadata = newMetadata;
 
-			const newTasks = [...state.tasks];
+			let newTasks = [...state.tasks];
 			newTasks[idx] = updated;
-			// M1: updating to deleted must cascade deps out of other tasks (parity with delete).
-			if (newStatus === "deleted") {
-				for (let i = 0; i < newTasks.length; i++) {
-					const t = newTasks[i]!;
-					if (t.blockedBy?.includes(updated.id)) {
-						newTasks[i] = { ...t, blockedBy: t.blockedBy.filter((d) => d !== updated.id) };
-					}
-				}
-			}
+			if (newStatus === "deleted") newTasks = removeDeletedRelations(newTasks, updated);
 			return {
 				state: { tasks: newTasks, nextId: state.nextId },
 				op: { kind: "update", id: updated.id, fromStatus: current.status, toStatus: newStatus, changed: taskChanged(current, updated) },
@@ -240,15 +333,9 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			const current = state.tasks[idx]!;
 			if (current.status === "deleted") return errorResult(state, `#${current.id} is already deleted`);
 			const newTasks = [...state.tasks];
-			newTasks[idx] = { ...current, status: "deleted" };
-			// Cascade: drop the deleted id from every other task's blockedBy (no dangling deps).
-			for (let i = 0; i < newTasks.length; i++) {
-				const t = newTasks[i]!;
-				if (t.blockedBy?.includes(current.id)) {
-					newTasks[i] = { ...t, blockedBy: t.blockedBy.filter((d) => d !== current.id) };
-				}
-			}
-			return { state: { tasks: newTasks, nextId: state.nextId }, op: { kind: "delete", id: current.id, subject: current.subject } };
+			const deleted: Task = { ...current, status: "deleted" };
+			newTasks[idx] = deleted;
+			return { state: { tasks: removeDeletedRelations(newTasks, deleted), nextId: state.nextId }, op: { kind: "delete", id: current.id, subject: current.subject } };
 		}
 
 		case "clear": {
