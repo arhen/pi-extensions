@@ -381,23 +381,24 @@ export default function (pi: ExtensionAPI) {
 		name: "resume_subagent",
 		label: "Resume Subagent",
 		description:
-			"Revive a failed/aborted task in its original session (full context + worktree branch preserved). Optional `model` swaps provider (e.g. after a rate limit); optional `message` replaces the default 'recap and continue' prompt. Refuses tasks that never started — respawn those.",
+			"Revive a failed/aborted task in its original session (full context + worktree branch preserved). Optional `model` swaps provider (e.g. after a rate limit); optional `thinking` sets the effort — the stored level is clamped to what the target model accepts, so a resume never dies on an unsupported effort; optional `message` replaces the default 'recap and continue' prompt. Refuses tasks that never started — respawn those.",
 		parameters: ResumeParam,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const { runId, taskId, message, model } = params as {
+			const { runId, taskId, message, model, thinking } = params as {
 				runId: string;
 				taskId: string;
 				message?: string;
 				model?: string;
+				thinking?: string;
 			};
-			const res = manager.resumeTask(runId, taskId, ctx, { message, model });
+			const res = manager.resumeTask(runId, taskId, ctx, { message, model, thinking });
 			if (!res.ok) return { content: [{ type: "text", text: res.reason }], isError: true, details: {} };
 			const run = manager.getRun(runId);
 			return {
 				content: [
 					{
 						type: "text",
-						text: `Resumed ${runId}/${taskId} (${res.task.agent})${model ? ` on ${model}` : ""} from ${res.task.sessionFile}${res.task.branch ? `, branch ${res.task.branch}` : ""}.\nNext: subagent_status("${runId}") to confirm it is running; completion will notify you.`,
+						text: `Resumed ${runId}/${taskId} (${res.task.agent})${model ? ` on ${model}` : ""} from ${res.task.sessionFile}${res.task.branch ? `, branch ${res.task.branch}` : ""}.${res.note ? ` Adjusted ${res.note}.` : ""}\nNext: subagent_status("${runId}") to confirm it is running; completion will notify you.`,
 					},
 				],
 				details: { run: run ? cloneRun(run) : undefined },

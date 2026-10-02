@@ -68,14 +68,33 @@ const DEFAULT_RUNTIME_MS = 3_600_000;
 const UNLIMITED_RUNTIME_MS = 21_600_000;
 const PARENT_REPLY_TIMEOUT_MS = 600_000;
 const PARKED_MSG_CAP = 24;
-const READONLY_TOOLS = ["read", "grep", "find", "ls"];
-const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write"];
+const READONLY_TOOLS = ["read", "grep", "find", "ls", "codemode"];
+const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "codemode"];
 const WRITE_CAPABLE = ["bash", "edit", "write"];
 const SAFE_TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const WIDGET_THROTTLE_MS = 150;
 
 function newId(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+type ChildExtensionFactories = ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"];
+
+/**
+ * Children run with `noExtensions`, so they get none of the configured extensions — codemode is the
+ * one exception, because it is how a child batches tool calls. `createCodemodeExtension()` is the
+ * supported factory (pi >= 1.0); hosts that do not export it simply give children no codemode.
+ */
+async function codemodeFactories(): Promise<ChildExtensionFactories> {
+	try {
+		const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
+			createCodemodeExtension?: () => unknown;
+		};
+		const factory = host.createCodemodeExtension?.();
+		return factory ? ([factory] as ChildExtensionFactories) : [];
+	} catch {
+		return [];
+	}
 }
 function emptyUsage(): UsageStats {
 	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
@@ -143,6 +162,18 @@ function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): 
 export function cloneRun(run: RunSnapshot): RunSnapshot {
 	return JSON.parse(JSON.stringify(run)) as RunSnapshot;
 }
+/**
+ * A resumed task keeps its stored thinking level, clamped to what the target model accepts — a
+ * resume that swaps model must not fail on an effort the new model does not define.
+ */
+export function clampResumeThinking(
+	model: Model<Api> | undefined,
+	thinking: ThinkingLevel | undefined,
+): ThinkingLevel | undefined {
+	if (!thinking || !model) return thinking;
+	return clampThinkingLevel(model, thinking) as ThinkingLevel;
+}
+
 export function resolveChildModel(ctx: ExtensionContext, explicit: string | undefined) {
 	if (!explicit?.trim()) return ctx.model;
 	const ref = explicit.trim();
@@ -900,6 +931,7 @@ export class SubagentManager {
 				cwd: childCwd,
 				agentDir: getAgentDir(),
 				noExtensions: true,
+				extensionFactories: await codemodeFactories(),
 				appendSystemPromptOverride: (base) => [
 					...base,
 					[prompt?.trim(), subagentInstruction].filter(Boolean).join("\n\n"),
@@ -1380,8 +1412,8 @@ export class SubagentManager {
 		runId: string,
 		taskId: string,
 		ctx: ExtensionContext,
-		opts: { message?: string; model?: string } = {},
-	): { ok: true; task: TaskSnapshot } | { ok: false; reason: string } {
+		opts: { message?: string; model?: string; thinking?: string } = {},
+	): { ok: true; task: TaskSnapshot; note?: string } | { ok: false; reason: string } {
 		const run = this.runs.get(runId);
 		const task = run?.tasks.find((t) => t.id === taskId);
 		if (!run || !task) return { ok: false, reason: `Unknown ${runId}/${taskId}.` };
@@ -1399,6 +1431,19 @@ export class SubagentManager {
 
 		const tools = task.tools?.filter((t) => !(CHILD_TALK_TOOLS as readonly string[]).includes(t));
 		const write = tools?.some((t) => WRITE_CAPABLE.includes(t)) ?? false;
+		// A resume may swap the model, so the level stored on the task can be one the new model
+		// rejects (a mode-clamped xhigh onto a model that only takes low|high|max). Clamp it, or take
+		// the caller's explicit level and clamp that.
+		let resumeModel: Model<Api> | undefined;
+		try {
+			resumeModel = resolveChildModel(ctx, opts.model ?? task.model);
+		} catch {}
+		const requestedThinking = (opts.thinking ?? task.thinking) as ThinkingLevel | undefined;
+		const thinking = clampResumeThinking(resumeModel, requestedThinking);
+		const thinkingNote =
+			requestedThinking && thinking !== requestedThinking
+				? `thinking ${requestedThinking} → ${thinking} (${resumeModel?.provider}/${resumeModel?.id} does not accept ${requestedThinking})`
+				: undefined;
 		const input: TaskInput = {
 			id: task.id,
 			agent: task.agent,
@@ -1407,7 +1452,7 @@ export class SubagentManager {
 			write,
 			tools: tools?.length ? tools : undefined,
 			model: opts.model ?? task.model,
-			thinking: task.thinking as TaskInput["thinking"],
+			thinking: thinking as TaskInput["thinking"],
 			needs: task.needs,
 		};
 		const resume: ResumeInput = {
@@ -1422,6 +1467,7 @@ export class SubagentManager {
 		this.turnActivity = true;
 		Object.assign(task, {
 			status: "queued" as TaskStatus,
+			thinking,
 			error: undefined,
 			endedAt: undefined,
 			finalText: undefined,
@@ -1454,7 +1500,7 @@ export class SubagentManager {
 				if (run.notifyPerTask) this.notifyTask(run, task, task.status as "completed" | "failed" | "aborted");
 				this.finishRunIfSettled(run, ctx);
 			});
-		return { ok: true, task };
+		return { ok: true, task, note: thinkingNote };
 	}
 
 	private finishRunIfSettled(run: RunSnapshot, ctx: ExtensionContext): void {

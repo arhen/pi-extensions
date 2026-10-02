@@ -338,3 +338,21 @@ describe("widget auto-prune", () => {
 		expect(internals(m).widgetRuns.map((r) => r.id)).toEqual([live.id]);
 	});
 });
+
+describe("child toolsets", () => {
+	test("read-only children get codemode for batching tool calls", () => {
+		const { run } = makeManager().createRun({ agent: "a", task: "t" }, stubCtx);
+		expect(run.tasks[0]?.tools).toEqual(["read", "grep", "find", "ls", "codemode"]);
+	});
+
+	test("write children get codemode next to bash/edit/write", () => {
+		const { run } = makeManager().createRun({ agent: "a", task: "t", write: true }, stubCtx);
+		expect(run.tasks[0]?.tools).toContain("codemode");
+		expect(run.tasks[0]?.tools).toContain("bash");
+	});
+
+	test("explicit tools stay exactly what the caller asked for", () => {
+		const { run } = makeManager().createRun({ agent: "a", task: "t", tools: ["read"] }, stubCtx);
+		expect(run.tasks[0]?.tools).toEqual(["read"]);
+	});
+});

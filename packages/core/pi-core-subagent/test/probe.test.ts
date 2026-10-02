@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { ensureUsableModel } from "../src/manager.ts";
+import { clampResumeThinking, ensureUsableModel } from "../src/manager.ts";
 
 interface ProbeCall {
 	reasoningEffort?: string;
@@ -116,5 +116,30 @@ describe("ensureUsableModel preflight", () => {
 			ensureUsableModel(makeCtx(calls, { errorFor: () => "boom" }), nineRouterModel, undefined, "max"),
 		).rejects.toThrow(/unusable: boom/);
 		expect(calls).toHaveLength(1);
+	});
+});
+
+describe("resume thinking clamp", () => {
+	const deepseekLike = {
+		provider: "opencode-go",
+		id: "deepseek-v4.1-flash",
+		api: "openai-completions",
+		reasoning: true,
+		thinkingLevelMap: { off: "none", minimal: null, low: "low", medium: null, high: "high", xhigh: null, max: "max" },
+	} as never;
+
+	test("clamps a stored level the target model rejects (xhigh on low|high|max)", () => {
+		const clamped = clampResumeThinking(deepseekLike, "xhigh");
+		expect(clamped).not.toBe("xhigh");
+		expect(clamped).toBe("max");
+	});
+
+	test("keeps a level the model accepts", () => {
+		expect(clampResumeThinking(deepseekLike, "high")).toBe("high");
+	});
+
+	test("passes through without a model or a level", () => {
+		expect(clampResumeThinking(undefined, "xhigh")).toBe("xhigh");
+		expect(clampResumeThinking(deepseekLike, undefined)).toBeUndefined();
 	});
 });

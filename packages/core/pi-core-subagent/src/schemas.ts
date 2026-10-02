@@ -89,6 +89,12 @@ export const ResumeParam = Type.Object({
 				"Model override for the resumed session (provider/model-id) — use when the original provider is rate-limited",
 		}),
 	),
+	thinking: Type.Optional(
+		StringEnum(THINKING_LEVELS, {
+			description:
+				"Thinking level for the resumed session. Default: the task's stored level, clamped to what the target model accepts",
+		}),
+	),
 });
 export const SteerParam = Type.Object({
 	runId: Type.String(),
