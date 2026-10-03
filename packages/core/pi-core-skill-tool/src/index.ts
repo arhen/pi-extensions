@@ -54,12 +54,34 @@ export default async function (pi: ExtensionAPI) {
 			baseDir: s.baseDir,
 			disableModelInvocation: s.disableModelInvocation,
 		}));
-		const stripped = event.systemPrompt.replace(
-			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*<\/available_skills>\n?/,
-			"",
-		);
-		if (stripped === event.systemPrompt) {
-			console.warn("[pi-core-skill-tool] strip failed — pi's skills prompt format changed; catalog left intact");
+		// Structured-prompt pi (>=1.0): drop the skills section at the source —
+		// format-independent, survives prompt wording changes. Same mutation
+		// pattern as pi's own MCP extension (sections record on the live options).
+		try {
+			const opts = event.systemPromptOptions as unknown as {
+				skills?: unknown[];
+				sections?: Record<string, string>;
+			};
+			if (Array.isArray(opts.skills)) opts.skills.length = 0;
+			if (opts.sections) delete opts.sections.skills;
+		} catch {
+			// fall through to regex fallback below
+		}
+		// Regex fallback for pre-sections pi: strip the rendered block (new
+		// <skills> wrapper first, then the legacy bare catalog block).
+		const stripped = event.systemPrompt
+			.replace(/<skills>\n[\s\S]*?<\/skills>\n?/, "")
+			.replace(
+				/\n\nThe following skills provide specialized instructions for specific tasks\.[\s\S]*?<\/available_skills>\n?/,
+				"",
+			);
+		if (
+			stripped === event.systemPrompt &&
+			/<(skills|available_skills)>/.test(event.systemPrompt)
+		) {
+			console.warn(
+				"[pi-core-skill-tool] strip failed — pi's skills prompt format changed; catalog left intact",
+			);
 		}
 		// H1: the tool's description must carry the populated catalog, so register
 		// lazily on the FIRST agent start (registration snapshots the description).
@@ -67,7 +89,11 @@ export default async function (pi: ExtensionAPI) {
 			toolRegistered = true;
 			registerSkillTool();
 		}
-		return { systemPrompt: stripped };
+		// When the source mutation above already removed the section, return
+		// nothing so the prompt stays structured (opaque forceSystemPrompt
+		// would disable per-section updates). Only force when the regex did work.
+		if (stripped !== event.systemPrompt) return { systemPrompt: stripped };
+		return undefined;
 	});
 
 	// ── Register skill tool (opencode2-style) ────────────────────────────────
