@@ -47,6 +47,7 @@ interface SkillEntry {
 interface StructuredPromptOptions {
 	skills?: unknown[];
 	sections?: Record<string, unknown>;
+	forceSystemPrompt?: string;
 }
 
 function truncateDescription(desc: string): string {
@@ -114,11 +115,14 @@ export default async function (pi: ExtensionAPI) {
 
 		if (isStructuredPromptHost(event)) {
 			clearStructuredSkillCatalog(options);
-			if (event.systemPrompt.includes(CATALOG_TAG)) warnCatalogRemains();
+			const rendered = event.systemPrompt;
+			const stripped = typeof options.forceSystemPrompt === "string"
+				? stripRenderedSkillCatalog(rendered)
+				: rendered;
+			if (stripped.includes(CATALOG_TAG)) warnCatalogRemains();
 			registerToolOnce();
-			// Returning systemPrompt here would set forceSystemPrompt and disable
-			// pi's section-delta updates; the cleared options already render clean.
-			return undefined;
+			// Only replace a prompt another extension already made opaque.
+			return stripped !== rendered ? { systemPrompt: stripped } : undefined;
 		}
 
 		// Legacy host: strip the rendered catalog and return the text for this run.

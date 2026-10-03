@@ -277,6 +277,25 @@ describe("structured prompt host (pi >= 0.99)", () => {
 		expect(tools).toHaveLength(0);
 	});
 
+	for (const wording of ["read", "bash"] as const) {
+		test(`strips a known ${wording} catalog from an already forced prompt`, async () => {
+			const { handlers, tools } = await loadExtension();
+			const shared = [skill()];
+			const { event, options } = modernHost({
+				skills: shared,
+				forceSystemPrompt: `keep-prefix\n<skills>\n${legacyCatalogBlock(wording)}\n</skills>\nkeep-suffix`,
+			});
+
+			const { result, warnings } = await runHandler(handlers, event);
+
+			expect(result?.systemPrompt).toBe("keep-prefix\nkeep-suffix");
+			expect(options.skills).toHaveLength(0);
+			expect(shared).toHaveLength(1);
+			expect(tools).toHaveLength(1);
+			expect(warnings).toEqual([]);
+		});
+	}
+
 	test("warns only when the catalog actually survives (forced prompt)", async () => {
 		const { handlers } = await loadExtension();
 		const { event, options } = modernHost({
