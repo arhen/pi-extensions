@@ -52,13 +52,11 @@ export function chooseModel(
 /**
  * The thinking levels a model honors at runtime, from pi's own resolver, so the catalog cannot
  * promise a level the runtime would silently clamp: `xhigh`/`max` count only when explicitly
- * mapped. "off" is always accepted here (`validateThinking` returns early on it), so it is never
- * omitted even when the model maps it to null.
+ * mapped. An accepted input can still be clamped; the catalog lists only honored levels.
  */
 export function supportedThinkingLevels(model: Model<Api> | undefined): ModelThinkingLevel[] {
 	if (!model) return [];
-	const levels = [...getSupportedThinkingLevels(model)];
-	return levels.includes("off") ? levels : ["off", ...levels];
+	return [...getSupportedThinkingLevels(model)];
 }
 
 /** Keep only finite, non-negative per-Mtok rates; a partial or absent cost is unavailable, not free. */
@@ -70,7 +68,14 @@ export function normalizeCost(cost: unknown): ModelPricing | undefined {
 	const input = rate(raw.input);
 	const output = rate(raw.output);
 	if (input === undefined || output === undefined) return undefined;
-	return { input, output, cacheRead: rate(raw.cacheRead) ?? 0, cacheWrite: rate(raw.cacheWrite) ?? 0 };
+	const cacheRead = rate(raw.cacheRead);
+	const cacheWrite = rate(raw.cacheWrite);
+	return {
+		input,
+		output,
+		...(cacheRead !== undefined ? { cacheRead } : {}),
+		...(cacheWrite !== undefined ? { cacheWrite } : {}),
+	};
 }
 
 /**
@@ -144,10 +149,13 @@ export function listSelectableModels(ctx: ExtensionContext, preferences?: ModelP
 	const prefs = preferences ?? loadPreferences(getAgentDir());
 	const { entries: shown, unusedPatterns } = applyPreferences(models, prefs);
 	const hiddenCount = models.length - shown.length;
+	const suggested = prefs.error ? undefined : prefs.default;
+	const listedDefault = suggested && shown.some((entry) => entry.reference === suggested);
 	return {
 		models: shown,
 		scope,
-		...(prefs.default ? { preferredDefault: prefs.default } : {}),
+		...(listedDefault ? { preferredDefault: suggested } : {}),
+		...(suggested && !listedDefault ? { unlistedDefault: suggested } : {}),
 		...(prefs.error ? { configError: `${prefs.path}: ${prefs.error}` } : {}),
 		...(hiddenCount > 0 ? { hidden: hiddenCount } : {}),
 		...(unusedPatterns.length > 0 ? { unusedPatterns } : {}),

@@ -55,9 +55,9 @@ describe("supportedThinkingLevels", () => {
 		const model = fixture({ provider: "p", id: "m", reasoning: true, thinkingLevelMap: { low: null, xhigh: "x" } });
 		expect(supportedThinkingLevels(model as never)).toEqual(["off", "minimal", "medium", "high", "xhigh"]);
 	});
-	test("off stays advertised even when the model maps it to null — the extension accepts it", () => {
+	test("off is not advertised when the runtime would clamp it", () => {
 		const model = fixture({ provider: "p", id: "m", reasoning: true, thinkingLevelMap: { off: null } });
-		expect(supportedThinkingLevels(model as never)).toContain("off");
+		expect(supportedThinkingLevels(model as never)).not.toContain("off");
 	});
 });
 
@@ -78,8 +78,8 @@ describe("normalizeCost", () => {
 			cacheWrite: 0,
 		});
 	});
-	test("missing cache rates default to zero; present ones are kept", () => {
-		expect(normalizeCost({ input: 3, output: 15 })).toEqual({ input: 3, output: 15, cacheRead: 0, cacheWrite: 0 });
+	test("missing cache rates stay unreported; present ones are kept", () => {
+		expect(normalizeCost({ input: 3, output: 15 })).toEqual({ input: 3, output: 15 });
 		expect(normalizeCost({ input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 })).toEqual({
 			input: 3,
 			output: 15,
@@ -217,19 +217,26 @@ describe("listSelectableModels", () => {
 		expect(text).toContain('suggests `model: "q/c"`');
 	});
 
-	test("inert patterns and unusable config are reported, never silent", () => {
+	test("inert valid patterns are reported", () => {
+		const prefs: ModelPreferences = { prefer: ["nope/*"], hide: ["gone"], path: "/tmp/subagent-models.json" };
+		const catalog = listSelectableModels(ctxFor([a]), prefs);
+		expect(catalog.unusedPatterns).toEqual(["gone", "nope/*"]);
+		expect(catalog.configError).toBeUndefined();
+		expect(renderModelCatalog(catalog).content[0]!.text).toContain("matched no listed model");
+	});
+
+	test("unusable config is skipped and reported", () => {
 		const prefs: ModelPreferences = {
 			prefer: ["nope/*"],
-			hide: ["gone"],
+			hide: ["*"],
 			path: "/tmp/subagent-models.json",
 			error: "unknown key(s): whatever",
 		};
 		const catalog = listSelectableModels(ctxFor([a]), prefs);
-		expect(catalog.unusedPatterns).toEqual(["gone", "nope/*"]);
+		expect(catalog.models).toHaveLength(1);
+		expect(catalog.unusedPatterns).toBeUndefined();
 		expect(catalog.configError).toContain("unknown key(s)");
-		const text = renderModelCatalog(catalog).content[0]!.text;
-		expect(text).toContain("matched no listed model");
-		expect(text).toContain("WARNING");
+		expect(renderModelCatalog(catalog).content[0]!.text).toContain("WARNING");
 	});
 
 	test("duplicate scoped entries are listed once", () => {

@@ -2,11 +2,7 @@ import { type ModelThinkingLevel, StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY } from "./manager.ts";
 
-/**
- * The tools' accepted thinking vocabulary. pi-ai exports `ModelThinkingLevel` but not its runtime
- * list, so the array is declared here and typed against that union: if pi adds or removes a level,
- * this fails to compile instead of becoming a silently drifting second copy.
- */
+/** Schema vocabulary; per-model supported levels come from pi-ai. */
 const THINKING_LEVELS = [
 	"off",
 	"minimal",

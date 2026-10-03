@@ -277,11 +277,13 @@ export function makeNotice(run: RunSnapshot, kind: string): string {
 /** Per-million-token rates, terse. A zero rate reads as "free"; absent rates are "unavailable", not free. */
 function priceTag(cost: ModelPricing | undefined): string {
 	if (!cost) return "unavailable (provider did not report rates)";
-	if (cost.input === 0 && cost.output === 0) return "free";
+	if (cost.input === 0 && cost.output === 0 && cost.cacheRead === 0 && cost.cacheWrite === 0) return "free";
 	const rate = (n: number) => (n === 0 ? "free" : `$${n.toFixed(n < 0.01 ? 4 : 2)}`);
 	const parts = [`in ${rate(cost.input)}`, `out ${rate(cost.output)}`];
-	if (cost.cacheRead > 0) parts.push(`cache-read ${rate(cost.cacheRead)}`);
-	if (cost.cacheWrite > 0) parts.push(`cache-write ${rate(cost.cacheWrite)}`);
+	if (cost.cacheRead === undefined) parts.push("cache-read unavailable");
+	else if (cost.cacheRead > 0) parts.push(`cache-read ${rate(cost.cacheRead)}`);
+	if (cost.cacheWrite === undefined) parts.push("cache-write unavailable");
+	else if (cost.cacheWrite > 0) parts.push(`cache-write ${rate(cost.cacheWrite)}`);
 	return `${parts.join(", ")} per Mtok`;
 }
 
@@ -316,6 +318,9 @@ export function renderModelCatalog(catalog: ModelCatalog): {
 	const suggestion = catalog.preferredDefault
 		? `\n\nThis configuration suggests \`model: "${catalog.preferredDefault}"\`. It is a preference, never applied automatically.`
 		: "";
+	const unlistedDefault = catalog.unlistedDefault
+		? `\n\nNOTE: configured default \`${catalog.unlistedDefault}\` is not in the displayed catalog; it is not suggested or applied.`
+		: "";
 	const hidden =
 		catalog.hidden && catalog.hidden > 0
 			? `\n\n${catalog.hidden} enabled model(s) are hidden by your model preferences.`
@@ -335,7 +340,7 @@ export function renderModelCatalog(catalog: ModelCatalog): {
 		content: [
 			{
 				type: "text",
-				text: `${heading}\n${lines.join("\n")}${suggestion}${hidden}${unused}${ambiguous}${unresolved}${configError}${billing}`,
+				text: `${heading}\n${lines.join("\n")}${suggestion}${unlistedDefault}${hidden}${unused}${ambiguous}${unresolved}${configError}${billing}`,
 			},
 		],
 		details: catalog,

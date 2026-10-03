@@ -76,8 +76,8 @@ export interface PendingReply {
 export interface ModelPricing {
 	input: number;
 	output: number;
-	cacheRead: number;
-	cacheWrite: number;
+	cacheRead?: number;
+	cacheWrite?: number;
 }
 
 /** One selectable model, as the agent needs it to choose: what to pass, what it supports, what it costs. */
@@ -88,7 +88,7 @@ export interface SelectableModel {
 	id: string;
 	name: string;
 	reasoning: boolean;
-	/** Levels the runtime honors for this model; always includes "off". */
+	/** Levels the runtime honors without clamping. */
 	thinkingLevels: string[];
 	/** 0 when the provider did not report one. */
 	contextWindow: number;
@@ -105,6 +105,7 @@ export interface ModelCatalog {
 	scope: "session" | "all";
 	/** The config's suggested model, surfaced for the caller to weigh. Never applied automatically. */
 	preferredDefault?: string;
+	unlistedDefault?: string;
 	/** Set when the preferences file existed but was unusable, so a typo is reported, not silent. */
 	configError?: string;
 	/** How many models the config hid, so a surprising absence is explained. */

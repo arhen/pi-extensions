@@ -82,13 +82,8 @@ export function parsePreferences(text: string, path = MODEL_CONFIG_FILENAME): Mo
 		if (typeof obj.default !== "string" || !obj.default.trim()) errors.push("default must be a non-empty string");
 		else fallback = obj.default.trim();
 	}
-	return {
-		prefer,
-		hide,
-		...(fallback ? { default: fallback } : {}),
-		...(errors.length > 0 ? { error: errors.join("; ") } : {}),
-		path,
-	};
+	if (errors.length > 0) return { prefer: [], hide: [], path, error: errors.join("; ") };
+	return { prefer, hide, ...(fallback ? { default: fallback } : {}), path };
 }
 
 /** Read the preferences file if present. Never throws: an unusable file degrades to no preferences. */
@@ -115,6 +110,7 @@ export function applyPreferences<T extends { reference: string }>(
 	entries: T[],
 	prefs: ModelPreferences,
 ): { entries: T[]; unusedPatterns: string[] } {
+	if (prefs.error) return { entries: [...entries], unusedPatterns: [] };
 	const used = new Set<string>();
 	const kept = entries.filter((entry) => {
 		const hit = prefs.hide.find((pattern) => matchesPattern(entry.reference, pattern));

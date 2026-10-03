@@ -46,10 +46,15 @@ describe("parsePreferences", () => {
 	test("a non-object is reported", () => {
 		expect(parsePreferences("[]", "f.json").error).toBe("must be a JSON object");
 	});
-	test("unknown keys are reported but the known fields still apply", () => {
-		const prefs = parsePreferences(JSON.stringify({ prefer: ["p/*"], hidden: ["q"] }), "f.json");
+	test("unknown keys are reported and all preferences are skipped", () => {
+		const prefs = parsePreferences(
+			JSON.stringify({ prefer: ["p/*"], hide: ["*"], default: "p/m", hidden: ["q"] }),
+			"f.json",
+		);
 		expect(prefs.error).toContain("unknown key(s): hidden");
-		expect(prefs.prefer).toEqual(["p/*"]);
+		expect(prefs.prefer).toEqual([]);
+		expect(prefs.hide).toEqual([]);
+		expect(prefs.default).toBeUndefined();
 	});
 	test("wrong-typed fields are reported and dropped", () => {
 		const prefs = parsePreferences(JSON.stringify({ prefer: "p/*", hide: [7, ""], default: 42 }), "f.json");
