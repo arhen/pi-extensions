@@ -29,6 +29,12 @@ This extension does the same for pi.
 
 No filesystem discovery: the catalog comes entirely from pi via `systemPromptOptions` on `before_agent_start`, so it always matches what pi itself loads — no re-scanning, no divergence. SKILL.md bodies are read lazily only when the tool is called, saving ~4.5K tokens/session.
 
+## Compatibility
+
+- **pi >= 0.99 (structured prompts):** the `skills` entry (and any custom `skills` section) is removed from `systemPromptOptions`, so pi keeps its per-section prompt updates and the extension never forces the whole prompt.
+- **Older pi (prebuilt prompt string):** the rendered `<available_skills>` catalog is stripped from the returned prompt (handles both `read` and `bash` wording), while pi's shared discovered-skill list stays intact so `/skill:name` keeps working.
+- If the catalog cannot be located, the prompt is left unchanged and a warning is logged.
+
 ## Full comparison matrix
 
 Measured on a fresh session (`deepseek-v4-flash`, no user message beyond "hi").
