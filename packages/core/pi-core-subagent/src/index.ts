@@ -1,11 +1,21 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { compactLines, formatUsage, makeSummary, statusIcon, taskLine, truncateText } from "./format.ts";
+import {
+	compactLines,
+	formatUsage,
+	makeSummary,
+	renderModelCatalog,
+	statusIcon,
+	taskLine,
+	truncateText,
+} from "./format.ts";
 import { waveNotation } from "./graph.ts";
 import { cloneRun, type ParkedMsg, SubagentManager } from "./manager.ts";
+import { listSelectableModels } from "./models.ts";
 import { createPeekPane, type PeekTask } from "./peek.ts";
 import {
 	AwaitParam,
+	ModelsParam,
 	ReplyParam,
 	ResultParam,
 	ResumeParam,
@@ -14,7 +24,7 @@ import {
 	SubagentParams,
 	type SubagentParamsShape,
 } from "./schemas.ts";
-import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
+import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -124,6 +134,18 @@ export default function (pi: ExtensionAPI) {
 		manager.clearRuns();
 	});
 
+	pi.registerTool<typeof ModelsParam, ModelCatalog>({
+		name: "subagent_models",
+		label: "Subagent Models",
+		description:
+			"List the models a subagent task may name, each with the exact `model` value to pass. The list is scoped to this session's enabled models when scoping is configured (the same set `/scoped-models` shows); when no scoping is configured, every model with usable credentials is listed and the output says so. Each entry includes its context window and pi catalog price per million tokens, and the thinking levels the runtime honors — a level shown here is not silently clamped. References shown here are safe to pass; ambiguous ones are called out. Naming a model is optional: omit `model` to inherit the session model, or call this when choosing one.",
+		promptSnippet: "List the models a subagent task can name (reference, thinking levels, context, price).",
+		parameters: ModelsParam,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			return renderModelCatalog(listSelectableModels(ctx));
+		},
+	});
+
 	pi.registerTool<typeof SubagentParams, RunDetails>({
 		name: "subagent",
 		label: "Subagent",
@@ -132,6 +154,7 @@ export default function (pi: ExtensionAPI) {
 			"Run isolated subagents (own context, own session) in the background: returns a runId immediately, completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, or `chain` with `{previous}`). `needs` edges gate tasks and prepend upstream outputs to their prompts. A user agent file (`.agents/agents`, `.claude/agents`, `.pi/agents`; project dirs, then home) whose `description` matches the goal is authoritative: body = system prompt, frontmatter `model`/`tools` apply, but explicit per-call `tools`/`write` override the file's tools. Write agents get an isolated git worktree; the result reports the branch. Children always carry talk tools (ask/notify the leader, message siblings).",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
+			"`model` is optional: omit it to inherit your current session model, or name one (agent-file `model` frontmatter wins) to pin the run. Call subagent_models for the exact references, thinking levels, and prices this session may use.",
 			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
 			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls.",
 			"Declare ordering with `needs` edges on the tasks, never by splitting into separate calls; dependents receive upstream outputs automatically — do not restate them. Prefer flat `tasks` (plain parallel); add `needs` only when ordering genuinely matters.",
