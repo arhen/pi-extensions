@@ -134,7 +134,7 @@ describe("captured Gruvbox Material theme", () => {
 
   test("tool state panels use distinct Gruvbox swatches", () => {
     expect(theme.colors.toolPendingBg).toBe("bg_visual_yellow");
-    expect(theme.colors.toolSuccessBg).toBe("bg3");
+    expect(theme.colors.toolSuccessBg).toBe("bg1");
     expect(theme.colors.toolErrorBg).toBe("bg_visual_red");
     expect(theme.colors.success).toBe("green");
 
@@ -163,6 +163,11 @@ describe("captured Gruvbox Material theme", () => {
       expect(contrast(resolveVariable("fg0"), resolveVariable(background))).toBeGreaterThanOrEqual(4.5);
     }
     // the success panel has to read as its own block, not as a user message
+    // the user message and the success panel sit one step apart, in that order
+    expect(theme.colors.userMessageBg).toBe("bg3");
+    expect(luminance(resolveVariable(theme.colors.userMessageBg))).toBeGreaterThan(
+      luminance(resolveVariable(theme.colors.toolSuccessBg)),
+    );
     expect(contrast(resolveVariable(theme.colors.toolSuccessBg), resolveVariable(theme.colors.userMessageBg))).toBeGreaterThan(1.2);
     for (const variable of ["grey2", "purple", "blue", "green", "yellow"]) {
       for (const background of [theme.colors.toolPendingBg, theme.colors.toolSuccessBg, theme.colors.toolErrorBg]) {
