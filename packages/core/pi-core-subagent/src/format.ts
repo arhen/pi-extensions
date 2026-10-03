@@ -3,6 +3,8 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	MAX_TASKS,
+	type ModelCatalog,
+	type ModelPricing,
 	type RunSnapshot,
 	type RunStatus,
 	type TaskSnapshot,
@@ -270,4 +272,72 @@ export function makeNotice(run: RunSnapshot, kind: string): string {
 	}
 	lines.push(`Use subagent_result(runId: "${run.id}") for full output.`);
 	return lines.join("\n");
+}
+
+/** Per-million-token rates, terse. A zero rate reads as "free"; absent rates are "unavailable", not free. */
+function priceTag(cost: ModelPricing | undefined): string {
+	if (!cost) return "unavailable (provider did not report rates)";
+	if (cost.input === 0 && cost.output === 0) return "free";
+	const rate = (n: number) => (n === 0 ? "free" : `$${n.toFixed(n < 0.01 ? 4 : 2)}`);
+	const parts = [`in ${rate(cost.input)}`, `out ${rate(cost.output)}`];
+	if (cost.cacheRead > 0) parts.push(`cache-read ${rate(cost.cacheRead)}`);
+	if (cost.cacheWrite > 0) parts.push(`cache-write ${rate(cost.cacheWrite)}`);
+	return `${parts.join(", ")} per Mtok`;
+}
+
+/**
+ * Render the model catalog as the `subagent_models` tool result. Pure, so the exact text an agent
+ * receives is testable: the tool handler holds no formatting of its own. Throws when the list is
+ * empty — the SDK tool loop discards a returned `isError` for any `execute` that does not throw.
+ */
+export function renderModelCatalog(catalog: ModelCatalog): {
+	content: { type: "text"; text: string }[];
+	details: ModelCatalog;
+} {
+	if (catalog.models.length === 0) {
+		throw new Error(
+			`No models can be listed for subagent tasks: ${catalog.unavailable ?? "the model registry returned no models"}. This is not an empty catalog — a task without \`model\` still inherits the session model, but naming one needs the references. Fix model configuration, then retry.`,
+		);
+	}
+	const lines = catalog.models.map((model) =>
+		[
+			`- model: "${model.reference}"`,
+			`    ${model.name}; ${model.contextWindow > 0 ? `${model.contextWindow.toLocaleString("en-US")} context` : "context window unreported"}`,
+			`    price: ${priceTag(model.cost)}`,
+			model.reasoning
+				? `    thinking levels: ${model.thinkingLevels.join(" | ")}`
+				: `    thinking: not supported — omit it or pass "off"`,
+		].join("\n"),
+	);
+	const heading =
+		catalog.scope === "session"
+			? `${catalog.models.length} model(s) enabled for this session. Pass the \`model\` value verbatim in a subagent task:`
+			: `${catalog.models.length} model(s) available — this session has no model scoping, so every model with usable credentials is listed. Pass the \`model\` value verbatim in a subagent task:`;
+	const suggestion = catalog.preferredDefault
+		? `\n\nThis configuration suggests \`model: "${catalog.preferredDefault}"\`. It is a preference, never applied automatically.`
+		: "";
+	const hidden =
+		catalog.hidden && catalog.hidden > 0
+			? `\n\n${catalog.hidden} enabled model(s) are hidden by your model preferences.`
+			: "";
+	const unused = catalog.unusedPatterns?.length
+		? `\n\nNOTE: these preference patterns matched no listed model and did nothing: ${catalog.unusedPatterns.join(", ")}. They may target models that are not enabled.`
+		: "";
+	const ambiguous = catalog.ambiguous?.length
+		? `\n\nDo not pass these references: ${catalog.ambiguous.join(", ")} — ${catalog.reason}.`
+		: "";
+	const unresolved = catalog.unresolved?.length ? `\n\n${catalog.unresolvedReason}` : "";
+	const configError = catalog.configError
+		? `\n\nWARNING: the model preferences file could not be used (${catalog.configError}). Continuing with no preferences.`
+		: "";
+	const billing = "\n\nPrices are pi catalog list rates per Mtok, not a billing quote.";
+	return {
+		content: [
+			{
+				type: "text",
+				text: `${heading}\n${lines.join("\n")}${suggestion}${hidden}${unused}${ambiguous}${unresolved}${configError}${billing}`,
+			},
+		],
+		details: catalog,
+	};
 }
