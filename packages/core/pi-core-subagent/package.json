@@ -29,11 +29,11 @@
 		"graph-protocol"
 	],
 	"peerDependencies": {
-		"@earendil-works/pi-ai": "^0.84.2",
-		"@earendil-works/pi-agent-core": "^0.84.2",
-		"@earendil-works/pi-coding-agent": "^0.84.2",
-		"@earendil-works/pi-tui": "^0.84.2",
-		"typebox": "^1.3.14"
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
 	},
 	"pi": {
 		"extensions": [

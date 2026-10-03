@@ -1,22 +1,25 @@
-name: pi-core-subagent CI
+name: Extension CI
 
 on:
   push:
     branches: [main]
-    paths: ["packages/core/pi-core-subagent/**", ".github/workflows/pi-core-subagent.yml"]
+    paths: ["packages/**", "package.json", "package-lock.json", "bun.lock", ".github/workflows/pi-core-subagent.yml"]
   pull_request:
     branches: [main]
-    paths: ["packages/core/pi-core-subagent/**", ".github/workflows/pi-core-subagent.yml"]
-
-defaults:
-  run:
-    working-directory: packages/core/pi-core-subagent
+    paths: ["packages/**", "package.json", "package-lock.json", "bun.lock", ".github/workflows/pi-core-subagent.yml"]
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
       - uses: oven-sh/setup-bun@v2
-      - run: bun install --frozen-lockfile
-      - run: bun run check
+        with:
+          bun-version: "1.4.0"
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: bun install --frozen-lockfile --ignore-scripts
+      - run: npm run check
+      - run: npm audit --audit-level=high
