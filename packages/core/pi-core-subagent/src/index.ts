@@ -1,11 +1,23 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
-import { compactLines, formatUsage, makeSummary, statusIcon, taskLine, truncateText } from "./format.ts";
+import type { TSchema } from "typebox";
+import {
+	compactLines,
+	formatUsage,
+	makeSummary,
+	renderModelCatalog,
+	statusIcon,
+	taskLine,
+	truncateText,
+} from "./format.ts";
 import { waveNotation } from "./graph.ts";
 import { cloneRun, type ParkedMsg, SubagentManager } from "./manager.ts";
+import { listSelectableModels } from "./models.ts";
 import { createPeekPane, type PeekTask } from "./peek.ts";
+import { type AnyToolDefinition, createPresentation, isSubagentMode } from "./presentation.ts";
 import {
 	AwaitParam,
+	ModelsParam,
 	ReplyParam,
 	ResultParam,
 	ResumeParam,
@@ -14,11 +26,18 @@ import {
 	SubagentParams,
 	type SubagentParamsShape,
 } from "./schemas.ts";
-import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
+import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
+	const definitions: AnyToolDefinition[] = [];
+	const presentation = createPresentation(pi, definitions);
+	const defineTool = <TParams extends TSchema, TDetails = unknown, TState = any>(
+		definition: ToolDefinition<TParams, TDetails, TState>,
+	): void => {
+		definitions.push(definition as AnyToolDefinition);
+	};
 
 	const openPeek = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
@@ -55,11 +74,30 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.registerCommand("subagents", {
 		description:
-			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
+			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents mode [auto|direct|codemode]` reports or switches the tool exposure profile; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
 		handler: async (args, ctx) => {
 			const arg = String(args ?? "")
 				.trim()
 				.toLowerCase();
+			if (arg === "mode" || arg.startsWith("mode ")) {
+				const value = arg.split(/\s+/)[1];
+				if (value === undefined) {
+					ctx.ui.notify(presentation.describe(), "info");
+				} else if (isSubagentMode(value)) {
+					presentation.setPreference(value);
+					// A switch during a streaming turn or an executing script would rewrite the loadout under
+					// a live call; defer it to the next request boundary in that case.
+					const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+					if (idle) presentation.sync();
+					ctx.ui.notify(
+						`Subagent exposure mode set to ${value}${idle ? "." : " — applies at the next request boundary."} ${presentation.describe()}`,
+						"info",
+					);
+				} else {
+					ctx.ui.notify(`Unknown subagent mode "${value}". Use \`/subagents mode auto|direct|codemode\`.`, "warning");
+				}
+				return;
+			}
 			if (arg === "peek") return openPeek(ctx);
 			if (arg === "auto-limit" || arg.startsWith("auto-limit ")) {
 				const value = arg.split(/\s+/)[1];
@@ -93,8 +131,14 @@ export default function (pi: ExtensionAPI) {
 		manager.turnActivity = false;
 	});
 
+	pi.on("before_agent_start", () => {
+		presentation.sync();
+	});
+
 	pi.on("session_start", async (_event, ctx) => {
 		await manager.restoreFromSidecar(ctx);
+		presentation.restore(ctx);
+		presentation.sync();
 
 		const roots = new Set<string>();
 		const cwdRoot = repoRoot(ctx.cwd);
@@ -115,6 +159,11 @@ export default function (pi: ExtensionAPI) {
 			} catch {}
 		}
 	});
+	pi.on("session_tree", (_event, ctx) => {
+		presentation.restore(ctx);
+		presentation.sync();
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
 		if (ctx?.hasUI) {
 			try {
@@ -124,25 +173,35 @@ export default function (pi: ExtensionAPI) {
 		manager.clearRuns();
 	});
 
-	pi.registerTool<typeof SubagentParams, RunDetails>({
+	defineTool<typeof ModelsParam, ModelCatalog>({
+		name: "subagent_models",
+		label: "Subagent Models",
+		description:
+			"List the models a subagent task may name: the exact `model` value to pass, the thinking levels the runtime honors, the context window and catalog price. Scoped to this session's models when scoping is configured, else every usable model; ambiguous references are called out. Full reference: `describeNamespace('subagents')`.",
+		promptSnippet: "List the models a subagent task can name (reference, thinking levels, context, price).",
+		parameters: ModelsParam,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			return renderModelCatalog(listSelectableModels(ctx));
+		},
+	});
+
+	defineTool<typeof SubagentParams, RunDetails>({
 		name: "subagent",
 		label: "Subagent",
 
 		description:
-			"Run isolated subagents (own context, own session) in the background: returns a runId immediately, completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, or `chain` with `{previous}`). `needs` edges gate tasks and prepend upstream outputs to their prompts. A user agent file (`.agents/agents`, `.claude/agents`, `.pi/agents`; project dirs, then home) whose `description` matches the goal is authoritative: body = system prompt, frontmatter `model`/`tools` apply, but explicit per-call `tools`/`write` override the file's tools. Write agents get an isolated git worktree; the result reports the branch. Children always carry talk tools (ask/notify the leader, message siblings).",
+			"Run isolated subagents (own context/session) in the background; returns a runId and completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, `chain`, or `needs` edges that gate tasks and prepend upstream output). Write tasks use an isolated git worktree and report a branch. Full reference: `describeNamespace('subagents')`.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
-			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
-			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls.",
-			"Declare ordering with `needs` edges on the tasks, never by splitting into separate calls; dependents receive upstream outputs automatically — do not restate them. Prefer flat `tasks` (plain parallel); add `needs` only when ordering genuinely matters.",
+			"`model` is optional: omit it to inherit your current session model, or name one (agent-file `model` frontmatter wins) to pin the run. Call subagent_models for the exact references, thinking levels, and prices this session may use.",
+			"Use subagent for independent review, testing, research or parallel analysis; skip it when one direct action finishes the job.",
+			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls; declare ordering with `needs` edges, not separate calls.",
+			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit); a matched agent file or per-call tools/write override it.",
+			"Write agents work in an isolated git worktree; review the branch diff and merge with `git merge --no-ff <branch>` when done.",
+			"After spawning, call subagent_status(runId) ONCE to confirm the tasks started; fix or respawn a task that died on spawn.",
 			"End each task with a runnable check, e.g. 'Verify: bun test'. A subagent's claim of success is not evidence.",
-			"Write agents work in an isolated git worktree; their changes land on a branch — review the diff, then merge with `git merge --no-ff <branch>`. Never leave a worktree branch unmerged at the end of the task.",
-			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit). A matched agent file takes over (see description); matching is by description, not name — name the agent whatever fits the goal.",
-			"Right after spawning, call subagent_status(runId) ONCE before any other work — a child that died on spawn (or never started) is invisible until far later otherwise. If it shows a task failed/never started, fix or respawn immediately.",
-			"Never block with nothing to do: if you have no work left after spawning, end your turn — completion notifies you and wakes a fresh turn with the results. await_subagent/autoAwait while idle only burns time and tokens.",
-			"A failed task interrupts you immediately as a steering message — handle it in the same turn (resume, swap model, re-dispatch) instead of finishing the plan on a broken intermediate result. Completes and aborts queue as follow-ups.",
-			"autoAwait:true only when this SAME turn must consume the result immediately. await_subagent is for syncing with your own parallel work — not the default follow-up to a spawn.",
-			"A task that failed mid-work (provider error, rate limit, timeout) keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it with full context — prefer that over respawning. Respawn only when it never started (no session file).",
+			"When you have no work left, end your turn — completion notifies you. await_subagent/autoAwait only when this turn must consume the result immediately.",
+			"A failed task keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it; respawn only when it never started.",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel",
@@ -259,11 +318,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof RunIdParam, { run?: RunSnapshot }>({
+	defineTool<typeof RunIdParam, { run?: RunSnapshot }>({
 		name: "subagent_status",
 		label: "Subagent Status",
 		description:
-			"Live per-task status of a subagent run (non-blocking), incl. each child's session file path (JSONL) to `tail -f` from outside. Call once right after spawning to verify children actually started.",
+			"Live per-task status of a subagent run (non-blocking), incl. each child's session file path to `tail -f`. Call once right after spawning to verify children actually started.",
 		promptSnippet: "Check progress of a subagent run; use right after spawn as a health check.",
 		parameters: RunIdParam,
 		async execute(_id, params) {
@@ -280,7 +339,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof ResultParam, { run?: RunSnapshot }>({
+	defineTool<typeof ResultParam, { run?: RunSnapshot }>({
 		name: "subagent_result",
 		label: "Subagent Result",
 		description: "Full result (finalText + usage) of a run or one task. Non-blocking.",
@@ -307,11 +366,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof AwaitParam, { run?: RunSnapshot }>({
+	defineTool<typeof AwaitParam, { run?: RunSnapshot }>({
 		name: "await_subagent",
 		label: "Await Subagent",
 		description:
-			"Block until a run finishes (or timeoutMs elapses). Only when you have your own work to sync — otherwise end your turn; completion notifies you. While parked, child→leader messages (asks, notifies, completions) wake the wait and arrive inside the result.",
+			"Block until a run finishes (or timeoutMs elapses). Only when you have your own work to sync; otherwise end your turn. Child messages that arrive while parked wake the wait and are returned.",
 		parameters: AwaitParam,
 		async execute(_id, params) {
 			const { runId, timeoutMs } = params as { runId: string; timeoutMs?: number };
@@ -329,7 +388,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof ReplyParam, { run?: RunSnapshot }>({
+	defineTool<typeof ReplyParam, { run?: RunSnapshot }>({
 		name: "reply_subagent",
 		label: "Reply Subagent",
 		description: "Answer a child's ask_parent question; resumes its run.",
@@ -350,7 +409,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof SteerParam, { steered?: string[] }>({
+	defineTool<typeof SteerParam, { steered?: string[] }>({
 		name: "steer_subagent",
 		label: "Steer Subagent",
 		description:
@@ -377,11 +436,11 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof ResumeParam, { run?: RunSnapshot }>({
+	defineTool<typeof ResumeParam, { run?: RunSnapshot }>({
 		name: "resume_subagent",
 		label: "Resume Subagent",
 		description:
-			"Revive a failed/aborted task in its original session (full context + worktree branch preserved). Optional `model` swaps provider (e.g. after a rate limit); optional `thinking` sets the effort — the stored level is clamped to what the target model accepts, so a resume never dies on an unsupported effort; optional `message` replaces the default 'recap and continue' prompt. Refuses tasks that never started — respawn those.",
+			"Revive a failed/aborted task in its original session (full context + worktree branch preserved). Optional `model` swaps provider after e.g. a rate limit; `thinking` is clamped to the target model; `message` replaces the default recap prompt. Refuses tasks that never started — respawn those.",
 		parameters: ResumeParam,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const { runId, taskId, message, model, thinking } = params as {
@@ -406,7 +465,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerTool<typeof RunIdParam, { aborted?: number }>({
+	defineTool<typeof RunIdParam, { aborted?: number }>({
 		name: "subagent_cancel",
 		label: "Subagent Cancel",
 		description: "Abort a running/queued subagent run. Children are killed; run becomes aborted.",
@@ -423,4 +482,6 @@ export default function (pi: ExtensionAPI) {
 			};
 		},
 	});
+
+	presentation.registerInitial();
 }

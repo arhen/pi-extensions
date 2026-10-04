@@ -37,6 +37,7 @@ import {
 } from "./format.ts";
 import { applyUpstream, resolveNeeds, runWaveScheduler } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
+import { chooseModel, resolveChildModel } from "./models.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
 import {
 	MAX_TASKS,
@@ -61,6 +62,9 @@ import {
 	repoRoot,
 	type Worktree,
 } from "./worktree.ts";
+
+/** Legacy callers import the resolver from here; its owner is `models.ts`. */
+export { resolveChildModel };
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
@@ -172,27 +176,6 @@ export function clampResumeThinking(
 ): ThinkingLevel | undefined {
 	if (!thinking || !model) return thinking;
 	return clampThinkingLevel(model, thinking) as ThinkingLevel;
-}
-
-export function resolveChildModel(ctx: ExtensionContext, explicit: string | undefined) {
-	if (!explicit?.trim()) return ctx.model;
-	const ref = explicit.trim();
-	if (!ctx.modelRegistry) return ctx.model;
-	const available = ctx.modelRegistry.getAvailable();
-	const sessionProvider = ctx.model?.provider;
-	if (sessionProvider && !ref.includes("/")) {
-		const own = available.filter((m) => m.provider === sessionProvider);
-		const hit = own.find((m) => m.id === ref) ?? own.find((m) => m.id.endsWith(`/${ref}`));
-		if (hit) return hit;
-	}
-
-	const byId = available.find((m) => m.id === ref);
-	if (byId) return byId;
-	for (let slash = ref.indexOf("/"); slash > 0; slash = ref.indexOf("/", slash + 1)) {
-		const model = ctx.modelRegistry.find(ref.slice(0, slash), ref.slice(slash + 1));
-		if (model) return model;
-	}
-	throw new Error(`Model not found: ${ref}`);
 }
 
 const PROBE_THINKING_LEVELS: ThinkingLevel[] = ["low", "minimal", "medium", "high", "xhigh", "max"];
@@ -816,7 +799,7 @@ export class SubagentManager {
 
 		let model: Model<Api> | undefined;
 		try {
-			model = resolveChildModel(ctx, file?.model ?? input.model);
+			model = resolveChildModel(ctx, chooseModel(file, input.model).requested);
 			validateThinking(model, thinking);
 
 			const checked = await ensureUsableModel(ctx, model, signal, thinking);
@@ -1207,12 +1190,12 @@ export class SubagentManager {
 			const input = inputs[i] as TaskInput;
 			const cwd = input.cwd ?? ctx.cwd;
 			const file = resolveAgentFile(input.agent, input.task, cwd, getAgentDir());
-			const requested = file?.model ?? input.model;
+			const choice = chooseModel(file, input.model);
 			try {
-				validateThinking(resolveChildModel(ctx, requested), input.thinking);
+				validateThinking(resolveChildModel(ctx, choice.requested), input.thinking);
 			} catch (err) {
-				const where = file?.model
-					? ` (from agent file ${file.path}, which overrides the requested model${input.model ? ` "${input.model}"` : ""})`
+				const where = choice.sourceFile
+					? ` (from agent file ${choice.sourceFile}, which overrides the requested model${input.model ? ` "${input.model}"` : ""})`
 					: "";
 				throw new Error(
 					`Task ${input.id ?? `task_${i + 1}`} (${input.agent}): ${err instanceof Error ? err.message : String(err)}${where}`,
@@ -1435,11 +1418,13 @@ export class SubagentManager {
 		const tools = task.tools?.filter((t) => !(CHILD_TALK_TOOLS as readonly string[]).includes(t));
 		const write = tools?.some((t) => WRITE_CAPABLE.includes(t)) ?? false;
 		// A resume may swap the model, so the level stored on the task can be one the new model
-		// rejects (a mode-clamped xhigh onto a model that only takes low|high|max). Clamp it, or take
-		// the caller's explicit level and clamp that.
+		// rejects (a mode-clamped xhigh onto a model that only takes low|high|max). Clamp it against
+		// the model runChild will actually use — including a matched agent file's, whose frontmatter
+		// overrides the inline model at spawn — or the clamp would validate a different model.
+		const file = resolveAgentFile(task.agent, task.task, task.cwd, getAgentDir());
 		let resumeModel: Model<Api> | undefined;
 		try {
-			resumeModel = resolveChildModel(ctx, opts.model ?? task.model);
+			resumeModel = resolveChildModel(ctx, chooseModel(file, opts.model ?? task.model).requested);
 		} catch {}
 		const requestedThinking = (opts.thinking ?? task.thinking) as ThinkingLevel | undefined;
 		const thinking = clampResumeThinking(resumeModel, requestedThinking);

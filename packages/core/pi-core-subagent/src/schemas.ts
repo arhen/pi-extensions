@@ -1,8 +1,17 @@
-import { StringEnum } from "@earendil-works/pi-ai";
+import { type ModelThinkingLevel, StringEnum } from "@earendil-works/pi-ai";
 import { type Static, Type } from "typebox";
 import { DEFAULT_CONCURRENCY, MAX_CONCURRENCY } from "./manager.ts";
 
-const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+/** Schema vocabulary; per-model supported levels come from pi-ai. */
+const THINKING_LEVELS = [
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+] as const satisfies readonly ModelThinkingLevel[];
 const TaskItem = Type.Object({
 	id: Type.Optional(Type.String({ description: "Optional stable task id" })),
 	agent: Type.String({ minLength: 1, description: "Agent name you invent (defined inline via `prompt`)" }),
@@ -10,10 +19,16 @@ const TaskItem = Type.Object({
 	prompt: Type.Optional(Type.String({ description: "System prompt defining this agent's behavior" })),
 	write: Type.Optional(
 		Type.Boolean({
-			description: "true = write toolset (adds bash, edit, write); default false = read-only (read, grep, find, ls)",
+			description:
+				"true = write toolset (adds bash, edit, write); default false = read-only (read, grep, find, ls, codemode)",
 		}),
 	),
-	model: Type.Optional(Type.String({ description: "Model override (provider/model-id)" })),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"Model override (provider/model-id). Omit to inherit the session model; call subagent_models for the exact references this session accepts.",
+		}),
+	),
 	thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Thinking level override" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory (default: current project)" })),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Explicit tool allowlist (overrides the toolset)" })),
@@ -35,7 +50,12 @@ export const SubagentParams = Type.Object({
 	),
 	tasks: Type.Optional(Type.Array(TaskItem, { description: "Parallel tasks" })),
 	chain: Type.Optional(Type.Array(TaskItem, { description: "Sequential tasks; {previous} = prior output" })),
-	model: Type.Optional(Type.String({ description: "Model override (single mode)" })),
+	model: Type.Optional(
+		Type.String({
+			description:
+				"Model override (single mode). Omit to inherit the session model; call subagent_models for the exact references this session accepts.",
+		}),
+	),
 	thinking: Type.Optional(StringEnum(THINKING_LEVELS, { description: "Thinking level override (single mode)" })),
 	cwd: Type.Optional(Type.String({ description: "Working directory (single mode). Default: current project." })),
 	concurrency: Type.Optional(
@@ -64,6 +84,7 @@ export type TaskInput = Static<typeof TaskItem>;
 export type SubagentParamsShape = Static<typeof SubagentParams>;
 
 export const RunIdParam = Type.Object({ runId: Type.String({ description: "Run id from subagent()" }) });
+export const ModelsParam = Type.Object({});
 export const ResultParam = Type.Object({
 	runId: Type.String(),
 	taskId: Type.Optional(Type.String({ description: "Specific task id; defaults to all" })),
