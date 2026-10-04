@@ -337,7 +337,7 @@ function preview(value: unknown): string {
 	try {
 		if (value === undefined) return "";
 		const text = typeof value === "string" ? value : JSON.stringify(value);
-		return text.length > 400 ? `${text.slice(0, 400)}…` : text;
+		return text.length > 4096 ? `${text.slice(0, 4096)}…` : text;
 	} catch {
 		return "";
 	}

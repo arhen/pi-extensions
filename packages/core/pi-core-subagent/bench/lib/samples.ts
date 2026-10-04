@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { BenchOptions } from "./args.ts";
+import { controlledArguments, matchesControlledArguments } from "./contract.ts";
 import {
 	argsFlag,
 	type BusNotification,
@@ -517,6 +518,9 @@ export async function runDelegateSample(ctx: RunContext, index: number): Promise
 			);
 		}
 		const subagentTool = delegateTools.find((tool) => tool.toolName === "subagent");
+		if (!matchesControlledArguments(subagentTool?.argsPreview, controlledArguments(opts))) {
+			errors.push("parent changed controlled child arguments or nested spawn arguments were not captured");
+		}
 		const discoveryMs = subagentTool ? subagentTool.startMs - delegateStart : undefined;
 		const dispatchMs = subagentTool?.endMs !== undefined ? subagentTool.endMs - subagentTool.startMs : undefined;
 		const runIds = runs.map((run) => run.id);
@@ -546,6 +550,12 @@ export async function runDelegateSample(ctx: RunContext, index: number): Promise
 				sessionFile = found.sessionFile;
 				parsed = found.metrics;
 			}
+		}
+		if ((task?.model ?? parsed?.model) !== opts.model || (task?.provider ?? parsed?.provider) !== opts.provider) {
+			errors.push("child model/provider differs from the controlled parent model");
+		}
+		if ((task?.thinking ?? parsed?.thinkingLevel) !== opts.thinking) {
+			errors.push("child thinking differs from the controlled parent thinking");
 		}
 		const snapshotUsage = task?.usage;
 		const snapshotNonZero =

@@ -22,7 +22,9 @@ written by the harness itself.
    whose child replies exactly `BENCH_OK`, no tools, no file writes, no worktree. Records
    route/discovery/dispatch latency, parent and child usage separately, child session file,
    model/thinking/tools, completion and final settle latency, tool calls, and the extension
-   event-bus notification trail.
+   event-bus notification trail. The exact child task, prompt, empty tools, read-only flag,
+   model/thinking and autoAwait are fixed by `lib/contract.ts`; changed arguments invalidate
+   the sample. Schema discovery is allowed and measured if the parent needs it.
 
 Sessions are in-memory (`SessionManager.inMemory`); child sessions are persisted by the extension
 itself, and their JSONL is parsed for usage when no run snapshot is available.

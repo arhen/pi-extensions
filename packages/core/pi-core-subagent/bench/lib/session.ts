@@ -140,11 +140,12 @@ function withCodemodeEnabled(defaultTools: string[] | undefined): string[] {
 export function planCodemode(state: CodemodeState, defaultTools: string[] | undefined): CodemodePlan {
 	if (state === "disabled") {
 		const filtered = defaultTools?.filter((tool) => tool.replace(/^[+-]/, "") !== "codemode");
+		const selected = filtered?.length === 0 && defaultTools?.includes("+codemode") ? undefined : filtered;
 		return {
 			factory: undefined,
 			modeOverride: undefined,
-			defaultTools: filtered,
-			note: `disabled: codemode factory omitted; defaultTools ${JSON.stringify(defaultTools ?? null)} -> ${JSON.stringify(filtered ?? null)}`,
+			defaultTools: selected,
+			note: `disabled: codemode factory omitted; defaultTools ${JSON.stringify(defaultTools ?? null)} -> ${JSON.stringify(selected ?? null)}`,
 		};
 	}
 	const mode = state === "active" ? undefined : state;

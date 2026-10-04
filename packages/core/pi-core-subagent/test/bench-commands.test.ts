@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentSession } from "@earendil-works/pi-coding-agent";
 import { resolveOptions } from "../bench/lib/args.ts";
+import { DELEGATE_ARGUMENTS, matchesControlledArguments } from "../bench/lib/contract.ts";
 import { Probe } from "../bench/lib/probe.ts";
 import { applyPresentationCommands } from "../bench/lib/samples.ts";
-import type { BuiltSession } from "../bench/lib/session.ts";
+import { type BuiltSession, planCodemode } from "../bench/lib/session.ts";
 
 function fixture(mode: string, commands = ["subagents"], disposition = "handled") {
 	const calls: string[] = [];
@@ -20,6 +21,26 @@ function fixture(mode: string, commands = ["subagents"], disposition = "handled"
 	if (!opts) throw new Error("Invalid benchmark fixture options");
 	return { built, opts, calls, probe: new Probe(performance.now()), errors: [] as string[] };
 }
+
+describe("benchmark controls", () => {
+	test("removing the last modifier preserves default tools instead of selecting none", () => {
+		expect(planCodemode("disabled", ["+codemode"]).defaultTools).toBeUndefined();
+		expect(planCodemode("disabled", []).defaultTools).toEqual([]);
+		expect(planCodemode("disabled", ["read", "codemode"]).defaultTools).toEqual(["read"]);
+	});
+
+	test("controlled child arguments match independently of property ordering", () => {
+		const reordered = { notifyPerTask: true, autoAwait: true, tasks: DELEGATE_ARGUMENTS.tasks };
+		expect(matchesControlledArguments(JSON.stringify(reordered))).toBe(true);
+	});
+
+	test("uncontrolled child tools, prompts or truncated arguments cannot enter comparisons", () => {
+		const changed = structuredClone(DELEGATE_ARGUMENTS);
+		changed.tasks[0]!.tools.push("read");
+		expect(matchesControlledArguments(JSON.stringify(changed))).toBe(false);
+		expect(matchesControlledArguments('{"tasks": …')).toBe(false);
+	});
+});
 
 describe("benchmark presentation preflight", () => {
 	test("baseline never invokes a nonexistent mode subcommand", async () => {

@@ -1,4 +1,5 @@
 import { homedir } from "node:os";
+import { controlledArguments, delegationPrompt } from "./contract.ts";
 
 export type Workflow = "startup" | "delegate" | "all";
 export type BenchMode = "baseline" | "direct" | "codemode" | "auto";
@@ -48,8 +49,7 @@ export const DEFAULTS = {
 	settleTimeoutMs: 180_000,
 	childTimeoutMs: 180_000,
 	startupPrompt: "hi",
-	delegatePrompt:
-		"You are being benchmarked. Delegate exactly one read-only subagent task now: ask one subagent to reply with exactly BENCH_OK (no tools, no file writes, no worktree). Wait until that subagent has finished, then end your turn. Do not do the work yourself, do not use any other tools, and do not modify any files.",
+	delegatePrompt: delegationPrompt(),
 } as const;
 
 const WORKFLOWS: Workflow[] = ["startup", "delegate", "all"];
@@ -218,6 +218,7 @@ export function resolveOptions(argv: string[]): BenchOptions | undefined {
 		startupPrompt: parsed.startupPrompt ?? DEFAULTS.startupPrompt,
 		delegatePrompt: parsed.delegatePrompt ?? DEFAULTS.delegatePrompt,
 	};
+	if (parsed.delegatePrompt === undefined) opts.delegatePrompt = delegationPrompt(controlledArguments(opts));
 	if (!opts.selfTest && !opts.dryRun) {
 		require(opts.target !== undefined, "--target <absolute extension entry path> is required for live runs");
 	}
