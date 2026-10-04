@@ -1,8 +1,8 @@
 # Native exposure modes
 
 `pi-core-subagent` presents its subagent toolset in two native Pi profiles and switches between
-them with `/subagents mode`. This document describes the contract; the measured results section is
-a placeholder for the benchmark owner.
+them with `/subagents mode`. This document describes the contract and measured startup/delegation
+trade-offs; detailed evidence is in [native-modes-benchmarks.md](native-modes-benchmarks.md).
 
 ## Modes
 
@@ -162,17 +162,26 @@ navigation keep it. Nothing is written to global or project settings, and the sh
 - The package README is intentionally untouched: the user's checkout has local README edits, so the
   registered-tool table lives in this document instead. README reconciliation is left to the user.
 
-## Measured results (placeholder)
+## Measured results
 
-Fill from `bench/subagent-bench.ts` on the same source revision; do not reuse historical estimates.
+Three samples per workflow/profile, Pi 1.0.1, DeepSeek V4.1 Flash MAX, default inline budget 3000.
+Matched before is the frozen installed nine-tool package, not the older eight-tool development tree.
+Full input includes cache reads/writes; fresh sessions can use cached prefixes.
 
-| Profile | Global codemode | Fresh startup input tokens | Subagent declarations in request | Delegation visible context | Notes |
-|---|---|---|---|---|---|
-| direct | off | _pending_ | _pending_ | _pending_ | |
-| direct | `only`, inlineBudget 3000 | _pending_ | _pending_ | _pending_ | model-only declarations survive `only` |
-| codemode | on, inlineBudget 3000 | _pending_ | 0 | namespace note + guardrails | schemas only via discovery |
-| codemode | `only`, inlineBudget 3000 | _pending_ | 0 | namespace note + guardrails | |
+| Profile | Global codemode | Startup input before → after | Saving | Subagent declarations |
+|---|---|---:|---:|---:|
+| direct | on | 12,081 → 11,497 | 584 / 4.8% | 9 |
+| codemode | on | 12,081 → 9,250 | 2,831 / 23.4% | 0 |
+| auto | on | 12,081 → 9,250 | 2,831 / 23.4% | 0 |
+| auto fallback | disabled | 11,328 → 10,912 | 416 / 3.7% | 9 |
 
-Historical installed baseline (nine tools, source before this change): 2591 declaration +
-537 rule tokens = 3128 tokens. The codemode target is omission/deferred discovery, not a copy of the
-same schemas into the codemode description.
+**Startup context shrinks; this is not an overall performance win.** In the controlled delegation
+workflow, parent+child cumulative input medians increased from 27,847 to 46,667 (direct), 59,024
+(codemode) and 52,820 (auto/on); the disabled comparison increased from 26,362 to 44,626. Child
+input remained exactly 2,981. Namespace/schema discovery and additional model-catalog planning
+requests are included, not hidden. Child completion medians were slower in every after profile.
+
+Global `only` and large-budget omission are runtime-tested, not separately live-timed here.
+See [native-modes-benchmarks.md](native-modes-benchmarks.md) for latency median/ranges, observed
+cache counts, raw report paths, methodology and precise coverage limits. No startup speedup,
+monetary savings or full native fork/new-session parity is claimed.
