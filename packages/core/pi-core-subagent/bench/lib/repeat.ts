@@ -78,10 +78,7 @@ function terminalNotificationIn(
 ): BusNotification | undefined {
 	return events.find(
 		(event) =>
-			event.atMs >= afterMs &&
-			event.kind !== undefined &&
-			TERMINAL_KINDS.has(event.kind) &&
-			(event.runId === undefined || event.runId === runId),
+			event.atMs >= afterMs && event.kind !== undefined && TERMINAL_KINDS.has(event.kind) && event.runId === runId,
 	);
 }
 
@@ -95,7 +92,7 @@ export interface RepeatChildReport {
 	branch: string | undefined;
 	usage: UsageCounts | undefined;
 	usageSource: "run-snapshot" | "session-file" | "none";
-	costEstimate: number;
+	costEstimate: number | undefined;
 	toolCalls: number | undefined;
 	modelCalls: number | undefined;
 	finalText: string | undefined;
@@ -130,7 +127,7 @@ export interface RepeatIterationReport {
 		usage: UsageCounts;
 		modelCalls: number;
 		providerRequests: number;
-		costEstimate: number;
+		costEstimate: number | undefined;
 		perCall: Array<{ atMs: number; usage: UsageCounts | undefined; stopReason: string | undefined }>;
 		finalContext: { input: number; cacheRead: number; cacheWrite: number; fullInput: number } | undefined;
 	};
@@ -263,6 +260,7 @@ export async function runRepeatIteration(
 	const toolsFrom = driver.probe.tools.length;
 	const busFrom = driver.bus.length;
 	const requestsFrom = driver.providerRequestCount();
+	const errorsFrom = driver.probe.errors.length;
 	const prompt = repeatPrompt(opts, iteration);
 	const promptWallAt = Date.now();
 	const promptAtMs = driver.probe.now();
@@ -287,6 +285,9 @@ export async function runRepeatIteration(
 	}
 	const idle = await driver.waitIdle(timings.quiesceMs, timings.settleTimeoutMs);
 	fail(!idle, `session did not go idle after ${timings.settleTimeoutMs}ms (delayed notices/follow-ups)`);
+	settledAtMs = driver.probe.lastSettledAtMs;
+	fail(settledAtMs === undefined || settledAtMs < promptAtMs, "no settlement for the current prompt");
+	errors.push(...driver.probe.errors.slice(errorsFrom));
 
 	const messages = driver.probe.messages.slice(messagesFrom);
 	const tools = snapshotTools(driver.probe, toolsFrom);
@@ -304,7 +305,7 @@ export async function runRepeatIteration(
 	if (runId !== undefined) {
 		fail(completion === undefined, `no terminal completion notification for run ${runId}`);
 		fail(
-			completion !== undefined && completion.runId !== undefined && completion.runId !== runId,
+			completion !== undefined && completion.runId !== runId,
 			`completion notification belongs to ${completion?.runId}, expected ${runId}`,
 		);
 	}
@@ -391,6 +392,24 @@ export async function runRepeatIteration(
 	fail(parentUsage.calls === 0, "no parent model call observed in this iteration");
 	fail(parentUsage.fullInput <= 0, "parent model call reported no input tokens");
 	fail(providerRequests === 0, "no parent provider request observed in this iteration");
+	const assistantMessages = messages.filter((message) => message.role === "assistant");
+	fail(
+		assistantMessages.some((message) => message.usage === undefined),
+		"parent usage unavailable",
+	);
+	fail(
+		assistantMessages.some((message) => message.stopReason === "error" || message.stopReason === "aborted"),
+		"parent model failed or aborted",
+	);
+	fail(
+		tools.some((tool) => tool.isError),
+		"tool execution failed",
+	);
+	fail(providerRequests !== parentUsage.calls, "provider requests differ from model calls (retry or missing usage)");
+	const parentCost = Number.isFinite(parentUsage.total.cost) ? parentUsage.total.cost : undefined;
+	const childCost = childUsage && Number.isFinite(childUsage.cost) ? childUsage.cost : undefined;
+	fail(parentCost === undefined, "parent cost unavailable");
+	fail(childCost === undefined, "child cost unavailable");
 
 	const valid = errors.length === 0;
 	return {
@@ -418,7 +437,7 @@ export async function runRepeatIteration(
 			usage: parentUsage.total,
 			modelCalls: parentUsage.calls,
 			providerRequests,
-			costEstimate: parentUsage.total.cost,
+			costEstimate: parentCost,
 			perCall: parentUsage.perCall.map((call) => ({
 				atMs: call.atMs,
 				usage: call.usage,
@@ -443,7 +462,7 @@ export async function runRepeatIteration(
 			branch: task?.branch,
 			usage: childUsage,
 			usageSource,
-			costEstimate: childUsage?.cost ?? 0,
+			costEstimate: childCost,
 			toolCalls: childToolCalls,
 			modelCalls: childModelCalls,
 			finalText: childFinalText,
@@ -452,7 +471,7 @@ export async function runRepeatIteration(
 		latency: {
 			discoveryMs: subagentTool !== undefined ? subagentTool.startMs - promptAtMs : undefined,
 			dispatchMs: subagentTool?.endMs !== undefined ? subagentTool.endMs - subagentTool.startMs : undefined,
-			completionMs: completion?.atMs,
+			completionMs: completion !== undefined ? completion.atMs - promptAtMs : undefined,
 		},
 		errors,
 	};
@@ -505,6 +524,31 @@ export async function waitForIdle(
 		if (notifications.length !== lastCount) {
 			lastCount = notifications.length;
 			lastChange = performance.now();
+		}
+	}
+}
+
+function reportedCost(usage: unknown): boolean {
+	if (!usage || typeof usage !== "object") return false;
+	const raw = usage as { cost?: number | { total?: number } };
+	const cost = typeof raw.cost === "number" ? raw.cost : raw.cost?.total;
+	return typeof cost === "number" && Number.isFinite(cost) && cost >= 0;
+}
+
+export function recordRepeatEvent(probe: Probe, event: AgentSessionEvent): void {
+	probe.handle(event);
+	const raw = event as unknown as {
+		type: string;
+		message?: { role?: string; usage?: unknown };
+		result?: { details?: { run?: { tasks?: Array<{ usage?: unknown }> } } };
+	};
+	if (raw.type === "message_end" && raw.message?.role === "assistant" && !reportedCost(raw.message.usage)) {
+		probe.errors.push("parent cost unavailable in raw usage");
+	}
+	if (raw.type === "tool_execution_end") {
+		for (const task of raw.result?.details?.run?.tasks ?? []) {
+			if (task.usage !== undefined && !reportedCost(task.usage))
+				probe.errors.push("child cost unavailable in raw usage");
 		}
 	}
 }
@@ -680,7 +724,7 @@ export async function runRepeatSession(input: RepeatSessionInput): Promise<Repea
 		return failedRepeatSession(ctx, sessionIndex, startedAtIso, `session build failed: ${errorMessage(error)}`);
 	}
 	const probe = new Probe(sessionStart);
-	const unsubscribe = built.session.subscribe((event) => probe.handle(event));
+	const unsubscribe = built.session.subscribe((event) => recordRepeatEvent(probe, event));
 	const bus = captureBusNotifications(built.eventBus, sessionStart);
 	const errors: string[] = [];
 	try {
@@ -820,7 +864,14 @@ export const REPEAT_METRICS: RepeatMetricExtractor[] = [
 	{ metric: "childOutput", unit: "tokens", pick: (it) => it.child.usage?.output },
 	{ metric: "childModelCalls", unit: "count", pick: (it) => it.child.modelCalls },
 	{ metric: "childCostEstimate", unit: "usd", pick: (it) => it.child.costEstimate },
-	{ metric: "totalCostEstimate", unit: "usd", pick: (it) => it.parent.costEstimate + it.child.costEstimate },
+	{
+		metric: "totalCostEstimate",
+		unit: "usd",
+		pick: (it) =>
+			it.parent.costEstimate !== undefined && it.child.costEstimate !== undefined
+				? it.parent.costEstimate + it.child.costEstimate
+				: undefined,
+	},
 	{
 		metric: "totalFullInput",
 		unit: "tokens",
@@ -1082,8 +1133,8 @@ export function makeSyntheticRepeatDriver(opts: BenchOptions, script: SyntheticI
 			if (!text.includes(controlled))
 				return { preflight: "started", thrown: "synthetic prompt missing controlled arguments" };
 			const step = script[index] ?? {};
-			providerRequests += 1;
 			const parentCalls = step.parentCalls ?? 2;
+			providerRequests += parentCalls;
 			for (let call = 0; call < parentCalls; call++) {
 				pushAssistant(call === parentCalls - 1 ? (step.parentFinalText ?? "BENCH_OK") : "", step);
 			}
@@ -1116,6 +1167,7 @@ export function makeSyntheticRepeatDriver(opts: BenchOptions, script: SyntheticI
 		waitIdle: async () => {
 			const step = script[dispatched - 1];
 			if (step?.delayedFollowUp) {
+				providerRequests += 1;
 				pushAssistant("delayed follow-up", {
 					parentInput: 7,
 					parentOutput: 0,

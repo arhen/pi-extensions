@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { type BenchOptions, resolveOptions } from "../bench/lib/args.ts";
 import { controlledArguments } from "../bench/lib/contract.ts";
-import { addUsage, emptyUsage, type UsageCounts, usageFromUnknown } from "../bench/lib/probe.ts";
+import { addUsage, emptyUsage, Probe, type UsageCounts, usageFromUnknown } from "../bench/lib/probe.ts";
 import {
 	buildRepeatSummary,
 	computeIntegrity,
@@ -10,6 +11,7 @@ import {
 	fullInputOf,
 	makeSyntheticRepeatDriver,
 	promptEmbedsControlledArguments,
+	recordRepeatEvent,
 	repeatPrompt,
 	runRepeatedDelegations,
 	runRepeatSession,
@@ -75,7 +77,7 @@ describe("repeated delegation correlation", () => {
 			expect(iteration.parent.usage.cacheWrite).toBe((index % 2) * 2);
 			expect(iteration.child.usage?.input).toBe(40);
 			expect(iteration.child.modelCalls).toBe(1);
-			expect(iteration.parent.providerRequests).toBe(1);
+			expect(iteration.parent.providerRequests).toBe(2);
 		}
 	});
 
@@ -140,6 +142,71 @@ describe("repeated delegation correlation", () => {
 		expect(iterations[0]?.parent.usage.input).toBe(207);
 		expect(iterations[1]?.parent.usage.input).toBe(400);
 		expect(iterations[1]?.parent.usage.cacheRead).toBe(0);
+	});
+});
+
+describe("repeat validity regressions", () => {
+	test("completion and final settlement use the current prompt boundary", async () => {
+		const opts = baseOpts();
+		const handle = makeSyntheticRepeatDriver(opts, [{ runId: "run_1" }, { runId: "run_2" }]);
+		const originalIdle = handle.driver.waitIdle;
+		handle.driver.waitIdle = async (...args) => {
+			const idle = await originalIdle(...args);
+			handle.driver.probe.lastSettledAtMs = handle.driver.probe.now() + 10;
+			return idle;
+		};
+		const { iterations } = await runRepeatedDelegations(handle.driver, opts, 2, 0);
+		for (const iteration of iterations) {
+			const notice = iteration.bus.find((event) => event.runId === iteration.runId);
+			expect(iteration.latency.completionMs).toBeCloseTo((notice?.atMs ?? 0) - iteration.promptAtMs, 8);
+			expect(iteration.wallMs).toBeGreaterThanOrEqual(10);
+		}
+	});
+
+	test("errors, missing usage, retries and unavailable costs cannot count as success", async () => {
+		for (const kind of ["error", "usage", "retry", "cost", "tool"] as const) {
+			const opts = baseOpts();
+			const handle = makeSyntheticRepeatDriver(opts, [{ runId: "run_1" }]);
+			const original = handle.driver.dispatch;
+			handle.driver.dispatch = async (prompt) => {
+				const result = await original(prompt);
+				if (kind === "error") handle.driver.probe.errors.push("provider failed before recovery");
+				if (kind === "usage") handle.driver.probe.messages[0]!.usage = undefined;
+				if (kind === "cost") handle.driver.probe.messages[0]!.usage!.cost = Number.NaN;
+				if (kind === "tool") handle.driver.probe.tools[0]!.isError = true;
+				return result;
+			};
+			if (kind === "retry") {
+				const count = handle.driver.providerRequestCount;
+				handle.driver.providerRequestCount = () => count() + (handle.dispatchedPrompts.length ? 2 : 0);
+			}
+			const { iterations } = await runRepeatedDelegations(handle.driver, opts, 1, 0);
+			expect(iterations[0]?.valid, kind).toBe(false);
+			if (kind === "cost") expect(iterations[0]?.parent.costEstimate).toBeUndefined();
+		}
+	});
+
+	test("raw missing costs remain unavailable while explicit zero is valid", () => {
+		for (const cost of [undefined, 0]) {
+			const probe = new Probe(performance.now());
+			recordRepeatEvent(probe, {
+				type: "message_end",
+				message: { role: "assistant", content: [], usage: { input: 1, output: 1, cost } },
+			} as unknown as AgentSessionEvent);
+			expect(probe.errors.length).toBe(cost === undefined ? 1 : 0);
+		}
+	});
+
+	test("a notification without a correlated run id is not completion evidence", async () => {
+		const opts = baseOpts();
+		const handle = makeSyntheticRepeatDriver(opts, [{ runId: "run_1" }]);
+		const original = handle.driver.waitBusCompletion;
+		handle.driver.waitBusCompletion = async (...args) => {
+			const notice = await original(...args);
+			return notice ? { ...notice, runId: undefined } : undefined;
+		};
+		const { iterations } = await runRepeatedDelegations(handle.driver, opts, 1, 0);
+		expect(iterations[0]?.valid).toBe(false);
 	});
 });
 
