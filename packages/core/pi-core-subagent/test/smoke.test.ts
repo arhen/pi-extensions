@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { createChildTools } from "../src/child.ts";
 import { createMailbox } from "../src/mailbox.ts";
-import { classifyFailure, ensureUsableModel, resolveChildModel, validateThinking } from "../src/manager.ts";
+import { classifyFailure, ensureUsableModel, validateThinking } from "../src/manager.ts";
+import { resolveChildModel } from "../src/models.ts";
 
 describe("classifyFailure", () => {
 	test("stop/end/undefined → no failure (normal completion)", () => {

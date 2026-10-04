@@ -337,7 +337,7 @@ describe("resume_subagent route", () => {
 		expect(resultText(res)).toContain("Resumed run_done/task_2 (writer)");
 		expect(resultText(res)).toContain(`from ${failedTask.sessionFile}`);
 		expect(resultText(res)).toContain("branch subagents/run_done/task_2");
-		expect(resultText(res)).toContain('Next: subagent_status("run_done")');
+		expect(resultText(res)).toContain('Next: subagent_status({ runId: "run_done" })');
 
 		await waitFor(() => {
 			try {

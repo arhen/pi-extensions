@@ -6,6 +6,7 @@ import subagentExtension from "../../src/index.ts";
 import { repoRoot } from "../../src/worktree.ts";
 
 export const BASELINE_OPERATIONS = [
+	"subagent_models",
 	"subagent",
 	"subagent_status",
 	"subagent_result",
@@ -28,6 +29,19 @@ export interface ToolResult {
 	details?: any;
 }
 
+export interface LoadoutView {
+	declared: CapturedTool[];
+	callable: CapturedTool[];
+	registered: CapturedTool[];
+	getExposure(name: string): string;
+	getNamespace(name: string): CapturedTool["namespace"];
+}
+
+export interface LoadoutChanges {
+	descriptions?: Record<string, string>;
+	hiddenDeclarations?: readonly string[];
+}
+
 export interface CapturedTool {
 	name: string;
 	label?: string;
@@ -36,6 +50,10 @@ export interface CapturedTool {
 	promptSnippet?: string;
 	promptGuidelines?: string[];
 	executionMode?: string;
+	exposure?: string;
+	namespace?: { name: string; description?: string; instructions?: string };
+	defaultActive?: boolean;
+	prepareLoadout?: (loadout: LoadoutView) => LoadoutChanges | undefined;
 	execute: (
 		toolCallId: string,
 		params: any,
@@ -82,6 +100,10 @@ export interface ExtensionHarness {
 	emitted: EmittedEvent[];
 	sent: SentMessage[];
 	notifications: Notification[];
+	activeTools: string[];
+	appended: { customType: string; data?: unknown }[];
+	setActiveCalls: string[][];
+	branch: unknown[];
 	dir: string;
 	sessionFile: string;
 	sidecarFile: string;
@@ -111,6 +133,10 @@ export function createExtensionHarness(): ExtensionHarness {
 	const emitted: EmittedEvent[] = [];
 	const sent: SentMessage[] = [];
 	const notifications: Notification[] = [];
+	const activeTools: string[] = [];
+	const appended: { customType: string; data?: unknown }[] = [];
+	const setActiveCalls: string[][] = [];
+	const branch: unknown[] = [];
 
 	const pi = {
 		registerTool(tool: CapturedTool): void {
@@ -135,6 +161,23 @@ export function createExtensionHarness(): ExtensionHarness {
 		sendUserMessage(content: unknown, options?: Record<string, unknown>): void {
 			sent.push({ content, options });
 		},
+		getActiveTools: (): string[] => [...activeTools],
+		setActiveTools(toolNames: string[]): void {
+			setActiveCalls.push([...toolNames]);
+			activeTools.splice(0, activeTools.length, ...toolNames);
+		},
+		getAllTools: () =>
+			[...tools.values()].map((tool) => ({
+				name: tool.name,
+				description: tool.description,
+				parameters: tool.parameters,
+				promptGuidelines: tool.promptGuidelines,
+				exposure: tool.exposure ?? "direct",
+				...(tool.namespace ? { namespace: tool.namespace } : {}),
+			})),
+		appendEntry(customType: string, data?: unknown): void {
+			appended.push({ customType, data });
+		},
 	} as unknown as ExtensionAPI;
 
 	subagentExtension(pi);
@@ -153,7 +196,7 @@ export function createExtensionHarness(): ExtensionHarness {
 					errorMessage: "parity harness has no provider",
 				}),
 			},
-			sessionManager: { getSessionFile: () => sessionFile },
+			sessionManager: { getSessionFile: () => sessionFile, getBranch: () => branch },
 			ui: {
 				notify: (message: string, level = "info"): void => {
 					notifications.push({ message, level });
@@ -191,6 +234,10 @@ export function createExtensionHarness(): ExtensionHarness {
 		emitted,
 		sent,
 		notifications,
+		activeTools,
+		appended,
+		setActiveCalls,
+		branch,
 		dir,
 		sessionFile,
 		sidecarFile,
