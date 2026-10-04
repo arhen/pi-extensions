@@ -1,13 +1,23 @@
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
-import { compactLines, formatUsage, makeSummary, statusIcon, taskLine, truncateText } from "./format.ts";
+import {
+	compactLines,
+	formatUsage,
+	makeSummary,
+	renderModelCatalog,
+	statusIcon,
+	taskLine,
+	truncateText,
+} from "./format.ts";
 import { waveNotation } from "./graph.ts";
 import { cloneRun, type ParkedMsg, SubagentManager } from "./manager.ts";
+import { listSelectableModels } from "./models.ts";
 import { createPeekPane, type PeekTask } from "./peek.ts";
 import { type AnyToolDefinition, createPresentation, isSubagentMode } from "./presentation.ts";
 import {
 	AwaitParam,
+	ModelsParam,
 	ReplyParam,
 	ResultParam,
 	ResumeParam,
@@ -16,7 +26,7 @@ import {
 	SubagentParams,
 	type SubagentParamsShape,
 } from "./schemas.ts";
-import { type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
+import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -75,8 +85,14 @@ export default function (pi: ExtensionAPI) {
 					ctx.ui.notify(presentation.describe(), "info");
 				} else if (isSubagentMode(value)) {
 					presentation.setPreference(value);
-					presentation.sync();
-					ctx.ui.notify(`Subagent exposure mode set to ${value}. ${presentation.describe()}`, "info");
+					// A switch during a streaming turn or an executing script would rewrite the loadout under
+					// a live call; defer it to the next request boundary in that case.
+					const idle = typeof ctx.isIdle === "function" ? ctx.isIdle() : true;
+					if (idle) presentation.sync();
+					ctx.ui.notify(
+						`Subagent exposure mode set to ${value}${idle ? "." : " — applies at the next request boundary."} ${presentation.describe()}`,
+						"info",
+					);
 				} else {
 					ctx.ui.notify(`Unknown subagent mode "${value}". Use \`/subagents mode auto|direct|codemode\`.`, "warning");
 				}
@@ -157,6 +173,18 @@ export default function (pi: ExtensionAPI) {
 		manager.clearRuns();
 	});
 
+	defineTool<typeof ModelsParam, ModelCatalog>({
+		name: "subagent_models",
+		label: "Subagent Models",
+		description:
+			"List the models a subagent task may name: the exact `model` value to pass, the thinking levels the runtime honors, the context window and catalog price. Scoped to this session's models when scoping is configured, else every usable model; ambiguous references are called out. Full reference: `describeNamespace('subagents')`.",
+		promptSnippet: "List the models a subagent task can name (reference, thinking levels, context, price).",
+		parameters: ModelsParam,
+		async execute(_id, _params, _signal, _onUpdate, ctx) {
+			return renderModelCatalog(listSelectableModels(ctx));
+		},
+	});
+
 	defineTool<typeof SubagentParams, RunDetails>({
 		name: "subagent",
 		label: "Subagent",
@@ -165,6 +193,7 @@ export default function (pi: ExtensionAPI) {
 			"Run isolated subagents (own context/session) in the background; returns a runId and completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, `chain`, or `needs` edges that gate tasks and prepend upstream output). Write tasks use an isolated git worktree and report a branch. Full reference: `describeNamespace('subagents')`.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
+			"`model` is optional: omit it to inherit your current session model, or name one (agent-file `model` frontmatter wins) to pin the run. Call subagent_models for the exact references, thinking levels, and prices this session may use.",
 			"Use subagent for independent review, testing, research or parallel analysis; skip it when one direct action finishes the job.",
 			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls; declare ordering with `needs` edges, not separate calls.",
 			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit); a matched agent file or per-call tools/write override it.",

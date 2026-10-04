@@ -6,6 +6,7 @@ import subagentExtension from "../../src/index.ts";
 import { repoRoot } from "../../src/worktree.ts";
 
 export const BASELINE_OPERATIONS = [
+	"subagent_models",
 	"subagent",
 	"subagent_status",
 	"subagent_result",

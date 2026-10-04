@@ -66,8 +66,9 @@ describe("native exposure modes at runtime", () => {
 	test("auto with codemode on keeps deferred tools out of declarations and the catalog", async () => {
 		const h = await harness({ codemode: "on", inlineBudget: 3000 });
 		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
-		// Retained active selection: the tools stay active but their declarations are hidden.
-		expect(h.session.getActiveToolNames()).toContain("subagent");
+		// Retained active selection: all nine stay active but their declarations are hidden.
+		const active = new Set(h.session.getActiveToolNames());
+		for (const name of SUBAGENT_TOOLS) expect(active.has(name)).toBe(true);
 
 		const context = await captureTextRequest(h, "hello");
 		const declarations = declaredTools(context);
@@ -188,5 +189,128 @@ describe("native exposure modes at runtime", () => {
 		const all = h.session.getAllTools().map((tool) => tool.name);
 		for (const name of SUBAGENT_TOOLS) expect(all).not.toContain(name);
 		expect([...h.session.getActiveToolNames()].sort()).toEqual(["bash", "codemode", "read"]);
+	}, 60_000);
+
+	test("tree navigation restores the preference branch in a real session", async () => {
+		const h = await harness({ codemode: "on" });
+		await captureTextRequest(h, "hello");
+		await h.session.prompt("/subagents mode direct");
+		expect(
+			h.session
+				.getAllTools()
+				.filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))
+				.map((tool) => tool.exposure),
+		).toEqual(SUBAGENT_TOOLS.map(() => "model-only"));
+
+		const target = h.session.getUserMessagesForForking()[0];
+		expect(target).toBeDefined();
+		const result = await h.session.navigateTree(target!.entryId, { summarize: false });
+		expect(result.cancelled).toBe(false);
+
+		// The branch above the mode entry has no preference: auto applies again, which is codemode
+		// while the codemode tool is active.
+		expect(
+			h.session
+				.getAllTools()
+				.filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))
+				.map((tool) => tool.exposure),
+		).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
+	}, 90_000);
+
+	test("a model-issued invalid call is rejected by real schema validation before execution", async () => {
+		const h = await harness({ codemode: false });
+		let attempted = false;
+		h.faux.setResponses([
+			() => {
+				if (!attempted) {
+					attempted = true;
+					return fauxAssistantMessage([fauxToolCall("subagent", { agent: "worker", task: "do", thinking: "turbo" })]);
+				}
+				return fauxAssistantMessage([fauxToolCall("subagent_models", {})]);
+			},
+			fauxAssistantMessage("done"),
+		]);
+
+		await h.session.prompt("make an invalid call");
+
+		const messages = h.session.messages as {
+			role?: string;
+			toolName?: string;
+			content?: { type?: string; text?: string }[];
+		}[];
+		const rejected = messages.find((message) => message.role === "toolResult" && message.toolName === "subagent");
+		expect(rejected).toBeDefined();
+		const rejectedText = (rejected?.content ?? []).map((part) => part.text ?? "").join("\n");
+		expect(rejectedText).toMatch(/thinking|turbo|invalid/i);
+		expect(JSON.stringify(messages)).not.toContain("Background run started");
+	}, 90_000);
+
+	test("subagent_models is really callable in the direct profile and reports the faux catalog", async () => {
+		const h = await harness({ codemode: false });
+		h.faux.setResponses([fauxAssistantMessage([fauxToolCall("subagent_models", {})]), fauxAssistantMessage("done")]);
+
+		await h.session.prompt("list models");
+
+		const messages = h.session.messages as {
+			role?: string;
+			toolName?: string;
+			content?: { type?: string; text?: string }[];
+		}[];
+		const result = messages.find((message) => message.role === "toolResult" && message.toolName === "subagent_models");
+		expect(result).toBeDefined();
+		const text = (result?.content ?? []).map((part) => part.text ?? "").join("\n");
+		// The environment may expose a real catalogue or none at all; both are executed routes, and
+		// an empty catalogue must surface as the designed throw rather than a silent empty list.
+		expect(text.length).toBeGreaterThan(0);
+		if (/model\(s\) available/.test(text)) {
+			expect(text).toMatch(/model: "/);
+			expect(text).toContain("not a billing quote");
+		} else {
+			expect(text).toContain("No models can be listed");
+		}
+	}, 90_000);
+
+	test("deferral still holds at a large inline budget", async () => {
+		const h = await harness({ codemode: "on", inlineBudget: 1_000_000 });
+		const context = await captureTextRequest(h, "hello");
+		const declarations = declaredTools(context);
+		const names = declarations.map((tool) => tool.name);
+		for (const name of SUBAGENT_TOOLS) expect(names).not.toContain(name);
+		const codemode = declarations.find((tool) => tool.name === "codemode");
+		expect(codemode?.description).not.toContain("subagent_status");
+		expect(codemode?.description).not.toContain("runId");
+	}, 60_000);
+
+	test("model-only direct tools are not callable from a codemode script", async () => {
+		const h = await harness({ codemode: "on", inlineBudget: 3000 });
+		await h.session.prompt("/subagents mode direct");
+		h.faux.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("codemode", {
+					code: 'try { await tools.subagent_status({ runId: "x" }); return "CALLED"; } catch (error) { return "NOT_CALLABLE: " + String(error && error.message ? error.message : error); }',
+				}),
+			]),
+			fauxAssistantMessage("done"),
+		]);
+		await h.session.prompt("try a nested call");
+
+		const result = lastCodemodeResult(h.session);
+		expect(result).toContain("NOT_CALLABLE");
+		expect(result).not.toContain("CALLED");
+	}, 60_000);
+
+	test("excludeTools keeps the subagent tools out across mode switches", async () => {
+		const h = await harness({ codemode: "on", excludeTools: [...SUBAGENT_TOOLS] });
+		expect(h.session.getAllTools().filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))).toEqual(
+			[],
+		);
+
+		await h.session.prompt("/subagents mode direct");
+		expect(h.session.getAllTools().filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))).toEqual(
+			[],
+		);
+		expect(
+			h.session.getCallableToolNames().filter((name) => (SUBAGENT_TOOLS as readonly string[]).includes(name)),
+		).toEqual([]);
 	}, 60_000);
 });

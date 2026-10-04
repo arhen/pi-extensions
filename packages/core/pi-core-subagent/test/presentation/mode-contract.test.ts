@@ -32,12 +32,21 @@ async function mode(args = ""): Promise<string> {
 	return h.notifications.at(-1)?.message ?? "";
 }
 
+async function cmdWith(overrides: Record<string, unknown>, args: string): Promise<void> {
+	const command = h.commands.get("subagents");
+	if (!command) throw new Error("the /subagents command is not registered");
+	await command.handler(args, h.ctx(overrides));
+}
+
 function exposureOf(name: string): string | undefined {
 	return h.tools.get(name)?.exposure;
 }
 
 function expectDirectProfile(): void {
 	for (const name of SUBAGENT_TOOLS) expect(exposureOf(name)).toBe("model-only");
+	// No script path is available in this profile, so the namespace pointer must not be promised.
+	expect(h.tools.get("subagent")?.description).not.toContain("describeNamespace");
+	expect(h.tools.get("subagent_models")?.description).not.toContain("describeNamespace");
 }
 
 function expectCodemodeProfile(): void {
@@ -45,6 +54,7 @@ function expectCodemodeProfile(): void {
 		expect(exposureOf(name)).toBe("deferred");
 		expect(h.tools.get(name)?.namespace?.name).toBe("subagents");
 	}
+	expect(h.tools.get("subagent")?.description).toContain("describeNamespace");
 }
 
 describe("mode preference and effective profile", () => {
@@ -200,22 +210,36 @@ describe("boundary refresh", () => {
 		await h.invoke("before_agent_start", h.ctx());
 		expectCodemodeProfile();
 	});
+
+	test("a mode command while streaming defers the exposure change to the next boundary", async () => {
+		h.activeTools.push("codemode", "read", "subagent");
+		await h.startSession();
+		expectCodemodeProfile();
+
+		await cmdWith({ isIdle: () => false }, "mode direct");
+		expect(exposureOf("subagent")).toBe("deferred");
+		const pending = h.notifications.at(-1)?.message ?? "";
+		expect(pending).toContain("next request boundary");
+		expect(pending).toContain("mode direct");
+
+		await h.invoke("before_agent_start", h.ctx());
+		expectDirectProfile();
+	});
 });
 
 describe("selection and state preservation", () => {
 	test("switching modes never rewrites the active tool selection", async () => {
 		h.activeTools.push("read", "bash", "subagent", "subagent_status");
 		await h.startSession();
+		const before = [...h.activeTools];
 
 		await cmd("mode codemode");
 		await cmd("mode direct");
 		await cmd("mode auto");
 
-		for (const call of h.setActiveCalls) {
-			for (const unrelated of ["read", "bash"]) expect(call).toContain(unrelated);
-		}
-		expect(h.activeTools).toContain("read");
-		expect(h.activeTools).toContain("bash");
+		// re-registration changes exposure only; the active selection is never pushed via setActiveTools
+		expect(h.setActiveCalls).toEqual([]);
+		expect(h.activeTools).toEqual(before);
 	});
 
 	test("switching modes preserves existing manager runs", async () => {

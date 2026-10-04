@@ -26,6 +26,7 @@ export interface RuntimeHarnessOptions {
 	codemode?: "on" | "only" | false;
 	inlineBudget?: number;
 	tools?: string[];
+	excludeTools?: string[];
 	sessionManager?: SessionManager;
 	dir?: string;
 }
@@ -63,6 +64,7 @@ export async function createRuntimeHarness(options: RuntimeHarnessOptions = {}):
 		settingsManager,
 		sessionManager: options.sessionManager ?? SessionManager.inMemory(dir),
 		...(options.tools ? { tools: options.tools } : {}),
+		...(options.excludeTools ? { excludeTools: options.excludeTools } : {}),
 	});
 	await session.bindExtensions({});
 
