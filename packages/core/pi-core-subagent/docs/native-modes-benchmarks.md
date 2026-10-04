@@ -1,5 +1,9 @@
 # Native mode measurements
 
+These measurements precede the targeted discovery guide. See
+[targeted-discovery-benchmarks.md](targeted-discovery-benchmarks.md) for the follow-up, including
+same-session delegations, estimated costs and retained failures.
+
 ## Result
 
 The scoped codemode profile reduces this measured fresh-session startup input by **2,831 tokens

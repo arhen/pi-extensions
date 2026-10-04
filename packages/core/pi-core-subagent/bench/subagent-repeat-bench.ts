@@ -122,11 +122,14 @@ function printSummary(summary: RepeatSummary): void {
 	const cost = metricOf(summary, "totalCostEstimate");
 	if (cost) {
 		const perSession = cost.cumulative.bySession.map((value) => fmtUsd(value)).join(", ");
-		const total = cost.cumulative.bySession.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-		console.log(`  cumulative cost per session: ${perSession} | total=${fmtUsd(total)}`);
+		const values = cost.cumulative.bySession;
+		const total = values.every((value) => value !== undefined)
+			? values.reduce<number>((sum, value) => sum + (value as number), 0)
+			: undefined;
+		console.log(`  valid-call cumulative cost per session: ${perSession} | total=${fmtUsd(total)}`);
 	}
 	console.log(
-		"  note: later/position values are session-level aggregates (clustered); pooled call values are in the report.",
+		"  note: epochs use valid calls only, clustered per session. sessions[].cumulative includes failed effort.",
 	);
 	console.log("  cost provenance: pi SDK catalog estimate (tokens x model catalog price), not a provider invoice.");
 }

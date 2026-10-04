@@ -155,3 +155,23 @@ first child output ≈ 5 011 ms, completion ≈ 5 519 ms, settle ≈ 7 316 ms; p
 input 59 + cacheRead 11 776 + output 204 (call 1), input 437 + cacheRead 11 776 + output 14
 (call 2), child 1 call input 5 770 / cacheRead 0 / output 5 / 0 tool calls / `BENCH_OK`.
 Single samples are indicative only; the baseline gate uses 3 samples per profile.
+
+## Consecutive delegations
+
+`subagent-repeat-bench.ts` keeps one parent conversation across five independent runs, repeated in
+three fresh parent sessions. It reuses the existing model, resource and child-argument controls.
+Numbered prompts require a new run without prescribing discovery. Per-prompt usage watermarks,
+completion correlation and idle boundaries prevent reuse/double-counting. Failures remain visible.
+
+```sh
+bun bench/subagent-repeat-bench.ts --self-test
+bun bench/subagent-repeat-bench.ts --dry-run --target TARGET --mode codemode --codemode active
+bun bench/subagent-repeat-bench.ts --target TARGET --mode codemode --codemode active \
+  --samples 3 --turns 5 --verbose --out report.json
+```
+
+Use `--mode baseline` for an installed-original reference. Reports preserve first, later-position
+and cumulative session values; repeated positions are clustered, not independent samples. Epoch
+summaries count valid calls only; `sessions[].cumulative` includes all attempted work and must be used
+for effort totals when a session has failures. Dollar figures use SDK catalog prices and observed
+caches, not provider invoices. See [targeted discovery results](../docs/targeted-discovery-benchmarks.md).

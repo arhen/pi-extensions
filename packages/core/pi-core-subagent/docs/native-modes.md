@@ -2,7 +2,9 @@
 
 `pi-core-subagent` presents its subagent toolset in two native Pi profiles and switches between
 them with `/subagents mode`. This document describes the contract and measured startup/delegation
-trade-offs; detailed evidence is in [native-modes-benchmarks.md](native-modes-benchmarks.md).
+trade-offs; initial evidence is in [native-modes-benchmarks.md](native-modes-benchmarks.md).
+The [targeted-discovery follow-up](targeted-discovery-benchmarks.md) records the current guide and
+first-versus-consecutive delegation costs.
 
 ## Modes
 
@@ -100,10 +102,11 @@ navigation keep it. Nothing is written to global or project settings, and the sh
   (`subagent_status({ runId })`, `resume_subagent({ runId, taskId, message?, model?, thinking? })`)
   and carries the agent-file rule: files are matched by `description`/goal, never by name; a match is
   authoritative for body and `model`, and only the per-call `tools` and `write` override its tools.
-- **Deferred discovery**: scripts find the active tools with `searchTools("subagent")` or
-  `ALL_TOOLS`, and call them as `tools.subagent(...)`, `tools.subagent_status(...)`, etc. Calls go
-  through the normal nested-call pipeline, so argument validation, `tool_call`/`tool_result` hooks
-  and error results are unchanged.
+- **Targeted discovery**: the upfront guide names `await tools.subagent(args)`. When the signature
+  is unknown, use `text(await describeTool("subagent"))` once and reuse it. Discover other helpers
+  by exact name only when needed; broad searches and tool dumps are unnecessary.
+  `describeNamespace("subagents")` remains the optional full reference. Calls use the normal nested
+  pipeline, so argument validation, `tool_call`/`tool_result` hooks and error results are unchanged.
 - **Declaration hiding**: every subagent tool carries a `prepareLoadout` hook that hides the active
   subagent declarations **while the codemode profile is really applied** (`applied`), never from a
   pending preference. Only those declarations are hidden; other tools keep their loadout. The tools
@@ -157,12 +160,17 @@ navigation keep it. Nothing is written to global or project settings, and the sh
   switch and still complete. `fork()`/`new session` are not exercised natively (no public session
   API in this harness); branch-scoped preference across replacement is covered by `navigateTree` and
   session reopen plus the mode-contract branch tests.
-- Current result: 319 tests / 1310 assertions / 0 failures, package and bench typecheck clean,
-  package lint clean, benchmark self-test 9/9.
+- `test/presentation/targeted-discovery.test.ts` checks the explicit spawn pointer, targeted native
+  schema lookup and unavailable inactive spawn. Guidance was changed only after its new test failed.
+- The initial mode delivery passed 319 tests / 1310 assertions. Targeted discovery and repeated-use
+  benchmark verification are recorded separately in the follow-up report.
 - The package README is intentionally untouched: the user's checkout has local README edits, so the
   registered-tool table lives in this document instead. README reconciliation is left to the user.
 
-## Measured results
+## Initial measured results
+
+The table below predates targeted discovery guidance. Current startup input is 9,295 in the
+codemode profile; see [the follow-up](targeted-discovery-benchmarks.md) for matched current results.
 
 Three samples per workflow/profile, Pi 1.0.1, DeepSeek V4.1 Flash MAX, default inline budget 3000.
 Matched before is the frozen installed nine-tool package, not the older eight-tool development tree.
