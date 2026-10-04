@@ -57,12 +57,12 @@ Object arguments, exactly as validated when issued by the model:
 - End each task with a runnable check, e.g. 'Verify: bun test'. A subagent's claim of success is not evidence.
 
 ## Codemode
-When codemode is active these tools are not declared. A script calls them as \`tools.subagent(...)\`, \`tools.subagent_status(...)\` and so on. Discover them with \`searchTools('subagent')\` or read this reference with \`describeNamespace('subagents')\`. Arguments are validated exactly like model-issued calls.`,
+When codemode is active these tools are not declared. Call an active operation as \`tools.<name>(args)\`; spawning uses \`await tools.subagent(args)\`. If its signature is unknown, inspect only \`text(await describeTool('subagent'))\` once and reuse it. For another operation, inspect only its exact name when needed. Broad search and tool-list dumps are unnecessary for these known names; this namespace is the optional full reference. Inactive tools remain unavailable. Arguments are validated exactly like model-issued calls.`,
 };
 
 /** Adds the script-call path to the upfront rules, but only in the codemode profile. */
 export const CODEMODE_DISCOVERY_GUIDELINE =
-	"Codemode profile: subagent tools are not declared. Discover them with searchTools('subagent') or describeNamespace('subagents') and call them inside a script.";
+	"Codemode subagents: call active tools as tools.<name>(args); spawn with await tools.subagent(args). If its signature is unknown, inspect only text(await describeTool('subagent')) once, then reuse it. Other helpers: describeTool(exactName) only when needed. No broad search or tool-list dump required; describeNamespace('subagents') is optional full reference.";
 
 /** The full-reference pointer only resolves while codemode scripts can reach `describeNamespace`. */
 const NAMESPACE_REFERENCE = / Full reference: `describeNamespace\('subagents'\)`\./;

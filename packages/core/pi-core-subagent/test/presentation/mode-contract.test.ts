@@ -88,7 +88,7 @@ describe("mode preference and effective profile", () => {
 		expect(callable).not.toContain("resume_subagent");
 
 		const guidance = SUBAGENT_TOOLS.flatMap((name) => h.tools.get(name)?.promptGuidelines ?? []).join("\n");
-		expect(guidance).toContain("searchTools");
+		expect(guidance).toContain("describeTool('subagent')");
 		expect(guidance).toContain("describeNamespace");
 	});
 
@@ -331,7 +331,7 @@ describe("context cleanup contract", () => {
 
 		const namespace = h.tools.get("subagent")?.namespace;
 		expect(namespace?.name).toBe("subagents");
-		expect(namespace?.instructions).toMatch(/describeNamespace/);
+		expect(namespace?.instructions).toMatch(/describeTool/);
 		expect(namespace?.instructions).toMatch(/subagent\(/);
 		// Long signatures use the real object arguments, not positional prose.
 		expect(namespace?.instructions).toContain("subagent_status({ runId })");
