@@ -1,9 +1,9 @@
 /**
  * pi-skill-tool — opencode2-style skills for pi.
  *
- * Strips the built-in <available_skills> catalog from the system prompt
- * (~7.2K tokens) and exposes skills through a single `skill` tool.
- * The agent still auto-invokes skills by calling the tool — no user input.
+ * Drops the built-in `<skills>` catalog from the system prompt (~7.2K tokens)
+ * and exposes skills through a single `skill` tool. The agent still
+ * auto-invokes skills by calling the tool — no user input.
  *
  * The catalog comes from pi's own discovery (event.systemPromptOptions.skills):
  * project, user, settings, CLI, and package skills are all covered — no
@@ -43,7 +43,11 @@ export default async function (pi: ExtensionAPI) {
 	let catalog: SkillEntry[] = [];
 	let toolRegistered = false;
 
-	// ── Strip built-in catalog from system prompt (intro + block) ──────────
+	// ── Drop built-in catalog from the structured system prompt ─────────────
+	// Pi renders the catalog as the tagged `skills` section of the structured
+	// prompt. Clearing the option removes that section from the transcript, so
+	// later section changes stay visible; returning a rendered `systemPrompt`
+	// would instead force an opaque prompt for the whole run.
 	pi.on("before_agent_start", (event) => {
 		const skills = event.systemPromptOptions.skills ?? [];
 		if (skills.length === 0) return; // no catalog → nothing to strip
@@ -54,20 +58,13 @@ export default async function (pi: ExtensionAPI) {
 			baseDir: s.baseDir,
 			disableModelInvocation: s.disableModelInvocation,
 		}));
-		const stripped = event.systemPrompt.replace(
-			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*<\/available_skills>\n?/,
-			"",
-		);
-		if (stripped === event.systemPrompt) {
-			console.warn("[pi-core-skill-tool] strip failed — pi's skills prompt format changed; catalog left intact");
-		}
+		event.systemPromptOptions.skills = [];
 		// H1: the tool's description must carry the populated catalog, so register
 		// lazily on the FIRST agent start (registration snapshots the description).
 		if (!toolRegistered && process.env.PI_SKILL_TOOL !== "0") {
 			toolRegistered = true;
 			registerSkillTool();
 		}
-		return { systemPrompt: stripped };
 	});
 
 	// ── Register skill tool (opencode2-style) ────────────────────────────────
