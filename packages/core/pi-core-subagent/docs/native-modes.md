@@ -9,7 +9,7 @@ a placeholder for the benchmark owner.
 | Mode | Subagent tool exposure | Declared to the model | Callable from scripts |
 |---|---|---|---|
 | `direct` | `model-only` | yes, full schemas | no |
-| `codemode` | `deferred` (namespace `subagents`) | no (declarations hidden) | yes |
+| `codemode` | active tools `deferred` (namespace `subagents`), inactive tools `model-only` | no (the active declarations are hidden) | only the active tools |
 
 - `auto` (default) selects the codemode profile only while the built-in `codemode` tool is actually
   in the active set (`pi.getActiveTools()`), and the direct profile otherwise. Registration alone
@@ -18,6 +18,10 @@ a placeholder for the benchmark owner.
   reports the reason; it switches automatically once codemode becomes active.
 - The direct profile uses `model-only` exposure, so the tools stay visible even under the global
   `codemode.mode: "only"` setting. They are not callable from codemode scripts in that profile.
+- The codemode profile keeps only own tools that are really active script-callable. A helper the
+  user deactivated is re-registered as `model-only`, so it is neither declared nor reachable from a
+  script; reactivating it natively makes it `deferred` again at the next boundary. This keeps a
+  deactivated helper out of scripts even at the same request boundary.
 
 ## Tool surface
 
@@ -77,42 +81,70 @@ navigation keep it. Nothing is written to global or project settings, and the sh
 
 - **Exposure**: `ToolDefinition.exposure` is re-applied by re-registering the same nine tool
   definitions. Re-registration preserves the active selection; the manager and live runs are never
-  recreated. `sync()` re-registers only when the effective mode changes.
+  recreated. `sync()` re-registers when the effective mode changes or when the own-tool membership
+  of the active set changes.
+- **Native default activation**: the initial registration leaves `defaultActive` at its native
+  default, so the tools are available by default. Every later re-registration sets
+  `defaultActive: false`, which keeps the SDK's `_refreshToolRegistry` from auto-activating a tool the
+  user deactivated when an exposure moves from `deferred` to `model-only`.
+- **Allowlist restore**: with an explicit `--tools`/`defaultTools` allowlist the SDK activates every
+  declarable tool whose name is listed, ignoring `defaultActive`. `register()` therefore restores
+  exactly the own-name membership that was requested with `pi.setActiveTools()`, and only when the
+  SDK actually changed it. Every unrelated name — including a newly registered one — is preserved
+  verbatim; no other selection is ever pushed.
 - **Namespace**: the codemode profile sets
   `namespace: { name: "subagents", description, instructions }`. The long reference lives in
   `instructions` and is read on demand with `describeNamespace("subagents")`; deferred tools are not
   listed in the codemode description, so no schema is inlined, including at the default
-  `inlineBudget` of 3000.
-- **Deferred discovery**: scripts find the tools with `searchTools("subagent")` or
+  `inlineBudget` of 3000. The reference spells every long operation with its real object arguments
+  (`subagent_status({ runId })`, `resume_subagent({ runId, taskId, message?, model?, thinking? })`)
+  and carries the agent-file rule: files are matched by `description`/goal, never by name; a match is
+  authoritative for body and `model`, and only the per-call `tools` and `write` override its tools.
+- **Deferred discovery**: scripts find the active tools with `searchTools("subagent")` or
   `ALL_TOOLS`, and call them as `tools.subagent(...)`, `tools.subagent_status(...)`, etc. Calls go
   through the normal nested-call pipeline, so argument validation, `tool_call`/`tool_result` hooks
   and error results are unchanged.
-- **Declaration hiding**: every subagent tool carries a `prepareLoadout` hook that returns the active
-  subagent names as `hiddenDeclarations` in the codemode profile. Only those declarations are
-  hidden; other tools keep their loadout. The tools stay active and callable, and their short
-  `promptGuidelines` (discovery note plus the essential read-only/worktree, health-check,
-  failure/resume, no-idle-wait and verification rules) remain in the system prompt.
-- **Boundaries**: `session_start` and `before_agent_start` run `sync()`; mode changes therefore take
-  effect at the next request boundary and never cancel or restart a run. A `/subagents mode` command
-  issued while the agent is not idle (`ctx.isIdle() === false`, for example mid-stream or while a
-  script executes) stores the preference but defers re-registration to the next boundary, so a live
-  call is never invalidated by an exposure change.
+- **Declaration hiding**: every subagent tool carries a `prepareLoadout` hook that hides the active
+  subagent declarations **while the codemode profile is really applied** (`applied`), never from a
+  pending preference. Only those declarations are hidden; other tools keep their loadout. The tools
+  stay active and callable, and their short `promptGuidelines` (discovery note plus the essential
+  read-only/worktree, health-check, failure/resume, no-idle-wait and verification rules) remain in
+  the system prompt.
+- **Boundaries**: `session_start`, `session_tree`, `before_agent_start` and **`turn_start`** run
+  `sync()`. `turn_start` is emitted before each model request of a multi-turn run, so a codemode
+  availability change or a helper activation/deactivation made between turns reaches the next request
+  with correct declarations and executability without another user prompt. The boundary is safe: no
+  request or tool is executing, and manager runs are untouched. A `/subagents mode` command issued
+  while the agent is not idle (`ctx.isIdle() === false`, for example mid-stream or while a script
+  executes) stores the preference but defers re-registration to the next boundary, so a live call is
+  never invalidated by an exposure change and the applied loadout is never rewritten mid-flight.
 
 ## Safety invariants
 
 - No global or project settings, codemode settings, version numbers or installed packages are
   changed. `codemode` is never enabled behind the user's back.
-- The active tool selection is preserved; unrelated tool names are never added or removed, and
-  `setActiveTools` is not used to force subagent tools on.
+- The active tool selection is preserved; unrelated tool names are never added or removed. The only
+  `pi.setActiveTools()` call removes an SDK force-activation of **own** names under an explicit
+  allowlist; unrelated names keep their membership and order.
 - Explicit `--tools`/`defaultTools` allowlists and `noTools` continue to decide whether the subagent
   tools are registered/reachable at all.
 
 ## Verification
 
-- `bun run typecheck && bun run lint && bun test` in `packages/core/pi-core-subagent`.
+- `bun run typecheck && bunx tsc --noEmit -p bench/tsconfig.json && bun run lint && bun test &&
+  bun bench/subagent-bench.ts --self-test` in `packages/core/pi-core-subagent`.
 - `test/presentation/mode-contract.test.ts` pins the exposure, hiding, command, persistence,
-  selection-preservation and boundary-deferral contract with a harness that mirrors
-  `_applyToolLoadout`. All nine operations are asserted, not just the eight legacy ones.
+  selection-preservation, pending-preference and boundary-deferral contract with a harness that
+  mirrors `_applyToolLoadout`. All nine operations are asserted, not just the eight legacy ones; the
+  codemode profile is asserted per active membership (active = `deferred`, inactive = `model-only`).
+- `test/presentation/selection-regression.test.ts` runs real Pi 1.0.1 sessions with the native
+  codemode extension and a faux provider: manually deactivated helpers stay deactivated across a
+  mode switch and stay non-callable after the next request boundary; a partial `--tools` allowlist
+  cannot resurrect a deactivated helper while an unrelated allowlisted tool survives; `noTools`
+  leaves the tools unreachable; toggling codemode availability or a helper's active membership
+  between model turns reaches the next request of the same run with correct declarations and
+  executability; and a mode change during a blocked, live codemode script keeps that call usable,
+  leaves the applied exposures untouched, and applies at the next request.
 - `test/presentation/runtime.test.ts` runs real Pi 1.0.1 sessions with the native codemode extension
   (modes `on` and `only`, `inlineBudget: 3000` and `1_000_000`) and a faux provider: declaration
   capture, discovery through the QuickJS sandbox, nested validation, allowlist and `excludeTools`
@@ -125,7 +157,7 @@ navigation keep it. Nothing is written to global or project settings, and the sh
   switch and still complete. `fork()`/`new session` are not exercised natively (no public session
   API in this harness); branch-scoped preference across replacement is covered by `navigateTree` and
   session reopen plus the mode-contract branch tests.
-- Current result: 310 tests / 1214 assertions / 0 failures, package and bench typecheck clean,
+- Current result: 319 tests / 1310 assertions / 0 failures, package and bench typecheck clean,
   package lint clean, benchmark self-test 9/9.
 - The package README is intentionally untouched: the user's checkout has local README edits, so the
   registered-tool table lives in this document instead. README reconciliation is left to the user.

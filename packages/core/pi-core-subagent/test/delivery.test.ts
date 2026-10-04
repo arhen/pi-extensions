@@ -77,7 +77,7 @@ describe("failure and ask notices steer, everything else queues", () => {
 		expect(ask?.body).toContain("[not urgent]");
 		expect(ask?.body).toContain("probe (task_2)");
 		expect(ask?.body).toContain("which branch?");
-		expect(ask?.body).toContain('reply_subagent(runId: "run_x", taskId: "task_2"');
+		expect(ask?.body).toContain('reply_subagent({ runId: "run_x", taskId: "task_2"');
 	});
 
 	test("an urgent ask tells the leader to answer before its next step", () => {

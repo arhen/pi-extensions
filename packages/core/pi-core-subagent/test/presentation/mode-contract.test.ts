@@ -7,7 +7,7 @@ import {
 	requireTool,
 	runTool,
 } from "../parity/harness.ts";
-import { simulateLoadout } from "./loadout-sim.ts";
+import { callableTools, simulateLoadout } from "./loadout-sim.ts";
 
 const SUBAGENT_TOOLS = [...BASELINE_OPERATIONS];
 const MODE_ENTRY = "subagent-mode";
@@ -50,8 +50,11 @@ function expectDirectProfile(): void {
 }
 
 function expectCodemodeProfile(): void {
+	// Only own tools that are really active are deferred (script-callable); a deactivated helper is
+	// model-only so it stays out of scripts and declarations alike.
+	const active = new Set(h.activeTools);
 	for (const name of SUBAGENT_TOOLS) {
-		expect(exposureOf(name)).toBe("deferred");
+		expect(exposureOf(name)).toBe(active.has(name) ? "deferred" : "model-only");
 		expect(h.tools.get(name)?.namespace?.name).toBe("subagents");
 	}
 	expect(h.tools.get("subagent")?.description).toContain("describeNamespace");
@@ -77,7 +80,12 @@ describe("mode preference and effective profile", () => {
 		const load = simulateLoadout(h);
 		expect([...load.hidden].sort()).toEqual(["subagent", "subagent_status"]);
 		expect(load.declared.map((tool) => tool.name)).toEqual(["read", "codemode"]);
-		for (const name of SUBAGENT_TOOLS) expect(load.callable.map((tool) => tool.name)).toContain(name);
+		const callable = load.callable.map((tool) => tool.name);
+		// Only the active own tools stay script-callable; the rest are model-only and inactive.
+		expect(callable).toContain("subagent");
+		expect(callable).toContain("subagent_status");
+		expect(callable).not.toContain("subagent_models");
+		expect(callable).not.toContain("resume_subagent");
 
 		const guidance = SUBAGENT_TOOLS.flatMap((name) => h.tools.get(name)?.promptGuidelines ?? []).join("\n");
 		expect(guidance).toContain("searchTools");
@@ -222,24 +230,65 @@ describe("boundary refresh", () => {
 		expect(pending).toContain("next request boundary");
 		expect(pending).toContain("mode direct");
 
+		// The desired preference alone must not unhide the applied profile: while a live run still sees
+		// deferred tools, a loadout recompute keeps the declarations hidden until sync applies direct.
+		const load = simulateLoadout(h);
+		expect([...load.hidden]).toEqual(["subagent"]);
+		expect(load.callable.map((tool) => tool.name)).toContain("subagent");
+
 		await h.invoke("before_agent_start", h.ctx());
 		expectDirectProfile();
 	});
 });
 
 describe("selection and state preservation", () => {
-	test("switching modes never rewrites the active tool selection", async () => {
-		h.activeTools.push("read", "bash", "subagent", "subagent_status");
+	test("switching modes preserves the active selection and unrelated names", async () => {
+		h.activeTools.push("codemode", "read", "bash", "subagent", "subagent_status");
 		await h.startSession();
 		const before = [...h.activeTools];
 
 		await cmd("mode codemode");
+		expect(h.tools.get("subagent")?.exposure).toBe("deferred");
+		expect(h.tools.get("subagent_status")?.exposure).toBe("deferred");
+		expect(h.tools.get("subagent_models")?.exposure).toBe("model-only");
+		expect(callableTools(h).map((tool) => tool.name)).not.toContain("subagent_models");
+
 		await cmd("mode direct");
+		expectDirectProfile();
 		await cmd("mode auto");
 
-		// re-registration changes exposure only; the active selection is never pushed via setActiveTools
-		expect(h.setActiveCalls).toEqual([]);
+		// Re-registration changes exposure only; the active selection is never rewritten.
 		expect(h.activeTools).toEqual(before);
+	});
+
+	test("a native own-selection change re-registers at the next boundary", async () => {
+		h.activeTools.push("codemode", "read", "subagent", "subagent_status");
+		await h.startSession();
+		expectCodemodeProfile();
+
+		// Deactivate one helper while the overall mode stays codemode: its exposure must follow.
+		h.activeTools.splice(h.activeTools.indexOf("subagent_status"), 1);
+		await h.invoke("before_agent_start", h.ctx());
+		expect(exposureOf("subagent_status")).toBe("model-only");
+		expect(callableTools(h).map((tool) => tool.name)).not.toContain("subagent_status");
+		expect(exposureOf("subagent")).toBe("deferred");
+
+		// Reactivating it makes it script-callable again without a mode change.
+		h.activeTools.push("subagent_status");
+		await h.invoke("before_agent_start", h.ctx());
+		expect(exposureOf("subagent_status")).toBe("deferred");
+	});
+
+	test("deactivated helpers stay model-only instead of becoming deferred", async () => {
+		h.activeTools.push("codemode", "read", "subagent", "subagent_models");
+		await h.startSession();
+
+		for (const name of SUBAGENT_TOOLS)
+			expect(exposureOf(name)).toBe(h.activeTools.includes(name) ? "deferred" : "model-only");
+		// Inactive model-only helpers are neither declared nor callable.
+		const load = simulateLoadout(h);
+		expect(load.declared.map((tool) => tool.name)).not.toContain("subagent_status");
+		expect(load.callable.map((tool) => tool.name)).not.toContain("subagent_status");
 	});
 
 	test("switching modes preserves existing manager runs", async () => {
@@ -284,6 +333,12 @@ describe("context cleanup contract", () => {
 		expect(namespace?.name).toBe("subagents");
 		expect(namespace?.instructions).toMatch(/describeNamespace/);
 		expect(namespace?.instructions).toMatch(/subagent\(/);
+		// Long signatures use the real object arguments, not positional prose.
+		expect(namespace?.instructions).toContain("subagent_status({ runId })");
+		expect(namespace?.instructions).toContain("resume_subagent({ runId, taskId, message?, model?, thinking? })");
+		// Agent files match by description/goal and stay authoritative except for per-call tools/write.
+		expect(namespace?.instructions).toMatch(/matched by `description` against the goal, never by name/i);
+		expect(namespace?.instructions).toMatch(/only the per-call `tools` and `write` override them/i);
 
 		const guidance = SUBAGENT_TOOLS.flatMap((name) => h.tools.get(name)?.promptGuidelines ?? []).join("\n");
 		expect(guidance).toMatch(/read-only/i);

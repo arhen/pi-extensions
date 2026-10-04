@@ -8,6 +8,7 @@ import {
 	createAgentSession,
 	createCodemodeExtension,
 	DefaultResourceLoader,
+	type ExtensionAPI,
 	ModelRuntime,
 	SessionManager,
 	SettingsManager,
@@ -27,8 +28,11 @@ export interface RuntimeHarnessOptions {
 	inlineBudget?: number;
 	tools?: string[];
 	excludeTools?: string[];
+	noTools?: "all" | "builtin";
 	sessionManager?: SessionManager;
 	dir?: string;
+	/** Extra extension factories, e.g. a controlled test tool. */
+	extensions?: ((pi: ExtensionAPI) => void)[];
 }
 
 /** Real Pi 1.0.1 session: native codemode and the subagent extension driven by a faux provider. */
@@ -47,6 +51,7 @@ export async function createRuntimeHarness(options: RuntimeHarnessOptions = {}):
 				? [createCodemodeExtension({ mode: options.codemode, inlineBudget: options.inlineBudget ?? 3000 })]
 				: []),
 			(pi) => subagentExtension(pi),
+			...(options.extensions ?? []),
 		],
 	});
 	await resourceLoader.reload();
@@ -65,6 +70,7 @@ export async function createRuntimeHarness(options: RuntimeHarnessOptions = {}):
 		sessionManager: options.sessionManager ?? SessionManager.inMemory(dir),
 		...(options.tools ? { tools: options.tools } : {}),
 		...(options.excludeTools ? { excludeTools: options.excludeTools } : {}),
+		...(options.noTools ? { noTools: options.noTools } : {}),
 	});
 	await session.bindExtensions({});
 
@@ -94,8 +100,10 @@ export function declaredTools(context: TranscriptContext): DeclaredTool[] {
 	for (const message of context.messages) {
 		const candidate = message as { role?: string; toolsAdded?: DeclaredTool[]; toolsRemoved?: DeclaredTool[] };
 		if (candidate.role !== "system") continue;
-		for (const tool of candidate.toolsAdded ?? []) active.set(tool.name, tool);
+		// Pi folds a system message as removed-then-added: a checkpoint carries the full new set in
+		// `toolsAdded` and the replaced set in `toolsRemoved`.
 		for (const tool of candidate.toolsRemoved ?? []) active.delete(tool.name);
+		for (const tool of candidate.toolsAdded ?? []) active.set(tool.name, tool);
 	}
 	return [...active.values()];
 }

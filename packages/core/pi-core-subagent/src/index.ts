@@ -134,6 +134,11 @@ export default function (pi: ExtensionAPI) {
 	pi.on("before_agent_start", () => {
 		presentation.sync();
 	});
+	// Successive model turns of the same run are safe boundaries too: a codemode availability or
+	// helper-selection change made between turns must reach the next request without a new prompt.
+	pi.on("turn_start", () => {
+		presentation.sync();
+	});
 
 	pi.on("session_start", async (_event, ctx) => {
 		await manager.restoreFromSidecar(ctx);
@@ -190,18 +195,18 @@ export default function (pi: ExtensionAPI) {
 		label: "Subagent",
 
 		description:
-			"Run isolated subagents (own context/session) in the background; returns a runId and completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, `chain`, or `needs` edges that gate tasks and prepend upstream output). Write tasks use an isolated git worktree and report a branch. Full reference: `describeNamespace('subagents')`.",
+			"Run isolated subagents (own context/session) in the background; returns a runId and completion notifies you. One call = one agent (`agent`+`task`) or many (`tasks`, `chain`, or `needs` edges that gate tasks and prepend upstream output). Write tasks use an isolated git worktree and report a branch; a matching agent file is authoritative (matched by description, body/model win). Full reference: `describeNamespace('subagents')`.",
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
 			"`model` is optional: omit it to inherit your current session model, or name one (agent-file `model` frontmatter wins) to pin the run. Call subagent_models for the exact references, thinking levels, and prices this session may use.",
 			"Use subagent for independent review, testing, research or parallel analysis; skip it when one direct action finishes the job.",
 			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls; declare ordering with `needs` edges, not separate calls.",
-			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit); a matched agent file or per-call tools/write override it.",
+			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit). Agent files are matched by description/goal, not name; a match is authoritative (body/model), and only per-call tools/write override its tools.",
 			"Write agents work in an isolated git worktree; review the branch diff and merge with `git merge --no-ff <branch>` when done.",
-			"After spawning, call subagent_status(runId) ONCE to confirm the tasks started; fix or respawn a task that died on spawn.",
+			"After spawning, call subagent_status({ runId }) ONCE to confirm the tasks started; fix or respawn a task that died on spawn.",
 			"End each task with a runnable check, e.g. 'Verify: bun test'. A subagent's claim of success is not evidence.",
 			"When you have no work left, end your turn — completion notifies you. await_subagent/autoAwait only when this turn must consume the result immediately.",
-			"A failed task keeps its session file and branch: resume_subagent(runId, taskId, model?) revives it; respawn only when it never started.",
+			"A failed task keeps its session file and branch: resume_subagent({ runId, taskId }) revives it; respawn only when it never started.",
 		],
 		parameters: SubagentParams,
 		executionMode: "parallel",
@@ -231,7 +236,7 @@ export default function (pi: ExtensionAPI) {
 						? `\n${asks.length} child(ren) waiting for your answer:\n${asks
 								.map(
 									(a) =>
-										`- ${a.agent} (${a.taskId}): ${a.text}\n  reply_subagent(runId: "${run.id}", taskId: "${a.taskId}", message: ...)`,
+										`- ${a.agent} (${a.taskId}): ${a.text}\n  reply_subagent({ runId: "${run.id}", taskId: "${a.taskId}", message: ... })`,
 								)
 								.join("\n")}\nAnswer each, then await_subagent again for the result.`
 						: "",
@@ -244,7 +249,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Background run started: ${details.run.id} (${details.run.mode}, ${details.run.tasks.length} task${details.run.tasks.length > 1 ? "s" : ""}).\nNext: call subagent_status("${details.run.id}") now to confirm the tasks actually started before doing anything else.\nAfter that, completion will notify you — if you have no other work, end your turn instead of waiting.\nOther tools: subagent_result / reply_subagent / steer_subagent / resume_subagent / subagent_cancel.`,
+						text: `Background run started: ${details.run.id} (${details.run.mode}, ${details.run.tasks.length} task${details.run.tasks.length > 1 ? "s" : ""}).\nNext: call subagent_status({ runId: "${details.run.id}" }) now to confirm the tasks actually started before doing anything else.\nAfter that, completion will notify you — if you have no other work, end your turn instead of waiting.\nOther tools: subagent_result / reply_subagent / steer_subagent / resume_subagent / subagent_cancel.`,
 					},
 				],
 				details,
@@ -457,7 +462,7 @@ export default function (pi: ExtensionAPI) {
 				content: [
 					{
 						type: "text",
-						text: `Resumed ${runId}/${taskId} (${res.task.agent})${model ? ` on ${model}` : ""} from ${res.task.sessionFile}${res.task.branch ? `, branch ${res.task.branch}` : ""}.${res.note ? ` Adjusted ${res.note}.` : ""}\nNext: subagent_status("${runId}") to confirm it is running; completion will notify you.`,
+						text: `Resumed ${runId}/${taskId} (${res.task.agent})${model ? ` on ${model}` : ""} from ${res.task.sessionFile}${res.task.branch ? `, branch ${res.task.branch}` : ""}.${res.note ? ` Adjusted ${res.note}.` : ""}\nNext: subagent_status({ runId: "${runId}" }) to confirm it is running; completion will notify you.`,
 					},
 				],
 				details: { run: run ? cloneRun(run) : undefined },

@@ -248,8 +248,8 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 		isStartupFailure(task, kind)
 			? "Never started — stop and diagnose before spawning anything else: a config-level error (model, plan, auth, agent file) fails identically on every respawn."
 			: kind === "completed"
-				? `Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`
-				: `Session file kept — resume_subagent(runId: "${run.id}", taskId: "${task.id}", model?: ...) revives it with full context. subagent_result for what it produced so far.`,
+				? `Use subagent_result({ runId: "${run.id}", taskId: "${task.id}" }) for full output.`
+				: `Session file kept — resume_subagent({ runId: "${run.id}", taskId: "${task.id}", model?: ... }) revives it with full context. subagent_result for what it produced so far.`,
 	].join("\n");
 }
 export function makeAskNotice(
@@ -257,7 +257,7 @@ export function makeAskNotice(
 	extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
 ): string {
 	const who = extra.agent ? `${extra.agent} (${extra.taskId ?? "task"})` : (extra.taskId ?? "a subagent");
-	const reply = `reply_subagent(runId: "${run.id}", taskId: "${extra.taskId ?? ""}", message: ...)`;
+	const reply = `reply_subagent({ runId: "${run.id}", taskId: "${extra.taskId ?? ""}", message: ... })`;
 	return extra.urgent
 		? `[URGENT] Subagent ${who} is blocked and cannot continue until you answer: ${extra.question ?? ""}\nAnswer now, before your next step, with ${reply}.`
 		: `[not urgent] Subagent ${who} asks: ${extra.question ?? ""}\nIt waits while you keep working — finish your current step first if you want, then answer with ${reply}.`;
@@ -270,7 +270,7 @@ export function makeNotice(run: RunSnapshot, kind: string): string {
 	for (const task of run.tasks) {
 		lines.push(`- ${task.agent}: ${task.status}${task.error ? ` — ${truncateText(task.error, 200)}` : ""}`);
 	}
-	lines.push(`Use subagent_result(runId: "${run.id}") for full output.`);
+	lines.push(`Use subagent_result({ runId: "${run.id}" }) for full output.`);
 	return lines.join("\n");
 }
 
