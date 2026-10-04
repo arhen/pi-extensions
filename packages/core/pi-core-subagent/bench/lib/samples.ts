@@ -646,6 +646,17 @@ export async function runDelegateSample(
 			);
 		if (delegated && containsBenchOk !== true)
 			errors.push("child BENCH_OK not observed");
+		const childToolCalls = task?.toolCalls ?? parsed?.toolCallCount;
+		if (delegated && childToolCalls !== undefined && childToolCalls > 0)
+			errors.push(
+				`controlled child used ${childToolCalls} tool call(s); benchmark requires 0`,
+			);
+		if (delegated && childToolCalls === undefined)
+			errors.push("child tool-call count unknown");
+		if (delegated && task?.branch)
+			errors.push(
+				`child ran on branch ${task.branch}; benchmark requires no worktree`,
+			);
 
 		const parentUsage = usageBreakdown(
 			probe.messages.filter((message) => message.atMs >= delegateStart),
@@ -676,7 +687,9 @@ export async function runDelegateSample(
 			thrown === undefined &&
 			usageSource !== "none" &&
 			containsBenchOk === true &&
-			task?.status === "completed";
+			task?.status === "completed" &&
+			(childToolCalls === undefined || childToolCalls === 0) &&
+			!task?.branch;
 		if (!valid && errors.length === 0)
 			errors.push("delegation did not meet the BENCH_OK/completed criteria");
 
@@ -731,7 +744,7 @@ export async function runDelegateSample(
 				isolation: task?.isolation,
 				usage: childUsage,
 				usageSource,
-				toolCalls: task?.toolCalls ?? parsed?.toolCallCount,
+				toolCalls: childToolCalls,
 				modelCalls:
 					snapshotUsage?.turns !== undefined && snapshotUsage.turns > 0
 						? snapshotUsage.turns
