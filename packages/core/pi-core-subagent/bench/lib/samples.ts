@@ -13,12 +13,7 @@ import {
 	pickRunSnapshot,
 	routingSequence,
 } from "./probe.ts";
-import {
-	type DelegateSampleReport,
-	declaredManifest,
-	type StartupSampleReport,
-	usageBreakdown,
-} from "./report.ts";
+import { type DelegateSampleReport, declaredManifest, type StartupSampleReport, usageBreakdown } from "./report.ts";
 import {
 	type BuiltSession,
 	buildParentSession,
@@ -66,10 +61,7 @@ export function skeletonModel(opts: BenchOptions): ModelIdentity {
 	};
 }
 
-export function skeletonSettings(
-	opts: BenchOptions,
-	ctx: RunContext,
-): SettingsDiagnostics {
+export function skeletonSettings(opts: BenchOptions, ctx: RunContext): SettingsDiagnostics {
 	return {
 		agentDir: ctx.agentDir,
 		packagesConfigured: [],
@@ -236,10 +228,7 @@ export function makeFailedDelegate(
 	};
 }
 
-export async function waitForSettle(
-	session: AgentSession,
-	timeoutMs: number,
-): Promise<boolean> {
+export async function waitForSettle(session: AgentSession, timeoutMs: number): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {
 		let settled = false;
 		const timer = setTimeout(() => {
@@ -269,15 +258,9 @@ export async function waitForBusCompletion(
 	for (;;) {
 		const match = notifications.find((notification) => {
 			if (notification.atMs < afterMs) return false;
-			if (
-				notification.kind === undefined ||
-				!terminalKinds.has(notification.kind)
-			)
-				return false;
+			if (notification.kind === undefined || !terminalKinds.has(notification.kind)) return false;
 			if (runIds.length === 0) return true;
-			return (
-				notification.runId === undefined || runIds.includes(notification.runId)
-			);
+			return notification.runId === undefined || runIds.includes(notification.runId);
 		});
 		if (match) return match;
 		if (performance.now() >= deadline) return undefined;
@@ -285,30 +268,18 @@ export async function waitForBusCompletion(
 	}
 }
 
-export async function runStartupSample(
-	ctx: RunContext,
-	index: number,
-): Promise<StartupSampleReport> {
+export async function runStartupSample(ctx: RunContext, index: number): Promise<StartupSampleReport> {
 	const { opts } = ctx;
 	const sampleStart = performance.now();
 	const startedAtIso = new Date().toISOString();
 	const nonce = opts.coldNonce ? randomBytes(8).toString("hex") : undefined;
-	const prompt = nonce
-		? `[bench-nonce ${nonce}]\n${opts.startupPrompt}`
-		: opts.startupPrompt;
+	const prompt = nonce ? `[bench-nonce ${nonce}]\n${opts.startupPrompt}` : opts.startupPrompt;
 
 	let built: BuiltSession;
 	try {
 		built = await buildParentSession({ opts });
 	} catch (error) {
-		return makeFailedStartup(
-			ctx,
-			index,
-			startedAtIso,
-			nonce,
-			prompt,
-			`session build failed: ${errorMessage(error)}`,
-		);
+		return makeFailedStartup(ctx, index, startedAtIso, nonce, prompt, `session build failed: ${errorMessage(error)}`);
 	}
 
 	const session = built.session;
@@ -317,6 +288,12 @@ export async function runStartupSample(
 	const bus = captureBusNotifications(built.eventBus, sampleStart);
 	const errors: string[] = [];
 	try {
+		let presentation: Awaited<ReturnType<typeof applyPresentationCommands>>;
+		try {
+			presentation = await applyPresentationCommands(built, probe, opts, errors);
+		} catch (error) {
+			return makeFailedStartup(ctx, index, startedAtIso, nonce, prompt, errorMessage(error));
+		}
 		const activeTools = session.getActiveToolNames().slice().sort();
 		const systemPrompt = session.systemPrompt ?? "";
 		const readyAtMs = probe.now();
@@ -334,29 +311,28 @@ export async function runStartupSample(
 		}
 		probe.promptReturnMs = probe.now();
 		if (thrown) errors.push(`prompt rejected: ${thrown}`);
-		if (preflight.value !== "started")
-			errors.push(
-				`prompt preflight=${preflight.value ?? "none"} (expected started)`,
-			);
+		if (preflight.value !== "started") errors.push(`prompt preflight=${preflight.value ?? "none"} (expected started)`);
 		if (probe.settledAtMs === undefined) {
 			const settled = await waitForSettle(session, opts.settleTimeoutMs);
-			if (!settled)
-				errors.push(
-					`timeout waiting for agent_settled (${opts.settleTimeoutMs}ms)`,
-				);
+			if (!settled) errors.push(`timeout waiting for agent_settled (${opts.settleTimeoutMs}ms)`);
 		}
 		errors.push(...probe.errors);
 		const usage = usageBreakdown(probe.messages);
 		const declared = declaredManifest(built.providerRequests);
 		const valid =
-			usage.calls > 0 && thrown === undefined && preflight.value === "started";
+			usage.calls === 1 &&
+			usage.fullInput > 0 &&
+			probe.tools.length === 0 &&
+			declared.firstRequestToolCount !== undefined &&
+			probe.settledAtMs !== undefined &&
+			errors.length === 0 &&
+			thrown === undefined &&
+			preflight.value === "started";
 		return {
 			kind: "startup",
 			sample: index,
 			valid,
-			invalidReason: valid
-				? undefined
-				: errors.join("; ") || "no assistant usage",
+			invalidReason: valid ? undefined : errors.join("; ") || "no assistant usage",
 			startedAtIso,
 			target: skeletonTarget(ctx),
 			mode: opts.mode,
@@ -366,6 +342,8 @@ export async function runStartupSample(
 			nonce,
 			prompt,
 			preflight: preflight.value,
+			modeCommand: presentation.modeCommand,
+			codemodeCommand: presentation.codemodeCommand,
 			readyAtMs,
 			build: built.timings,
 			stream: {
@@ -452,36 +430,47 @@ async function invokeCommand(
 		modelCalls: probe.assistantCalls() - callsBefore,
 	};
 	if (preflight.value !== "handled")
-		errors.push(
-			`command preflight=${preflight.value ?? "none"} (expected handled): ${commandText}`,
-		);
+		errors.push(`command preflight=${preflight.value ?? "none"} (expected handled): ${commandText}`);
 	return run;
 }
 
-export async function runDelegateSample(
-	ctx: RunContext,
-	index: number,
-): Promise<DelegateSampleReport> {
+export async function applyPresentationCommands(
+	built: Pick<BuiltSession, "session" | "extensions">,
+	probe: Probe,
+	opts: BenchOptions,
+	errors: string[],
+): Promise<{ modeCommand?: CommandRun; codemodeCommand?: CommandRun }> {
+	const execute = async (text: string | undefined): Promise<CommandRun | undefined> => {
+		const run = await invokeCommand(built.session, probe, built.extensions, text, opts, errors);
+		if (!run) return undefined;
+		if (!run.available && !opts.allowMissingModeCommand) {
+			throw new Error(`command not registered by target: ${text}`);
+		}
+		if (run.available && (run.preflight !== "handled" || run.modelCalls !== 0)) {
+			throw new Error(`command was not handled without model calls: ${text}`);
+		}
+		return run;
+	};
+	return {
+		modeCommand: await execute(modeCommandText(opts.modeCommand, opts.mode)),
+		codemodeCommand: await execute(
+			opts.codemodeCommand.trim() ? opts.codemodeCommand.replaceAll("{state}", opts.codemode) : undefined,
+		),
+	};
+}
+
+export async function runDelegateSample(ctx: RunContext, index: number): Promise<DelegateSampleReport> {
 	const { opts } = ctx;
 	const sampleStart = performance.now();
 	const startedAtIso = new Date().toISOString();
 	const nonce = opts.coldNonce ? randomBytes(8).toString("hex") : undefined;
-	const prompt = nonce
-		? `[bench-nonce ${nonce}]\n${opts.delegatePrompt}`
-		: opts.delegatePrompt;
+	const prompt = nonce ? `[bench-nonce ${nonce}]\n${opts.delegatePrompt}` : opts.delegatePrompt;
 
 	let built: BuiltSession;
 	try {
 		built = await buildParentSession({ opts });
 	} catch (error) {
-		return makeFailedDelegate(
-			ctx,
-			index,
-			startedAtIso,
-			nonce,
-			prompt,
-			`session build failed: ${errorMessage(error)}`,
-		);
+		return makeFailedDelegate(ctx, index, startedAtIso, nonce, prompt, `session build failed: ${errorMessage(error)}`);
 	}
 
 	const session = built.session;
@@ -490,46 +479,15 @@ export async function runDelegateSample(
 	const bus = captureBusNotifications(built.eventBus, sampleStart);
 	const errors: string[] = [];
 	try {
+		let presentation: Awaited<ReturnType<typeof applyPresentationCommands>>;
+		try {
+			presentation = await applyPresentationCommands(built, probe, opts, errors);
+		} catch (error) {
+			return makeFailedDelegate(ctx, index, startedAtIso, nonce, prompt, errorMessage(error));
+		}
+		const { modeCommand, codemodeCommand } = presentation;
 		const systemPrompt = session.systemPrompt ?? "";
 		const readyAtMs = probe.now();
-
-		let modeCommand: DelegateSampleReport["modeCommand"];
-		if (opts.mode !== "baseline") {
-			const text = modeCommandText(opts.modeCommand, opts.mode);
-			const run = await invokeCommand(
-				session,
-				probe,
-				built.extensions,
-				text,
-				opts,
-				errors,
-			);
-			modeCommand = run;
-			if (run && !run.available && !opts.allowMissingModeCommand) {
-				return makeFailedDelegate(
-					ctx,
-					index,
-					startedAtIso,
-					nonce,
-					prompt,
-					`mode command not registered by target (${text ?? "empty template"}); baseline must not call it, pass --allow-missing-mode-command to continue anyway`,
-				);
-			}
-		}
-		let codemodeCommand: DelegateSampleReport["codemodeCommand"];
-		if (opts.codemodeCommand.trim()) {
-			const text = opts.codemodeCommand.replaceAll("{state}", opts.codemode);
-			const run = await invokeCommand(
-				session,
-				probe,
-				built.extensions,
-				text,
-				opts,
-				errors,
-			);
-			codemodeCommand = run;
-		}
-
 		const delegateStart = probe.now();
 		const preflight: { value: string | undefined } = { value: undefined };
 		let thrown: string | undefined;
@@ -547,67 +505,39 @@ export async function runDelegateSample(
 		probe.promptReturnMs = probe.now();
 		if (thrown) errors.push(`delegate prompt rejected: ${thrown}`);
 		else if (preflight.value !== "started")
-			errors.push(
-				`delegate preflight=${preflight.value ?? "none"} (expected started)`,
-			);
+			errors.push(`delegate preflight=${preflight.value ?? "none"} (expected started)`);
 
-		const delegateTools = probe.tools.filter(
-			(tool) => tool.startMs >= delegateStart,
-		);
+		const delegateTools = probe.tools.filter((tool) => tool.startMs >= delegateStart);
 		const runs = collectRuns(delegateTools);
-		const delegated =
-			runs.length > 0 ||
-			delegateTools.some((tool) => tool.toolName === "subagent");
+		const delegated = runs.length > 0 || delegateTools.some((tool) => tool.toolName === "subagent");
 		const sequence = routingSequence(delegateTools);
 		if (!delegated) {
 			errors.push(
 				`no subagent delegation observed (tools: ${sequence.map((entry) => entry.tool).join(", ") || "none"})`,
 			);
 		}
-		const subagentTool = delegateTools.find(
-			(tool) => tool.toolName === "subagent",
-		);
-		const discoveryMs = subagentTool
-			? subagentTool.startMs - delegateStart
-			: undefined;
-		const dispatchMs =
-			subagentTool?.endMs !== undefined
-				? subagentTool.endMs - subagentTool.startMs
-				: undefined;
+		const subagentTool = delegateTools.find((tool) => tool.toolName === "subagent");
+		const discoveryMs = subagentTool ? subagentTool.startMs - delegateStart : undefined;
+		const dispatchMs = subagentTool?.endMs !== undefined ? subagentTool.endMs - subagentTool.startMs : undefined;
 		const runIds = runs.map((run) => run.id);
 
 		const completion = delegated
-			? await waitForBusCompletion(
-					bus.notifications,
-					runIds,
-					delegateStart,
-					opts.childTimeoutMs,
-				)
+			? await waitForBusCompletion(bus.notifications, runIds, delegateStart, opts.childTimeoutMs)
 			: undefined;
 		const completionMs = completion?.atMs;
 		if (delegated && !completion) {
-			errors.push(
-				`timeout waiting for child completion notification (${opts.childTimeoutMs}ms)`,
-			);
+			errors.push(`timeout waiting for child completion notification (${opts.childTimeoutMs}ms)`);
 		}
 
 		let settledMs = probe.lastSettledAtMs;
-		if (
-			settledMs === undefined ||
-			(completionMs !== undefined && settledMs < completionMs)
-		) {
+		if (settledMs === undefined || (completionMs !== undefined && settledMs < completionMs)) {
 			const settled = await waitForSettle(session, opts.settleTimeoutMs);
 			settledMs = probe.lastSettledAtMs;
-			if (!settled)
-				errors.push(
-					`timeout waiting for final agent_settled (${opts.settleTimeoutMs}ms)`,
-				);
+			if (!settled) errors.push(`timeout waiting for final agent_settled (${opts.settleTimeoutMs}ms)`);
 		}
 
 		const childRun = pickRunSnapshot(delegateTools, completion?.runId);
-		const task =
-			childRun?.tasks.find((candidate) => candidate.status === "completed") ??
-			childRun?.tasks[0];
+		const task = childRun?.tasks.find((candidate) => candidate.status === "completed") ?? childRun?.tasks[0];
 		let sessionFile = task?.sessionFile;
 		let parsed = sessionFile ? parseChildSessionFile(sessionFile) : undefined;
 		if (!parsed) {
@@ -631,67 +561,50 @@ export async function runDelegateSample(
 			: parsed && parsed.assistantMessages > 0
 				? parsed.usage
 				: undefined;
-		const usageSource: DelegateSampleReport["child"]["usageSource"] =
-			snapshotNonZero
-				? "run-snapshot"
-				: parsed && parsed.assistantMessages > 0
-					? "session-file"
-					: "none";
-		const containsBenchOk =
-			parsed?.containsBenchOk ??
-			(task?.finalText?.includes("BENCH_OK") ? true : undefined);
+		const usageSource: DelegateSampleReport["child"]["usageSource"] = snapshotNonZero
+			? "run-snapshot"
+			: parsed && parsed.assistantMessages > 0
+				? "session-file"
+				: "none";
+		const containsBenchOk = (task?.finalText ?? parsed?.finalText)?.trim() === "BENCH_OK";
 		if (delegated && usageSource === "none")
-			errors.push(
-				"child usage unavailable (no run snapshot, no persisted child session found)",
-			);
-		if (delegated && containsBenchOk !== true)
-			errors.push("child BENCH_OK not observed");
+			errors.push("child usage unavailable (no run snapshot, no persisted child session found)");
+		if (delegated && containsBenchOk !== true) errors.push("child BENCH_OK not observed");
 		const childToolCalls = task?.toolCalls ?? parsed?.toolCallCount;
 		if (delegated && childToolCalls !== undefined && childToolCalls > 0)
-			errors.push(
-				`controlled child used ${childToolCalls} tool call(s); benchmark requires 0`,
-			);
-		if (delegated && childToolCalls === undefined)
-			errors.push("child tool-call count unknown");
-		if (delegated && task?.branch)
-			errors.push(
-				`child ran on branch ${task.branch}; benchmark requires no worktree`,
-			);
+			errors.push(`controlled child used ${childToolCalls} tool call(s); benchmark requires 0`);
+		if (delegated && childToolCalls === undefined) errors.push("child tool-call count unknown");
+		if (delegated && task?.branch) errors.push(`child ran on branch ${task.branch}; benchmark requires no worktree`);
 
-		const parentUsage = usageBreakdown(
-			probe.messages.filter((message) => message.atMs >= delegateStart),
-		);
+		const parentUsage = usageBreakdown(probe.messages.filter((message) => message.atMs >= delegateStart));
 		const lastAssistant = probe.messages
-			.filter(
-				(message) =>
-					message.role === "assistant" && message.atMs >= delegateStart,
-			)
+			.filter((message) => message.role === "assistant" && message.atMs >= delegateStart)
 			.at(-1);
 		const parentFinalContext = lastAssistant?.usage
 			? {
 					input: lastAssistant.usage.input,
 					cacheRead: lastAssistant.usage.cacheRead,
 					cacheWrite: lastAssistant.usage.cacheWrite,
-					fullInput:
-						lastAssistant.usage.input +
-						lastAssistant.usage.cacheRead +
-						lastAssistant.usage.cacheWrite,
+					fullInput: lastAssistant.usage.input + lastAssistant.usage.cacheRead + lastAssistant.usage.cacheWrite,
 				}
 			: undefined;
 		const routingModelCalls = probe.messages.filter(
-			(message) =>
-				message.role === "assistant" && message.atMs >= delegateStart,
+			(message) => message.role === "assistant" && message.atMs >= delegateStart,
 		).length;
 		const valid =
 			delegated &&
+			errors.length === 0 &&
+			preflight.value === "started" &&
+			completion !== undefined &&
+			settledMs !== undefined &&
 			thrown === undefined &&
 			usageSource !== "none" &&
 			containsBenchOk === true &&
+			childRun?.tasks.length === 1 &&
 			task?.status === "completed" &&
-			(childToolCalls === undefined || childToolCalls === 0) &&
+			childToolCalls === 0 &&
 			!task?.branch;
-		if (!valid && errors.length === 0)
-			errors.push("delegation did not meet the BENCH_OK/completed criteria");
+		if (!valid && errors.length === 0) errors.push("delegation did not meet the BENCH_OK/completed criteria");
 
 		return {
 			kind: "delegate",
@@ -758,10 +671,7 @@ export async function runDelegateSample(
 			latency: {
 				discoveryMs,
 				dispatchMs,
-				firstChildOutputMs:
-					parsed?.firstAssistantAt !== undefined
-						? parsed.firstAssistantAt - promptWallAt
-						: undefined,
+				firstChildOutputMs: parsed?.firstAssistantAt !== undefined ? parsed.firstAssistantAt - promptWallAt : undefined,
 				completionMs,
 				settledMs,
 				wallMs: probe.now(),

@@ -65,8 +65,8 @@ bun packages/core/pi-core-subagent/bench/subagent-bench.ts \
   --workflow all --samples 3 \
   --out /tmp/pi-subagents-modes.luyKyX/bench-baseline-codemode-disabled.json
 
-# Optional explicit cold-prefix test: a random same-length nonce is prepended per sample;
-# cacheRead/cacheWrite are still the only evidence used to call a run cold.
+# Optional prompt variation: a same-length nonce is prepended to the USER prompt.
+# This does not bust the cached system/tool prefix or guarantee a cold request.
 bun packages/core/pi-core-subagent/bench/subagent-bench.ts \
   --target /tmp/pi-subagents-modes.luyKyX/baseline/src/index.ts \
   --mode baseline --workflow startup --samples 3 --cold-nonce \
@@ -121,6 +121,9 @@ A fresh session is never labelled cold unless the provider says so.
   description/schema sizes are measured instead).
 - Child usage is "when available": run snapshot when the parent fetched status/result, else the
   persisted child session JSONL; a child killed before persisting has none.
+- Startup and delegation both apply the requested mode before the measured prompt. Startup
+  rejects errors, retries, missing declarations, extra model calls, and unexpected tool calls;
+  delegation requires exactly BENCH_OK, one completed child, zero child tools and no worktree.
 - Mode application is verified by what happened (routing, declarations, run snapshots), not by
   command registry inspection alone. Registry/typecheck evidence is not execution evidence.
 - The harness does not touch global settings/auth, does not install packages, and never claims
@@ -129,7 +132,9 @@ A fresh session is never labelled cold unless the provider says so.
   prompt tends to produce because it says "wait until finished"), the `subagent` tool call blocks
   inside `execute()` until the child completes. Then `dispatchMs` (tool start -> tool end) spans
   the child run; read `firstChildOutputMs`/`completionMs` for spawn -> first output/completion,
-  and `routing.usedAutoAwait` tells you how to read `dispatchMs`. A background route (`autoAwait`
+  and `routing.usedAutoAwait` tells you how to read `dispatchMs`. The legacy
+  `firstChildOutputMs` field uses the first finalized assistant JSONL-entry timestamp, NOT
+  first-token streaming latency; do not use it as child TTFT. A background route (`autoAwait`
   absent) returns the tool immediately and delivers the completion as a follow-up turn; both
   routes are recorded without preference.
 - Unrelated extensions can print shutdown warnings to stderr when the ephemeral session is

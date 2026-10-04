@@ -1,10 +1,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
-import type {
-	AgentSessionEvent,
-	EventBus,
-} from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, EventBus } from "@earendil-works/pi-coding-agent";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 
 export interface UsageCounts {
@@ -39,10 +36,8 @@ export function addUsage(target: UsageCounts, delta: UsageCounts): void {
 	target.cacheWrite += delta.cacheWrite;
 	target.totalTokens += delta.totalTokens;
 	target.cost += delta.cost;
-	if (delta.reasoning !== undefined)
-		target.reasoning = (target.reasoning ?? 0) + delta.reasoning;
-	if (delta.turns !== undefined)
-		target.turns = (target.turns ?? 0) + delta.turns;
+	if (delta.reasoning !== undefined) target.reasoning = (target.reasoning ?? 0) + delta.reasoning;
+	if (delta.turns !== undefined) target.turns = (target.turns ?? 0) + delta.turns;
 }
 
 function numberOrZero(value: unknown): number {
@@ -61,20 +56,13 @@ export function usageFromUnknown(value: unknown): UsageCounts {
 		turns?: unknown;
 	};
 	const cost =
-		typeof usage.cost === "number"
-			? usage.cost
-			: typeof usage.cost?.total === "number"
-				? usage.cost.total
-				: 0;
+		typeof usage.cost === "number" ? usage.cost : typeof usage.cost?.total === "number" ? usage.cost.total : 0;
 	return {
 		input: numberOrZero(usage.input),
 		output: numberOrZero(usage.output),
 		cacheRead: numberOrZero(usage.cacheRead),
 		cacheWrite: numberOrZero(usage.cacheWrite),
-		reasoning:
-			typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning)
-				? usage.reasoning
-				: undefined,
+		reasoning: typeof usage.reasoning === "number" && Number.isFinite(usage.reasoning) ? usage.reasoning : undefined,
 		totalTokens:
 			typeof usage.totalTokens === "number" && usage.totalTokens > 0
 				? usage.totalTokens
@@ -83,10 +71,7 @@ export function usageFromUnknown(value: unknown): UsageCounts {
 					numberOrZero(usage.cacheRead) +
 					numberOrZero(usage.cacheWrite),
 		cost,
-		turns:
-			typeof usage.turns === "number" && Number.isFinite(usage.turns)
-				? usage.turns
-				: undefined,
+		turns: typeof usage.turns === "number" && Number.isFinite(usage.turns) ? usage.turns : undefined,
 	};
 }
 
@@ -121,9 +106,7 @@ export interface BenchRunSnapshot {
 	tasks: BenchTaskSnapshot[];
 }
 
-export function runSnapshotFromUnknown(
-	value: unknown,
-): BenchRunSnapshot | undefined {
+export function runSnapshotFromUnknown(value: unknown): BenchRunSnapshot | undefined {
 	if (value === null || typeof value !== "object") return undefined;
 	const run = value as Record<string, unknown>;
 	if (typeof run.id !== "string") return undefined;
@@ -143,8 +126,7 @@ export function runSnapshotFromUnknown(
 				status: String(t.status ?? "?"),
 				task: String(t.task ?? ""),
 				sessionId: typeof t.sessionId === "string" ? t.sessionId : undefined,
-				sessionFile:
-					typeof t.sessionFile === "string" ? t.sessionFile : undefined,
+				sessionFile: typeof t.sessionFile === "string" ? t.sessionFile : undefined,
 				startedAt: typeof t.startedAt === "number" ? t.startedAt : undefined,
 				endedAt: typeof t.endedAt === "number" ? t.endedAt : undefined,
 				toolCalls: typeof t.toolCalls === "number" ? t.toolCalls : undefined,
@@ -238,8 +220,7 @@ export class Probe {
 				break;
 			case "message_update":
 				this.firstMessageUpdateMs ??= at;
-				if (event.assistantMessageEvent.type === "thinking_delta")
-					this.firstThinkingMs ??= at;
+				if (event.assistantMessageEvent.type === "thinking_delta") this.firstThinkingMs ??= at;
 				if (event.assistantMessageEvent.type === "text_delta") {
 					this.firstTextMs ??= at;
 					this.firstAssistantMessageMs ??= at;
@@ -267,9 +248,7 @@ export class Probe {
 						thinkingChars: contentChars(message.content, "thinking"),
 					});
 					if (message.stopReason === "error" || message.errorMessage) {
-						this.errors.push(
-							`assistant_error: ${message.errorMessage ?? message.stopReason}`,
-						);
+						this.errors.push(`assistant_error: ${message.errorMessage ?? message.stopReason}`);
 					}
 				} else {
 					this.messages.push({
@@ -310,13 +289,9 @@ export class Probe {
 				if (record) {
 					record.endMs = at;
 					record.isError = event.isError;
-					const result = event.result as
-						| { content?: unknown; details?: unknown }
-						| undefined;
+					const result = event.result as { content?: unknown; details?: unknown } | undefined;
 					record.resultText = contentText(result?.content);
-					record.run = runSnapshotFromUnknown(
-						(result?.details as { run?: unknown } | undefined)?.run,
-					);
+					record.run = runSnapshotFromUnknown((result?.details as { run?: unknown } | undefined)?.run);
 					this.openTools.delete(event.toolCallId);
 				}
 				break;
@@ -329,15 +304,13 @@ export class Probe {
 	assistantUsage(): UsageCounts {
 		const total = emptyUsage();
 		for (const message of this.messages) {
-			if (message.role === "assistant" && message.usage)
-				addUsage(total, message.usage);
+			if (message.role === "assistant" && message.usage) addUsage(total, message.usage);
 		}
 		return total;
 	}
 
 	assistantCalls(): number {
-		return this.messages.filter((message) => message.role === "assistant")
-			.length;
+		return this.messages.filter((message) => message.role === "assistant").length;
 	}
 
 	toolCalls(): number {
@@ -354,8 +327,7 @@ export class Probe {
 
 	latestRunForTool(toolName: string): BenchRunSnapshot | undefined {
 		for (let i = this.tools.length - 1; i >= 0; i--) {
-			if (this.tools[i]?.toolName === toolName && this.tools[i]?.run)
-				return this.tools[i]?.run;
+			if (this.tools[i]?.toolName === toolName && this.tools[i]?.run) return this.tools[i]?.run;
 		}
 		return undefined;
 	}
@@ -376,8 +348,7 @@ function contentChars(content: unknown, kind: "text" | "thinking"): number {
 	let total = 0;
 	for (const block of content) {
 		const entry = block as { type?: unknown; text?: unknown };
-		if (entry.type === kind && typeof entry.text === "string")
-			total += entry.text.length;
+		if (entry.type === kind && typeof entry.text === "string") total += entry.text.length;
 	}
 	return total;
 }
@@ -387,8 +358,7 @@ function contentText(content: unknown): string | undefined {
 	const parts: string[] = [];
 	for (const block of content) {
 		const entry = block as { type?: unknown; text?: unknown };
-		if (entry.type === "text" && typeof entry.text === "string")
-			parts.push(entry.text);
+		if (entry.type === "text" && typeof entry.text === "string") parts.push(entry.text);
 	}
 	return parts.join("\n");
 }
@@ -401,30 +371,22 @@ export function collectRuns(tools: ToolRecord[]): BenchRunSnapshot[] {
 		const run = tool.run;
 		if (!run) continue;
 		const previous = runs.get(run.id);
-		const previousRank =
-			previous?.endedAt ?? previous?.startedAt ?? previous?.createdAt ?? 0;
+		const previousRank = previous?.endedAt ?? previous?.startedAt ?? previous?.createdAt ?? 0;
 		const rank = run.endedAt ?? run.startedAt ?? run.createdAt ?? 0;
 		if (!previous || rank >= previousRank) runs.set(run.id, run);
 	}
 	return [...runs.values()];
 }
 
-export function pickRunSnapshot(
-	tools: ToolRecord[],
-	preferRunId?: string,
-): BenchRunSnapshot | undefined {
+export function pickRunSnapshot(tools: ToolRecord[], preferRunId?: string): BenchRunSnapshot | undefined {
 	const runs = collectRuns(tools);
 	if (preferRunId) {
 		const preferred = runs.find((run) => run.id === preferRunId);
 		if (preferred) return preferred;
 	}
-	const terminal = runs.filter(
-		(run) => run.status !== undefined && TERMINAL_STATUSES.has(run.status),
-	);
+	const terminal = runs.filter((run) => run.status !== undefined && TERMINAL_STATUSES.has(run.status));
 	const pool = terminal.length > 0 ? terminal : runs;
-	return pool.sort(
-		(a, b) => (b.endedAt ?? b.createdAt ?? 0) - (a.endedAt ?? a.createdAt ?? 0),
-	)[0];
+	return pool.sort((a, b) => (b.endedAt ?? b.createdAt ?? 0) - (a.endedAt ?? a.createdAt ?? 0))[0];
 }
 
 export function routingSequence(tools: ToolRecord[]): Array<{
@@ -444,10 +406,7 @@ export function routingSequence(tools: ToolRecord[]): Array<{
 }
 
 /** True when a captured tool-arguments preview carries `key: true`, tolerating pretty-printed spacing. */
-export function argsFlag(
-	argsPreview: string | undefined,
-	key: string,
-): boolean {
+export function argsFlag(argsPreview: string | undefined, key: string): boolean {
 	if (!argsPreview) return false;
 	try {
 		const parsed = JSON.parse(argsPreview) as Record<string, unknown>;
@@ -495,9 +454,7 @@ export interface ChildSessionMetrics {
 	errors: string[];
 }
 
-export function parseChildSessionFile(
-	sessionFile: string,
-): ChildSessionMetrics | null {
+export function parseChildSessionFile(sessionFile: string): ChildSessionMetrics | null {
 	let content: string;
 	try {
 		content = readFileSync(sessionFile, "utf8");
@@ -524,10 +481,7 @@ export function parseChildSessionFile(
 		errors: [],
 	};
 	for (const entry of entries) {
-		const at =
-			typeof entry.timestamp === "string"
-				? Date.parse(entry.timestamp)
-				: Number.NaN;
+		const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
 		if (entry.type === "model_change") {
 			metrics.model = entry.modelId;
 			metrics.provider = entry.provider;
@@ -575,8 +529,7 @@ export function parseChildSessionFile(
 		for (const block of blocks) {
 			const item = block as { type?: unknown; text?: unknown };
 			if (item.type === "toolCall") metrics.toolCallCount += 1;
-			if (item.type === "text" && typeof item.text === "string")
-				lastText += item.text;
+			if (item.type === "text" && typeof item.text === "string") lastText += item.text;
 		}
 		if (lastText) {
 			metrics.finalText = lastText;
@@ -586,10 +539,7 @@ export function parseChildSessionFile(
 	return metrics;
 }
 
-export function findRecentSessionFiles(
-	agentDir: string,
-	sinceMs: number,
-): string[] {
+export function findRecentSessionFiles(agentDir: string, sinceMs: number): string[] {
 	const root = join(agentDir, "sessions");
 	const found: string[] = [];
 	const walk = (dir: string, depth: number): void => {
@@ -634,12 +584,8 @@ export function findChildSession(
 	for (const file of candidates) {
 		const metrics = parseChildSessionFile(file);
 		if (!metrics) continue;
-		if (!metrics.containsBenchOk && !(metrics.finalText ?? "").includes(needle))
-			continue;
-		if (
-			!best ||
-			(metrics.lastAssistantAt ?? 0) >= (best.metrics.lastAssistantAt ?? 0)
-		) {
+		if (!metrics.containsBenchOk && !(metrics.finalText ?? "").includes(needle)) continue;
+		if (!best || (metrics.lastAssistantAt ?? 0) >= (best.metrics.lastAssistantAt ?? 0)) {
 			best = { sessionFile: file, metrics };
 		}
 	}

@@ -109,11 +109,7 @@ function now(): number {
 
 function packageSource(pkg: unknown): string {
 	if (typeof pkg === "string") return pkg;
-	if (
-		pkg !== null &&
-		typeof pkg === "object" &&
-		typeof (pkg as { source?: unknown }).source === "string"
-	) {
+	if (pkg !== null && typeof pkg === "object" && typeof (pkg as { source?: unknown }).source === "string") {
 		return (pkg as { source: string }).source;
 	}
 	return "";
@@ -136,20 +132,14 @@ export interface CodemodePlan {
 
 function withCodemodeEnabled(defaultTools: string[] | undefined): string[] {
 	if (defaultTools === undefined) return ["+codemode"];
-	if (defaultTools.some((tool) => tool === "codemode" || tool === "+codemode"))
-		return defaultTools;
+	if (defaultTools.some((tool) => tool === "codemode" || tool === "+codemode")) return defaultTools;
 	const hasModifiers = defaultTools.some((tool) => /^[+-]/.test(tool));
 	return [...defaultTools, hasModifiers ? "+codemode" : "codemode"];
 }
 
-export function planCodemode(
-	state: CodemodeState,
-	defaultTools: string[] | undefined,
-): CodemodePlan {
+export function planCodemode(state: CodemodeState, defaultTools: string[] | undefined): CodemodePlan {
 	if (state === "disabled") {
-		const filtered = defaultTools?.filter(
-			(tool) => tool.replace(/^[+-]/, "") !== "codemode",
-		);
+		const filtered = defaultTools?.filter((tool) => tool.replace(/^[+-]/, "") !== "codemode");
 		return {
 			factory: undefined,
 			modeOverride: undefined,
@@ -160,9 +150,7 @@ export function planCodemode(
 	const mode = state === "active" ? undefined : state;
 	const enabled = withCodemodeEnabled(defaultTools);
 	return {
-		factory: mode
-			? createCodemodeExtension({ mode })
-			: createCodemodeExtension(),
+		factory: mode ? createCodemodeExtension({ mode }) : createCodemodeExtension(),
 		modeOverride: mode,
 		defaultTools: enabled,
 		note:
@@ -214,9 +202,7 @@ export function describeExtensions(extensionsResult: {
 	}));
 }
 
-export function findDuplicateTools(
-	extensions: ExtensionDescription[],
-): DuplicateTool[] {
+export function findDuplicateTools(extensions: ExtensionDescription[]): DuplicateTool[] {
 	const owners = new Map<string, string[]>();
 	for (const ext of extensions) {
 		for (const tool of ext.tools) {
@@ -228,17 +214,11 @@ export function findDuplicateTools(
 		.map(([tool, paths]) => ({ tool, extensions: paths }));
 }
 
-function summarizePayload(
-	payload: unknown,
-	atMs: number,
-): ProviderRequestCapture {
+function summarizePayload(payload: unknown, atMs: number): ProviderRequestCapture {
 	const text = JSON.stringify(payload);
 	const hash = createHash("sha256").update(text).digest("hex");
 	const root = payload as Record<string, unknown> | null;
-	const toolsRaw =
-		root && typeof root === "object"
-			? (root.tools as unknown[] | undefined)
-			: undefined;
+	const toolsRaw = root && typeof root === "object" ? (root.tools as unknown[] | undefined) : undefined;
 	let toolNames: string[] | undefined;
 	let perTool: ProviderToolDeclaration[] | undefined;
 	let toolsJsonBytes: number | undefined;
@@ -254,40 +234,28 @@ function summarizePayload(
 			};
 			const name = String(entry.function?.name ?? entry.name ?? "?");
 			const description = entry.function?.description;
-			const parameters =
-				entry.function?.parameters ??
-				(tool as { input_schema?: unknown }).input_schema;
+			const parameters = entry.function?.parameters ?? (tool as { input_schema?: unknown }).input_schema;
 			return {
 				name,
-				descriptionChars:
-					typeof description === "string" ? description.length : 0,
-				schemaChars:
-					parameters === undefined ? 0 : JSON.stringify(parameters).length,
+				descriptionChars: typeof description === "string" ? description.length : 0,
+				schemaChars: parameters === undefined ? 0 : JSON.stringify(parameters).length,
 			};
 		});
 		toolNames = perTool.map((tool) => tool.name);
 		toolsJsonBytes = JSON.stringify(toolsRaw).length;
 	}
-	const messages =
-		root && typeof root === "object"
-			? (root.messages as unknown[] | undefined)
-			: undefined;
+	const messages = root && typeof root === "object" ? (root.messages as unknown[] | undefined) : undefined;
 	let systemChars: number | undefined;
 	if (Array.isArray(messages)) {
-		const system = messages.find(
-			(message) => (message as { role?: unknown }).role === "system",
-		) as { content?: unknown } | undefined;
-		if (typeof system?.content === "string")
-			systemChars = system.content.length;
-		else if (Array.isArray(system?.content))
-			systemChars = JSON.stringify(system.content).length;
+		const system = messages.find((message) => (message as { role?: unknown }).role === "system") as
+			| { content?: unknown }
+			| undefined;
+		if (typeof system?.content === "string") systemChars = system.content.length;
+		else if (Array.isArray(system?.content)) systemChars = JSON.stringify(system.content).length;
 	} else if (typeof root?.system === "string") {
 		systemChars = root.system.length;
 	}
-	const model =
-		root && typeof root === "object" && typeof root.model === "string"
-			? root.model
-			: undefined;
+	const model = root && typeof root === "object" && typeof root.model === "string" ? root.model : undefined;
 	return {
 		atMs,
 		model,
@@ -307,9 +275,7 @@ export interface BuildSessionInput {
 	phase?: (label: string, ms: number) => void;
 }
 
-export async function buildParentSession(
-	input: BuildSessionInput,
-): Promise<BuiltSession> {
+export async function buildParentSession(input: BuildSessionInput): Promise<BuiltSession> {
 	const { opts } = input;
 	const t0 = now();
 	const phase = (label: string, ms: number) => input.phase?.(label, ms);
@@ -323,10 +289,7 @@ export async function buildParentSession(
 	});
 	await runtime.refresh({ allowNetwork: opts.modelRefresh === "network" });
 	const available = await runtime.getAvailable();
-	const model = available.find(
-		(candidate) =>
-			candidate.provider === opts.provider && candidate.id === opts.model,
-	);
+	const model = available.find((candidate) => candidate.provider === opts.provider && candidate.id === opts.model);
 	if (!model) {
 		throw new Error(
 			`model ${opts.provider}/${opts.model} not available from ${opts.modelRefresh} catalog (${available.length} models available)`,
@@ -339,20 +302,14 @@ export async function buildParentSession(
 	const fileSettings = SettingsManager.create(opts.cwd, agentDir);
 	const effective = fileSettings.getSettings();
 	const configuredPackages = (effective.packages ?? []).map(packageSource);
-	const removedPackages = (effective.packages ?? [])
-		.filter(isSubagentPackage)
-		.map(packageSource);
-	const keptPackages = (effective.packages ?? []).filter(
-		(pkg) => !isSubagentPackage(pkg),
-	);
+	const removedPackages = (effective.packages ?? []).filter(isSubagentPackage).map(packageSource);
+	const keptPackages = (effective.packages ?? []).filter((pkg) => !isSubagentPackage(pkg));
 	const codemodePlan = planCodemode(opts.codemode, effective.defaultTools);
 	const settings = {
 		...effective,
 		packages: keptPackages,
 		defaultTools: codemodePlan.defaultTools,
-		...(codemodePlan.modeOverride
-			? { codemode: { ...effective.codemode, mode: codemodePlan.modeOverride } }
-			: {}),
+		...(codemodePlan.modeOverride ? { codemode: { ...effective.codemode, mode: codemodePlan.modeOverride } } : {}),
 	};
 	const settingsManager = SettingsManager.inMemory(settings);
 	const settingsMs = now() - tSettingsStart;
@@ -448,10 +405,7 @@ export async function buildParentSession(
 	};
 }
 
-export function commandRegistered(
-	extensions: ExtensionDescription[],
-	command: string,
-): boolean {
+export function commandRegistered(extensions: ExtensionDescription[], command: string): boolean {
 	return extensions.some((ext) => ext.commands.includes(command));
 }
 
@@ -460,10 +414,7 @@ export function ensureOutDir(file: string): void {
 	if (dir && !existsSync(dir)) mkdirSync(dir, { recursive: true });
 }
 
-export function modeCommandText(
-	template: string,
-	mode: BenchMode,
-): string | undefined {
+export function modeCommandText(template: string, mode: BenchMode): string | undefined {
 	if (mode === "baseline") return undefined;
 	const trimmed = template.trim();
 	if (!trimmed) return undefined;

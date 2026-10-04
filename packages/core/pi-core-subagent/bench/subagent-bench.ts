@@ -2,12 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import {
-	type BenchOptions,
-	helpText,
-	resolveOptions,
-	UsageError,
-} from "./lib/args.ts";
+import { type BenchOptions, helpText, resolveOptions, UsageError } from "./lib/args.ts";
 import {
 	type BenchReport,
 	buildSummary,
@@ -21,11 +16,7 @@ import {
 	writeRawSamples,
 	writeReport,
 } from "./lib/report.ts";
-import {
-	type RunContext,
-	runDelegateSample,
-	runStartupSample,
-} from "./lib/samples.ts";
+import { type RunContext, runDelegateSample, runStartupSample } from "./lib/samples.ts";
 import { runSelfTest } from "./lib/selftest.ts";
 import {
 	buildParentSession,
@@ -36,8 +27,7 @@ import {
 } from "./lib/session.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const FALLBACK_COMMAND =
-	"packages/core/pi-core-subagent/bench/subagent-bench.ts";
+const FALLBACK_COMMAND = "packages/core/pi-core-subagent/bench/subagent-bench.ts";
 
 function displayCommand(): string {
 	const absolute = fileURLToPath(import.meta.url);
@@ -48,9 +38,7 @@ function displayCommand(): string {
 function sdkVersion(): string {
 	try {
 		const resolved = import.meta.resolve("@earendil-works/pi-coding-agent");
-		const entry = resolved.startsWith("file:")
-			? fileURLToPath(resolved)
-			: resolved;
+		const entry = resolved.startsWith("file:") ? fileURLToPath(resolved) : resolved;
 		let dir = dirname(entry);
 		for (let i = 0; i < 6; i++) {
 			const candidate = join(dir, "package.json");
@@ -59,8 +47,7 @@ function sdkVersion(): string {
 					name?: string;
 					version?: string;
 				};
-				if (pkg.name === "@earendil-works/pi-coding-agent")
-					return pkg.version ?? "unknown";
+				if (pkg.name === "@earendil-works/pi-coding-agent") return pkg.version ?? "unknown";
 			}
 			dir = dirname(dir);
 		}
@@ -85,56 +72,34 @@ function dedupeBy<T>(items: T[], key: (item: T) => string): T[] {
 	return result;
 }
 
-async function runDryRun(
-	opts: BenchOptions,
-	target: TargetInfo | undefined,
-): Promise<number> {
-	console.log(
-		"dry-run: building settings/loader/session offline (no model calls)",
-	);
+async function runDryRun(opts: BenchOptions, target: TargetInfo | undefined): Promise<number> {
+	console.log("dry-run: building settings/loader/session offline (no model calls)");
 	const agentDir = opts.agentDir ?? getAgentDir();
-	console.log(
-		`  target:  ${target?.path ?? "(none; installed packages minus pi-core-subagent only)"}`,
-	);
-	if (target?.exists)
-		console.log(
-			`           exists, ${target.bytes} bytes, sha256=${target.sha256?.slice(0, 16)}…`,
-		);
+	console.log(`  target:  ${target?.path ?? "(none; installed packages minus pi-core-subagent only)"}`);
+	if (target?.exists) console.log(`           exists, ${target.bytes} bytes, sha256=${target.sha256?.slice(0, 16)}…`);
 	console.log(`  agentDir: ${agentDir}`);
 	console.log(`  cwd:      ${opts.cwd}`);
-	console.log(
-		`  mode:     ${opts.mode}   codemode: ${opts.codemode}   modelRefresh: ${opts.modelRefresh}`,
-	);
-	console.log(
-		`  command:  ${opts.modeCommand}${opts.codemodeCommand ? `  +  ${opts.codemodeCommand}` : ""}`,
-	);
+	console.log(`  mode:     ${opts.mode}   codemode: ${opts.codemode}   modelRefresh: ${opts.modelRefresh}`);
+	console.log(`  command:  ${opts.modeCommand}${opts.codemodeCommand ? `  +  ${opts.codemodeCommand}` : ""}`);
 	let built: Awaited<ReturnType<typeof buildParentSession>>;
 	try {
 		built = await buildParentSession({ opts });
 	} catch (error) {
-		console.error(
-			`dry-run FAILED: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		console.error(`dry-run FAILED: ${error instanceof Error ? error.message : String(error)}`);
 		return 1;
 	}
 	try {
 		const active = built.session.getActiveToolNames().slice().sort();
 		const command = commandRegistered(built.extensions, "subagents");
-		console.log(
-			`  model:    ${built.model.provider}/${built.model.id} (thinking ${built.model.thinkingLevel})`,
-		);
-		console.log(
-			`  settings: removed packages: ${built.settings.packagesRemoved.join(", ") || "(none)"}`,
-		);
+		console.log(`  model:    ${built.model.provider}/${built.model.id} (thinking ${built.model.thinkingLevel})`);
+		console.log(`  settings: removed packages: ${built.settings.packagesRemoved.join(", ") || "(none)"}`);
 		console.log(
 			`            defaultTools ${JSON.stringify(built.settings.defaultToolsBefore ?? null)} -> ${JSON.stringify(built.settings.defaultToolsAfter ?? null)}`,
 		);
 		console.log(`            codemode: ${built.settings.codemodeNote}`);
 		console.log(`  extensions (${built.extensions.length}):`);
 		for (const ext of built.extensions) {
-			console.log(
-				`    ${ext.path}  tools=[${ext.tools.join(",")}] commands=[${ext.commands.join(",")}]`,
-			);
+			console.log(`    ${ext.path}  tools=[${ext.tools.join(",")}] commands=[${ext.commands.join(",")}]`);
 		}
 		console.log(
 			`  duplicate tool registrations: ${built.duplicateTools.length === 0 ? "none" : JSON.stringify(built.duplicateTools)}`,
@@ -144,10 +109,7 @@ async function runDryRun(
 		console.log(
 			`  timings: total=${built.timings.totalMs.toFixed(0)}ms runtime=${built.timings.modelRuntimeMs.toFixed(0)}ms loader=${built.timings.loaderMs.toFixed(0)}ms session=${built.timings.sessionCreateMs.toFixed(0)}ms bind=${built.timings.bindExtensionsMs.toFixed(0)}ms`,
 		);
-		const commandProbe = async (
-			label: string,
-			text: string | undefined,
-		): Promise<number> => {
+		const commandProbe = async (label: string, text: string | undefined): Promise<number> => {
 			if (!text) return 0;
 			const name = text.trim().split(/\s+/)[0]?.replace(/^\//, "") ?? "";
 			if (!commandRegistered(built.extensions, name)) {
@@ -160,9 +122,7 @@ async function runDryRun(
 					preflight.value = disposition;
 				},
 			});
-			console.log(
-				`  ${label}: preflight=${preflight.value ?? "none"} (expected handled)`,
-			);
+			console.log(`  ${label}: preflight=${preflight.value ?? "none"} (expected handled)`);
 			if (preflight.value !== "handled") {
 				console.error(`dry-run FAILED: ${label} leaked into a model run`);
 				return 1;
@@ -170,17 +130,11 @@ async function runDryRun(
 			return 0;
 		};
 		if (opts.mode !== "baseline") {
-			const code = await commandProbe(
-				"mode command",
-				modeCommandText(opts.modeCommand, opts.mode),
-			);
+			const code = await commandProbe("mode command", modeCommandText(opts.modeCommand, opts.mode));
 			if (code !== 0) return code;
 		}
 		if (opts.codemodeCommand.trim()) {
-			const code = await commandProbe(
-				"codemode command",
-				opts.codemodeCommand.replaceAll("{state}", opts.codemode),
-			);
+			const code = await commandProbe("codemode command", opts.codemodeCommand.replaceAll("{state}", opts.codemode));
 			if (code !== 0) return code;
 		}
 		if (opts.mode !== "baseline" && !command && !opts.allowMissingModeCommand) {
@@ -195,10 +149,7 @@ async function runDryRun(
 	}
 }
 
-async function runLive(
-	opts: BenchOptions,
-	target: TargetInfo | undefined,
-): Promise<number> {
+async function runLive(opts: BenchOptions, target: TargetInfo | undefined): Promise<number> {
 	const outFile = opts.out ?? defaultOut(opts);
 	const ctx: RunContext = {
 		opts,
@@ -256,15 +207,10 @@ async function runLive(
 		samples.flatMap((sample) => sample.duplicateTools),
 		(entry) => entry.tool,
 	);
-	const removedPackages = [
-		...new Set(samples.flatMap((sample) => sample.settings.packagesRemoved)),
-	];
-	const delegateSamples = samples.filter(
-		(sample) => sample.kind === "delegate",
-	);
+	const removedPackages = [...new Set(samples.flatMap((sample) => sample.settings.packagesRemoved))];
+	const delegateSamples = samples.filter((sample) => sample.kind === "delegate");
 	const modeCommandAvailable = delegateSamples.some(
-		(sample) =>
-			sample.kind === "delegate" && sample.modeCommand?.available === true,
+		(sample) => sample.kind === "delegate" && sample.modeCommand?.available === true,
 	);
 	const firstBuild = samples.find((sample) => sample.build.modelRuntimeMs > 0);
 	const notes: string[] = [
@@ -315,17 +261,10 @@ async function runLive(
 	};
 	if (opts.compareTo) {
 		try {
-			const baseline = JSON.parse(
-				readFileSync(opts.compareTo, "utf8"),
-			) as BenchReport;
+			const baseline = JSON.parse(readFileSync(opts.compareTo, "utf8")) as BenchReport;
 			if (!Array.isArray(baseline.samples)) throw new Error("no samples array");
-			report.summary.comparison = buildSummary([
-				...baseline.samples,
-				...samples,
-			]).comparison;
-			report.notes.push(
-				`comparison merged with ${opts.compareTo} (${baseline.samples.length} baseline sample(s))`,
-			);
+			report.summary.comparison = buildSummary([...baseline.samples, ...samples]).comparison;
+			report.notes.push(`comparison merged with ${opts.compareTo} (${baseline.samples.length} baseline sample(s))`);
 		} catch (error) {
 			console.error(
 				`warning: --compare-to ${opts.compareTo} unreadable (${error instanceof Error ? error.message : String(error)})`,
@@ -338,10 +277,7 @@ async function runLive(
 
 	console.log("");
 	for (const sample of samples) {
-		if (!sample.valid)
-			console.log(
-				`  warning: ${sample.kind} #${sample.sample} invalid: ${sample.invalidReason}`,
-			);
+		if (!sample.valid) console.log(`  warning: ${sample.kind} #${sample.sample} invalid: ${sample.invalidReason}`);
 	}
 	if (report.summary.startup) {
 		const d = report.summary.startup.distributions;
@@ -359,9 +295,7 @@ async function runLive(
 		(entry) => entry.baseline !== undefined && entry.candidate !== undefined,
 	);
 	if (matched.length > 0) {
-		console.log(
-			"baseline -> candidate (medians; only where both modes were run in one report):",
-		);
+		console.log("baseline -> candidate (medians; only where both modes were run in one report):");
 		for (const entry of matched) {
 			console.log(
 				`  ${entry.metric}: ${entry.baseline ?? "n/a"} -> ${entry.candidate ?? "n/a"} (delta ${entry.delta ?? "n/a"}${entry.deltaPct === undefined ? "" : `, ${entry.deltaPct.toFixed(1)}%`})`,
@@ -378,9 +312,7 @@ async function runLive(
 	);
 	const validCount = samples.filter((sample) => sample.valid).length;
 	if (validCount === 0) {
-		console.error(
-			"no valid samples collected — see report limitations and invalid reasons",
-		);
+		console.error("no valid samples collected — see report limitations and invalid reasons");
 		return 1;
 	}
 	return 0;
@@ -423,8 +355,6 @@ main()
 		process.exitCode = code;
 	})
 	.catch((error) => {
-		console.error(
-			`fatal: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`,
-		);
+		console.error(`fatal: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
 		process.exitCode = 1;
 	});

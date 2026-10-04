@@ -22,11 +22,7 @@ import {
 	writeRawSamples,
 	writeReport,
 } from "./report.ts";
-import {
-	makeFailedDelegate,
-	makeFailedStartup,
-	type RunContext,
-} from "./samples.ts";
+import { makeFailedDelegate, makeFailedStartup, type RunContext } from "./samples.ts";
 import { isSubagentPackage, modeCommandText, planCodemode } from "./session.ts";
 
 class Checks {
@@ -36,9 +32,7 @@ class Checks {
 		try {
 			fn();
 		} catch (error) {
-			throw new Error(
-				`self-test failed: ${label}: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			throw new Error(`self-test failed: ${label}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 }
@@ -49,9 +43,7 @@ function assert(condition: unknown, message: string): asserts condition {
 
 function assertEqual(actual: unknown, expected: unknown, label: string): void {
 	if (actual !== expected)
-		throw new Error(
-			`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
-		);
+		throw new Error(`${label}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`);
 }
 
 const event = (value: unknown): AgentSessionEvent => value as AgentSessionEvent;
@@ -97,16 +89,10 @@ function probeSelfTest(checks: Checks): void {
 		probe.handle(event({ type: "agent_settled" }));
 		assert(probe.firstThinkingMs !== undefined, "firstThinkingMs recorded");
 		assert(probe.firstTextMs !== undefined, "firstTextMs recorded");
-		assert(
-			(probe.firstThinkingMs ?? 0) <= (probe.firstTextMs ?? 0),
-			"thinking delta precedes text delta",
-		);
+		assert((probe.firstThinkingMs ?? 0) <= (probe.firstTextMs ?? 0), "thinking delta precedes text delta");
 		assertEqual(probe.assistantCalls(), 1, "assistant calls");
 		assertEqual(probe.settledCount, 2, "settle count");
-		assert(
-			probe.lastSettledAtMs !== undefined,
-			"last settle timestamp recorded",
-		);
+		assert(probe.lastSettledAtMs !== undefined, "last settle timestamp recorded");
 		const usage = usageFromUnknown({
 			input: 10,
 			output: 5,
@@ -125,10 +111,7 @@ function probeSelfTest(checks: Checks): void {
 		assertEqual(dist?.median, 20, "median");
 		assertEqual(dist?.min, 10, "min");
 		assertEqual(dist?.max, 30, "max");
-		assert(
-			dist !== undefined && dist.stdev > 8 && dist.stdev < 9,
-			"stdev in range",
-		);
+		assert(dist !== undefined && dist.stdev > 8 && dist.stdev < 9, "stdev in range");
 		assertEqual(distribution([]), undefined, "empty distribution");
 	});
 	checks.run("routing and run snapshot picking", () => {
@@ -177,21 +160,9 @@ function probeSelfTest(checks: Checks): void {
 		const sequence = routingSequence(tools);
 		assertEqual(sequence.length, 2, "routing sequence length");
 		assertEqual(sequence[0]?.tool, "subagent", "routing first tool");
-		assertEqual(
-			argsFlag(sequence[0]?.argsPreview, "autoAwait"),
-			true,
-			"autoAwait flag detected",
-		);
-		assertEqual(
-			argsFlag('{\n  "autoAwait": true\n}', "autoAwait"),
-			true,
-			"pretty-printed autoAwait detected",
-		);
-		assertEqual(
-			argsFlag('{"tasks":[]}', "autoAwait"),
-			false,
-			"absent autoAwait ignored",
-		);
+		assertEqual(argsFlag(sequence[0]?.argsPreview, "autoAwait"), true, "autoAwait flag detected");
+		assertEqual(argsFlag('{\n  "autoAwait": true\n}', "autoAwait"), true, "pretty-printed autoAwait detected");
+		assertEqual(argsFlag('{"tasks":[]}', "autoAwait"), false, "absent autoAwait ignored");
 	});
 }
 
@@ -254,10 +225,7 @@ function childSessionSelfTest(checks: Checks, dir: string): void {
 				},
 			},
 		];
-		writeFileSync(
-			file,
-			`${lines.map((line) => JSON.stringify(line)).join("\n")}\n`,
-		);
+		writeFileSync(file, `${lines.map((line) => JSON.stringify(line)).join("\n")}\n`);
 		const metrics = parseChildSessionFile(file);
 		assert(metrics !== null, "child metrics parsed");
 		assertEqual(metrics?.containsBenchOk, true, "BENCH_OK detected");
@@ -276,11 +244,7 @@ function childSessionSelfTest(checks: Checks, dir: string): void {
 		);
 	});
 	checks.run("missing child session returns null", () => {
-		assertEqual(
-			parseChildSessionFile(join(dir, "nope.jsonl")),
-			null,
-			"missing file",
-		);
+		assertEqual(parseChildSessionFile(join(dir, "nope.jsonl")), null, "missing file");
 	});
 }
 
@@ -288,11 +252,7 @@ function codemodePlanSelfTest(checks: Checks): void {
 	checks.run("codemode plan states", () => {
 		const disabled = planCodemode("disabled", ["+codemode", "read"]);
 		assertEqual(disabled.factory, undefined, "disabled factory omitted");
-		assertEqual(
-			JSON.stringify(disabled.defaultTools),
-			JSON.stringify(["read"]),
-			"disabled removes codemode",
-		);
+		assertEqual(JSON.stringify(disabled.defaultTools), JSON.stringify(["read"]), "disabled removes codemode");
 		assertEqual(
 			planCodemode("disabled", undefined).defaultTools,
 			undefined,
@@ -301,11 +261,7 @@ function codemodePlanSelfTest(checks: Checks): void {
 		const active = planCodemode("active", ["+codemode"]);
 		assert(active.factory !== undefined, "active factory present");
 		assertEqual(active.modeOverride, undefined, "active leaves mode untouched");
-		assertEqual(
-			JSON.stringify(active.defaultTools),
-			JSON.stringify(["+codemode"]),
-			"active leaves defaultTools",
-		);
+		assertEqual(JSON.stringify(active.defaultTools), JSON.stringify(["+codemode"]), "active leaves defaultTools");
 		assertEqual(
 			JSON.stringify(planCodemode("active", undefined).defaultTools),
 			JSON.stringify(["+codemode"]),
@@ -322,26 +278,10 @@ function codemodePlanSelfTest(checks: Checks): void {
 		);
 	});
 	checks.run("package filtering + mode command text", () => {
-		assertEqual(
-			isSubagentPackage("npm:@arhen/pi-core-subagent"),
-			true,
-			"string package match",
-		);
-		assertEqual(
-			isSubagentPackage({ source: "npm:@arhen/pi-core-subagent" }),
-			true,
-			"object package match",
-		);
-		assertEqual(
-			isSubagentPackage("npm:@arhen/pi-core-todo"),
-			false,
-			"other package kept",
-		);
-		assertEqual(
-			modeCommandText("/subagents mode {mode}", "baseline"),
-			undefined,
-			"baseline never invokes command",
-		);
+		assertEqual(isSubagentPackage("npm:@arhen/pi-core-subagent"), true, "string package match");
+		assertEqual(isSubagentPackage({ source: "npm:@arhen/pi-core-subagent" }), true, "object package match");
+		assertEqual(isSubagentPackage("npm:@arhen/pi-core-todo"), false, "other package kept");
+		assertEqual(modeCommandText("/subagents mode {mode}", "baseline"), undefined, "baseline never invokes command");
 		assertEqual(
 			modeCommandText("/subagents mode {mode}", "codemode"),
 			"/subagents mode codemode",
@@ -365,14 +305,7 @@ function reportSelfTest(checks: Checks, dir: string): void {
 		fullInput: number,
 		cacheRead: number,
 	): SampleReport => {
-		const base = makeFailedStartup(
-			ctx,
-			sample,
-			new Date().toISOString(),
-			undefined,
-			"hi",
-			"",
-		);
+		const base = makeFailedStartup(ctx, sample, new Date().toISOString(), undefined, "hi", "");
 		return {
 			...base,
 			mode,
@@ -408,14 +341,7 @@ function reportSelfTest(checks: Checks, dir: string): void {
 		parentInput: number,
 		childInput: number,
 	): SampleReport => {
-		const base = makeFailedDelegate(
-			ctx,
-			sample,
-			new Date().toISOString(),
-			undefined,
-			"delegate",
-			"",
-		);
+		const base = makeFailedDelegate(ctx, sample, new Date().toISOString(), undefined, "delegate", "");
 		return {
 			...base,
 			mode,
@@ -486,37 +412,15 @@ function reportSelfTest(checks: Checks, dir: string): void {
 		];
 		const summary = buildSummary(samples);
 		assertEqual(summary.startup?.validSamples, 3, "startup valid samples");
-		assertEqual(
-			summary.startup?.distributions.setupTotalMs?.median,
-			500,
-			"startup setup median",
-		);
-		assertEqual(
-			summary.delegate?.distributions.completionMs?.median,
-			8_750,
-			"delegate completion median",
-		);
-		const fullInput = summary.comparison.find(
-			(entry) => entry.metric === "startup.fullInput",
-		);
+		assertEqual(summary.startup?.distributions.setupTotalMs?.median, 500, "startup setup median");
+		assertEqual(summary.delegate?.distributions.completionMs?.median, 8_750, "delegate completion median");
+		const fullInput = summary.comparison.find((entry) => entry.metric === "startup.fullInput");
 		assert(fullInput !== undefined, "comparison entry present");
-		assertEqual(
-			fullInput?.baseline,
-			20_050,
-			"baseline startup fullInput median",
-		);
-		assertEqual(
-			fullInput?.candidate,
-			18_000,
-			"candidate startup fullInput median",
-		);
+		assertEqual(fullInput?.baseline, 20_050, "baseline startup fullInput median");
+		assertEqual(fullInput?.candidate, 18_000, "candidate startup fullInput median");
 		const totalFull = summary.delegate?.distributions.totalFullInput;
 		assert(totalFull !== undefined, "total full input distribution");
-		assertEqual(
-			totalFull?.values.includes(42_000),
-			true,
-			"cumulative parent+child input for run 1",
-		);
+		assertEqual(totalFull?.values.includes(42_000), true, "cumulative parent+child input for run 1");
 	});
 	checks.run("report json round trip + raw files", () => {
 		const samples: SampleReport[] = [
@@ -567,10 +471,7 @@ function reportSelfTest(checks: Checks, dir: string): void {
 		assertEqual(parsed.schema, SCHEMA, "schema round trip");
 		assertEqual(parsed.samples.length, 2, "samples round trip");
 		assertEqual(parsed.summary.startup?.validSamples, 1, "summary round trip");
-		assert(
-			readFileSync(raw[0] as string, "utf8").includes("startup"),
-			"raw file content",
-		);
+		assert(readFileSync(raw[0] as string, "utf8").includes("startup"), "raw file content");
 	});
 }
 
@@ -585,9 +486,7 @@ export function runSelfTest(): number {
 		console.log(`SELF-TEST PASS (${checks.count} checks)`);
 		return 0;
 	} catch (error) {
-		console.error(
-			`SELF-TEST FAIL: ${error instanceof Error ? error.message : String(error)}`,
-		);
+		console.error(`SELF-TEST FAIL: ${error instanceof Error ? error.message : String(error)}`);
 		return 1;
 	} finally {
 		rmSync(dir, { recursive: true, force: true });

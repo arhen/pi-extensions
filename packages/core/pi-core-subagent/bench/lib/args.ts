@@ -63,28 +63,19 @@ function require(cond: boolean, message: string): void {
 	if (!cond) throw new UsageError(message);
 }
 
-function parseOneOf<T extends string>(
-	flag: string,
-	raw: string,
-	allowed: readonly T[],
-): T {
+function parseOneOf<T extends string>(flag: string, raw: string, allowed: readonly T[]): T {
 	const value = raw.trim().toLowerCase();
-	require(allowed.includes(
-		value as T,
-	), `${flag} must be one of ${allowed.join("|")} (got "${raw}")`);
+	require(allowed.includes(value as T), `${flag} must be one of ${allowed.join("|")} (got "${raw}")`);
 	return value as T;
 }
 
 function parseIntFlag(flag: string, raw: string): number {
 	const value = Number.parseInt(raw, 10);
-	require(Number.isFinite(value) &&
-		value > 0, `${flag} must be a positive integer (got "${raw}")`);
+	require(Number.isFinite(value) && value > 0, `${flag} must be a positive integer (got "${raw}")`);
 	return value;
 }
 
-export function parseArgs(
-	argv: string[],
-): Partial<BenchOptions> & { help: boolean; _: string[] } {
+export function parseArgs(argv: string[]): Partial<BenchOptions> & { help: boolean; _: string[] } {
 	const out: Partial<BenchOptions> & { help: boolean; _: string[] } = {
 		help: false,
 		_: [],
@@ -108,8 +99,7 @@ export function parseArgs(
 			require(value !== undefined, `missing value for ${flag}`);
 			return value as string;
 		};
-		const bool = (): boolean =>
-			inline === undefined ? true : inline !== "false" && inline !== "0";
+		const bool = (): boolean => (inline === undefined ? true : inline !== "false" && inline !== "0");
 		switch (flag) {
 			case "--help":
 			case "-h":
@@ -214,8 +204,7 @@ export function resolveOptions(argv: string[]): BenchOptions | undefined {
 		provider: parsed.provider ?? DEFAULTS.provider,
 		model: parsed.model ?? DEFAULTS.model,
 		thinking: parsed.thinking ?? DEFAULTS.thinking,
-		modelRefresh: (parsed.modelRefresh ??
-			DEFAULTS.modelRefresh) as ModelRefresh,
+		modelRefresh: (parsed.modelRefresh ?? DEFAULTS.modelRefresh) as ModelRefresh,
 		coldNonce: parsed.coldNonce ?? DEFAULTS.coldNonce,
 		modeCommand: parsed.modeCommand ?? DEFAULTS.modeCommand,
 		codemodeCommand: parsed.codemodeCommand ?? DEFAULTS.codemodeCommand,
@@ -230,18 +219,12 @@ export function resolveOptions(argv: string[]): BenchOptions | undefined {
 		delegatePrompt: parsed.delegatePrompt ?? DEFAULTS.delegatePrompt,
 	};
 	if (!opts.selfTest && !opts.dryRun) {
-		require(opts.target !==
-			undefined, "--target <absolute extension entry path> is required for live runs");
+		require(opts.target !== undefined, "--target <absolute extension entry path> is required for live runs");
 	}
 	if (opts.target !== undefined) {
-		require(opts.target.startsWith(
-			"/",
-		), `--target must be an absolute path (got "${opts.target}")`);
+		require(opts.target.startsWith("/"), `--target must be an absolute path (got "${opts.target}")`);
 	}
-	if (parsed._.length > 0)
-		throw new UsageError(
-			`unexpected positional arguments: ${parsed._.join(" ")}`,
-		);
+	if (parsed._.length > 0) throw new UsageError(`unexpected positional arguments: ${parsed._.join(" ")}`);
 	return opts;
 }
 

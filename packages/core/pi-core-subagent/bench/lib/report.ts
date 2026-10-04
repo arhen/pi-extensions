@@ -1,11 +1,6 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import type {
-	BenchMode,
-	CodemodeState,
-	ModelRefresh,
-	Workflow,
-} from "./args.ts";
+import type { BenchMode, CodemodeState, ModelRefresh, Workflow } from "./args.ts";
 import type { BusNotification, MessageRecord, UsageCounts } from "./probe.ts";
 import { emptyUsage } from "./probe.ts";
 import type {
@@ -34,14 +29,11 @@ export interface Distribution {
 }
 
 export function distribution(values: number[]): Distribution | undefined {
-	const finite = values
-		.filter((value) => Number.isFinite(value))
-		.sort((a, b) => a - b);
+	const finite = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
 	if (finite.length === 0) return undefined;
 	const n = finite.length;
 	const mean = finite.reduce((sum, value) => sum + value, 0) / n;
-	const variance =
-		finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / n;
+	const variance = finite.reduce((sum, value) => sum + (value - mean) ** 2, 0) / n;
 	const quantile = (q: number): number => {
 		const index = (n - 1) * q;
 		const low = Math.floor(index);
@@ -98,8 +90,7 @@ export function usageBreakdown(messages: MessageRecord[]): UsageBreakdown {
 		total.cacheWrite += call.usage.cacheWrite;
 		total.totalTokens += call.usage.totalTokens;
 		total.cost += call.usage.cost;
-		if (call.usage.reasoning !== undefined)
-			total.reasoning = (total.reasoning ?? 0) + call.usage.reasoning;
+		if (call.usage.reasoning !== undefined) total.reasoning = (total.reasoning ?? 0) + call.usage.reasoning;
 	}
 	const cacheState: UsageBreakdown["cacheState"] =
 		perCall.length === 0
@@ -141,9 +132,7 @@ export interface DeclaredManifest {
 	requests: ProviderRequestCapture[];
 }
 
-export function declaredManifest(
-	requests: ProviderRequestCapture[],
-): DeclaredManifest {
+export function declaredManifest(requests: ProviderRequestCapture[]): DeclaredManifest {
 	const first = requests[0];
 	const last = requests[requests.length - 1];
 	return {
@@ -173,6 +162,8 @@ export interface StartupSampleReport {
 	nonce?: string;
 	prompt: string;
 	preflight: string | undefined;
+	modeCommand?: DelegateSampleReport["modeCommand"];
+	codemodeCommand?: DelegateSampleReport["codemodeCommand"];
 	readyAtMs: number;
 	build: BuildTimings;
 	stream: StreamTimings;
@@ -349,12 +340,8 @@ function dist(values: Array<number | undefined>): Distribution | undefined {
 }
 
 export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
-	const startup = samples.filter(
-		(sample): sample is StartupSampleReport => sample.kind === "startup",
-	);
-	const delegate = samples.filter(
-		(sample): sample is DelegateSampleReport => sample.kind === "delegate",
-	);
+	const startup = samples.filter((sample): sample is StartupSampleReport => sample.kind === "startup");
+	const delegate = samples.filter((sample): sample is DelegateSampleReport => sample.kind === "delegate");
 	const startupValid = startup.filter((sample) => sample.valid);
 	const delegateValid = delegate.filter((sample) => sample.valid);
 	const startupGroup: SummaryGroup | undefined =
@@ -365,12 +352,8 @@ export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
 					distributions: {
 						setupTotalMs: dist(startupValid.map((s) => s.build.totalMs)),
 						loaderMs: dist(startupValid.map((s) => s.build.loaderMs)),
-						sessionCreateMs: dist(
-							startupValid.map((s) => s.build.sessionCreateMs),
-						),
-						firstThinkingMs: dist(
-							startupValid.map((s) => s.stream.firstThinkingMs),
-						),
+						sessionCreateMs: dist(startupValid.map((s) => s.build.sessionCreateMs)),
+						firstThinkingMs: dist(startupValid.map((s) => s.stream.firstThinkingMs)),
 						firstTextMs: dist(startupValid.map((s) => s.stream.firstTextMs)),
 						settledMs: dist(startupValid.map((s) => s.stream.settledMs)),
 						uncachedInput: dist(startupValid.map((s) => s.usage.uncachedInput)),
@@ -379,9 +362,7 @@ export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
 						output: dist(startupValid.map((s) => s.usage.total.output)),
 						reasoning: dist(startupValid.map((s) => s.usage.total.reasoning)),
 						fullInput: dist(startupValid.map((s) => s.usage.fullInput)),
-						declarationCount: dist(
-							startupValid.map((s) => s.declared.firstRequestToolCount),
-						),
+						declarationCount: dist(startupValid.map((s) => s.declared.firstRequestToolCount)),
 					},
 				}
 			: undefined;
@@ -393,45 +374,21 @@ export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
 					distributions: {
 						discoveryMs: dist(delegateValid.map((s) => s.latency.discoveryMs)),
 						dispatchMs: dist(delegateValid.map((s) => s.latency.dispatchMs)),
-						firstChildOutputMs: dist(
-							delegateValid.map((s) => s.latency.firstChildOutputMs),
-						),
-						completionMs: dist(
-							delegateValid.map((s) => s.latency.completionMs),
-						),
+						firstChildOutputMs: dist(delegateValid.map((s) => s.latency.firstChildOutputMs)),
+						completionMs: dist(delegateValid.map((s) => s.latency.completionMs)),
 						settledMs: dist(delegateValid.map((s) => s.latency.settledMs)),
-						parentUncachedInput: dist(
-							delegateValid.map((s) => s.parentUsage.uncachedInput),
-						),
-						parentCacheRead: dist(
-							delegateValid.map((s) => s.parentUsage.total.cacheRead),
-						),
-						parentOutput: dist(
-							delegateValid.map((s) => s.parentUsage.total.output),
-						),
-						parentFullInput: dist(
-							delegateValid.map((s) => s.parentUsage.fullInput),
-						),
-						parentModelCalls: dist(
-							delegateValid.map((s) => s.parentUsage.calls),
-						),
-						parentToolCalls: dist(
-							delegateValid.map((s) => s.routing.toolCalls),
-						),
-						childUncachedInput: dist(
-							delegateValid.map((s) => s.child.usage?.input),
-						),
-						childCacheRead: dist(
-							delegateValid.map((s) => s.child.usage?.cacheRead),
-						),
+						parentUncachedInput: dist(delegateValid.map((s) => s.parentUsage.uncachedInput)),
+						parentCacheRead: dist(delegateValid.map((s) => s.parentUsage.total.cacheRead)),
+						parentOutput: dist(delegateValid.map((s) => s.parentUsage.total.output)),
+						parentFullInput: dist(delegateValid.map((s) => s.parentUsage.fullInput)),
+						parentModelCalls: dist(delegateValid.map((s) => s.parentUsage.calls)),
+						parentToolCalls: dist(delegateValid.map((s) => s.routing.toolCalls)),
+						childUncachedInput: dist(delegateValid.map((s) => s.child.usage?.input)),
+						childCacheRead: dist(delegateValid.map((s) => s.child.usage?.cacheRead)),
 						childOutput: dist(delegateValid.map((s) => s.child.usage?.output)),
 						childFullInput: dist(
 							delegateValid.map((s) =>
-								s.child.usage
-									? s.child.usage.input +
-										s.child.usage.cacheRead +
-										s.child.usage.cacheWrite
-									: undefined,
+								s.child.usage ? s.child.usage.input + s.child.usage.cacheRead + s.child.usage.cacheWrite : undefined,
 							),
 						),
 						childModelCalls: dist(delegateValid.map((s) => s.child.modelCalls)),
@@ -439,11 +396,7 @@ export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
 							delegateValid.map(
 								(s) =>
 									s.parentUsage.fullInput +
-									(s.child.usage
-										? s.child.usage.input +
-											s.child.usage.cacheRead +
-											s.child.usage.cacheWrite
-										: 0),
+									(s.child.usage ? s.child.usage.input + s.child.usage.cacheRead + s.child.usage.cacheWrite : 0),
 							),
 						),
 					},
@@ -454,44 +407,25 @@ export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
 	const candidateStartup = startupValid.filter((s) => s.mode !== "baseline");
 	const baselineDelegate = delegateValid.filter((s) => s.mode === "baseline");
 	const candidateDelegate = delegateValid.filter((s) => s.mode !== "baseline");
-	const comparisonEntry = (
-		name: string,
-		base: number[],
-		candidate: number[],
-	): ComparisonEntry | undefined => {
+	const comparisonEntry = (name: string, base: number[], candidate: number[]): ComparisonEntry | undefined => {
 		const baseValue = distribution(base)?.median;
 		const candidateValue = distribution(candidate)?.median;
-		if (baseValue === undefined && candidateValue === undefined)
-			return undefined;
-		const delta =
-			baseValue !== undefined && candidateValue !== undefined
-				? candidateValue - baseValue
-				: undefined;
+		if (baseValue === undefined && candidateValue === undefined) return undefined;
+		const delta = baseValue !== undefined && candidateValue !== undefined ? candidateValue - baseValue : undefined;
 		return {
 			metric: name,
 			baseline: baseValue,
 			candidate: candidateValue,
 			delta,
-			deltaPct:
-				delta !== undefined && baseValue
-					? (delta / baseValue) * 100
-					: undefined,
+			deltaPct: delta !== undefined && baseValue ? (delta / baseValue) * 100 : undefined,
 		};
 	};
-	const pickStartup = (
-		list: StartupSampleReport[],
-		pick: (s: StartupSampleReport) => number | undefined,
-	): number[] =>
-		list
-			.map(pick)
-			.filter((value): value is number => typeof value === "number");
+	const pickStartup = (list: StartupSampleReport[], pick: (s: StartupSampleReport) => number | undefined): number[] =>
+		list.map(pick).filter((value): value is number => typeof value === "number");
 	const pickDelegate = (
 		list: DelegateSampleReport[],
 		pick: (s: DelegateSampleReport) => number | undefined,
-	): number[] =>
-		list
-			.map(pick)
-			.filter((value): value is number => typeof value === "number");
+	): number[] => list.map(pick).filter((value): value is number => typeof value === "number");
 	const comparison = [
 		comparisonEntry(
 			"startup.setupTotalMs",
@@ -541,18 +475,10 @@ export function buildSummary(samples: SampleReport[]): BenchReport["summary"] {
 		comparisonEntry(
 			"delegate.childFullInput",
 			pickDelegate(baselineDelegate, (s) =>
-				s.child.usage
-					? s.child.usage.input +
-						s.child.usage.cacheRead +
-						s.child.usage.cacheWrite
-					: undefined,
+				s.child.usage ? s.child.usage.input + s.child.usage.cacheRead + s.child.usage.cacheWrite : undefined,
 			),
 			pickDelegate(candidateDelegate, (s) =>
-				s.child.usage
-					? s.child.usage.input +
-						s.child.usage.cacheRead +
-						s.child.usage.cacheWrite
-					: undefined,
+				s.child.usage ? s.child.usage.input + s.child.usage.cacheRead + s.child.usage.cacheWrite : undefined,
 			),
 		),
 	].filter((entry): entry is ComparisonEntry => entry !== undefined);
@@ -564,13 +490,8 @@ export function writeReport(report: BenchReport, outFile: string): void {
 	writeFileSync(outFile, `${JSON.stringify(report, null, 2)}\n`);
 }
 
-export function writeRawSamples(
-	outFile: string,
-	samples: SampleReport[],
-): string[] {
-	const base = outFile
-		.slice(outFile.lastIndexOf("/") + 1)
-		.replace(/\.json$/, "");
+export function writeRawSamples(outFile: string, samples: SampleReport[]): string[] {
+	const base = outFile.slice(outFile.lastIndexOf("/") + 1).replace(/\.json$/, "");
 	const rawDir = join(dirname(outFile), `${base}.raw`);
 	mkdirSync(rawDir, { recursive: true });
 	const files: string[] = [];
@@ -598,7 +519,7 @@ export function fmt(value: number | undefined): string {
 }
 
 export function summarizeStartupSample(sample: StartupSampleReport): string {
-	return `startup #${sample.sample} ${sample.valid ? "ok" : "INVALID"} setup=${sample.build.totalMs.toFixed(0)}ms firstText=${fmt(sample.stream.firstTextMs)} settled=${fmt(sample.stream.settledMs)} tools=${sample.activeToolCount} uncached=${sample.usage.uncachedInput} cacheRead=${sample.usage.total.cacheRead} out=${sample.usage.total.output} (${sample.usage.cacheState})`;
+	return `startup #${sample.sample} ${sample.valid ? "ok" : "INVALID"} setup=${sample.build.totalMs.toFixed(0)}ms firstText=${fmt(sample.stream.firstTextMs)} settled=${fmt(sample.stream.settledMs)} tools=${sample.declared.firstRequestToolCount ?? "?"} uncached=${sample.usage.uncachedInput} cacheRead=${sample.usage.total.cacheRead} out=${sample.usage.total.output} (${sample.usage.cacheState})`;
 }
 
 export function summarizeDelegateSample(sample: DelegateSampleReport): string {
