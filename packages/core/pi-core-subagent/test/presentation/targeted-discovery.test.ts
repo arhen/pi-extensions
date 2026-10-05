@@ -19,6 +19,7 @@ test("the upfront guide names the spawn path and one reusable targeted lookup", 
 test("one native targeted lookup returns the spawn signature, not every helper", async () => {
 	const h = await createRuntimeHarness({ codemode: "on" });
 	sessions.push(h);
+	await h.session.prompt("/subagents mode auto");
 	h.faux.setResponses([
 		fauxAssistantMessage([fauxToolCall("codemode", { code: "text(await describeTool('subagent'));" })]),
 		fauxAssistantMessage("done"),
@@ -37,6 +38,7 @@ test("one native targeted lookup returns the spawn signature, not every helper",
 test("targeted lookup cannot reveal an inactive spawn tool", async () => {
 	const h = await createRuntimeHarness({ codemode: "on" });
 	sessions.push(h);
+	await h.session.prompt("/subagents mode auto");
 	h.session.setActiveToolsByName(h.session.getActiveToolNames().filter((name) => name !== "subagent"));
 	h.faux.setResponses([
 		fauxAssistantMessage([

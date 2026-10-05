@@ -11,7 +11,7 @@ import type {
 /**
  * Presentation preference for the subagent toolset.
  * - auto: native codemode presentation when the codemode tool is active, direct otherwise.
- * - direct: subagent tools are declared to the model (model-only exposure).
+ * - direct (default): legacy native declarations and active-tool script callability.
  * - codemode: subagent tools are callable from codemode scripts but not declared or listed.
  */
 export type SubagentMode = "auto" | "direct" | "codemode";
@@ -27,8 +27,8 @@ export const SUBAGENT_NAMESPACE: ToolNamespace = {
 	instructions: `Isolated subagents with their own context, session and optional git worktree. Delegate independent review, testing, research or parallel analysis.
 
 ## Modes
-- auto (default): codemode presentation while the \`codemode\` tool is active, direct otherwise.
-- direct: subagent tools are declared to the model (model-only, not callable from scripts).
+- direct (default): legacy native tool declarations and active-tool script callability; activating codemode alone does not switch profiles.
+- auto (opt-in): codemode presentation while the \`codemode\` tool is active, direct otherwise.
 - codemode: active tools are callable from scripts but not declared; inactive tools stay model-only and are not callable at all.
 Switch with \`/subagents mode auto|direct|codemode\`. The preference is stored on the session branch and restored on reload, resume and tree navigation.
 
@@ -57,7 +57,7 @@ Object arguments, exactly as validated when issued by the model:
 - End each task with a runnable check, e.g. 'Verify: bun test'. A subagent's claim of success is not evidence.
 
 ## Codemode
-When codemode is active these tools are not declared. Call an active operation as \`tools.<name>(args)\`; spawning uses \`await tools.subagent(args)\`. If its signature is unknown, inspect only \`text(await describeTool('subagent'))\` once and reuse it. For another operation, inspect only its exact name when needed. Broad search and tool-list dumps are unnecessary for these known names; this namespace is the optional full reference. Inactive tools remain unavailable. Arguments are validated exactly like model-issued calls.`,
+When the codemode profile is explicitly selected (or selected by opt-in auto), these tools are not declared. Call an active operation as \`tools.<name>(args)\`; spawning uses \`await tools.subagent(args)\`. If its signature is unknown, inspect only \`text(await describeTool('subagent'))\` once and reuse it. For another operation, inspect only its exact name when needed. Broad search and tool-list dumps are unnecessary for these known names; this namespace is the optional full reference. Inactive tools remain unavailable. Arguments are validated exactly like model-issued calls.`,
 };
 
 /** Adds the script-call path to the upfront rules, but only in the codemode profile. */
@@ -96,7 +96,7 @@ export interface Presentation {
  */
 export function createPresentation(pi: ExtensionAPI, definitions: readonly AnyToolDefinition[]): Presentation {
 	const ownNames = (): string[] => definitions.map((definition) => definition.name);
-	let preference: SubagentMode = "auto";
+	let preference: SubagentMode = "direct";
 	let applied: EffectiveMode | undefined;
 	let appliedOwn = new Set<string>();
 
@@ -116,8 +116,8 @@ export function createPresentation(pi: ExtensionAPI, definitions: readonly AnyTo
 		return hidden.length > 0 ? { hiddenDeclarations: hidden } : undefined;
 	};
 
-	// Register the profile for the given effective mode. Only own tools that are really active stay
-	// script-callable (`deferred`); inactive own tools are `model-only` and never callable. Re-registering
+	// Opted-in codemode defers only active own tools; inactive tools stay model-only. Legacy direct
+	// callability follows native activation. Re-registering
 	// must not reactivate a tool the user deactivated, so `defaultActive: false` replaces the native
 	// default once the initial registration has made the tools available by default.
 	const register = (mode: EffectiveMode, ownActive: ReadonlySet<string>, initial = false): void => {
@@ -125,18 +125,18 @@ export function createPresentation(pi: ExtensionAPI, definitions: readonly AnyTo
 		applied = mode;
 		for (const definition of definitions) {
 			const scriptCallable = mode === "codemode" && ownActive.has(definition.name);
-			const exposure: ToolExposure = scriptCallable ? "deferred" : "model-only";
+			const exposure: ToolExposure = scriptCallable ? "deferred" : mode === "direct" ? "direct" : "model-only";
 			const promptGuidelines = [...(definition.promptGuidelines ?? [])];
 			if (scriptCallable && !promptGuidelines.includes(CODEMODE_DISCOVERY_GUIDELINE))
 				promptGuidelines.push(CODEMODE_DISCOVERY_GUIDELINE);
-			// In the direct profile there is no script path, so the pointer would be unreachable.
+			// Legacy direct tools stay ungrouped; the namespace reference only belongs to the opted-in profile.
 			const description =
 				mode === "direct" ? definition.description.replace(NAMESPACE_REFERENCE, "") : definition.description;
 			pi.registerTool({
 				...definition,
 				description,
 				exposure,
-				namespace: SUBAGENT_NAMESPACE,
+				namespace: mode === "codemode" ? SUBAGENT_NAMESPACE : undefined,
 				promptGuidelines,
 				prepareLoadout: hideDeclarations,
 				...(initial ? {} : { defaultActive: false }),
@@ -187,7 +187,7 @@ export function createPresentation(pi: ExtensionAPI, definitions: readonly AnyTo
 					restored = candidate.data.mode;
 			}
 			// Branch-sensitive state: a branch without an entry uses the package default again.
-			preference = restored ?? "auto";
+			preference = restored ?? "direct";
 		},
 		sync() {
 			const own = new Set(ownNames());

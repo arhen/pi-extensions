@@ -51,9 +51,9 @@ return {
 `;
 
 describe("native exposure modes at runtime", () => {
-	test("auto without codemode declares model-only subagent tools", async () => {
+	test("the default without codemode declares legacy direct subagent tools", async () => {
 		const h = await harness({ codemode: false });
-		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "model-only"));
+		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
 		expect(h.session.getActiveToolNames()).toContain("subagent");
 
 		const context = await captureTextRequest(h, "hello");
@@ -65,6 +65,7 @@ describe("native exposure modes at runtime", () => {
 
 	test("auto with codemode on keeps deferred tools out of declarations and the catalog", async () => {
 		const h = await harness({ codemode: "on", inlineBudget: 3000 });
+		await h.session.prompt("/subagents mode auto");
 		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
 		// Retained active selection: all nine stay active but their declarations are hidden.
 		const active = new Set(h.session.getActiveToolNames());
@@ -88,6 +89,7 @@ describe("native exposure modes at runtime", () => {
 
 	test("codemode discovery, namespace instructions and nested validation run in the real sandbox", async () => {
 		const h = await harness({ codemode: "on" });
+		await h.session.prompt("/subagents mode codemode");
 		const requests: TranscriptContext[] = [];
 		h.faux.setResponses([
 			(context) => {
@@ -106,21 +108,20 @@ describe("native exposure modes at runtime", () => {
 		expect(result).toMatch(/runId/);
 	}, 60_000);
 
-	test("global codemode.mode=only keeps an explicit direct profile declared", async () => {
+	test("legacy direct respects an explicit global codemode.mode=only policy", async () => {
 		const h = await harness({ codemode: "only", inlineBudget: 3000 });
 		await h.session.prompt("/subagents mode direct");
 
 		const context = await captureTextRequest(h, "hello");
 		const declarations = declaredTools(context);
 		const names = declarations.map((tool) => tool.name);
-		expect(names).toContain("subagent");
-		expect(names).toContain("subagent_status");
+		expect(names).not.toContain("subagent");
+		expect(names).not.toContain("subagent_status");
 		expect(names).not.toContain("read");
+		expect(h.session.getCallableToolNames()).toContain("subagent");
+		expect(names).toContain("codemode");
 
-		const codemode = declarations.find((tool) => tool.name === "codemode");
-		expect(codemode?.description).not.toContain("runId");
-
-		expect(h.session.systemPrompt).toContain("Define and delegate");
+		expect(h.session.systemPrompt).not.toContain("Define and delegate");
 		expect(h.session.systemPrompt).not.toContain("Read file contents");
 	}, 60_000);
 
@@ -157,7 +158,7 @@ describe("native exposure modes at runtime", () => {
 			dir,
 			sessionManager: SessionManager.open(sessionFile as string),
 		});
-		expect(exposures(reopened)).toEqual(SUBAGENT_TOOLS.map(() => "model-only"));
+		expect(exposures(reopened)).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
 
 		await reopened.session.prompt("/subagents mode codemode");
 		const sessionFile2 = reopened.session.sessionFile;
@@ -171,14 +172,15 @@ describe("native exposure modes at runtime", () => {
 		expect(exposures(third)).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
 	}, 90_000);
 
-	test("deactivating codemode restores direct declarations at the next boundary", async () => {
+	test("deactivating codemode restores direct declarations in explicit auto mode", async () => {
 		const h = await harness({ codemode: "on" });
+		await h.session.prompt("/subagents mode auto");
 		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
 
 		h.session.setActiveToolsByName(h.session.getActiveToolNames().filter((name) => name !== "codemode"));
 		const context = await captureTextRequest(h, "hello");
 
-		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "model-only"));
+		expect(exposures(h)).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
 		const names = declaredTools(context).map((tool) => tool.name);
 		expect(names).toContain("subagent");
 		expect(names).not.toContain("codemode");
@@ -194,27 +196,26 @@ describe("native exposure modes at runtime", () => {
 	test("tree navigation restores the preference branch in a real session", async () => {
 		const h = await harness({ codemode: "on" });
 		await captureTextRequest(h, "hello");
-		await h.session.prompt("/subagents mode direct");
-		expect(
-			h.session
-				.getAllTools()
-				.filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))
-				.map((tool) => tool.exposure),
-		).toEqual(SUBAGENT_TOOLS.map(() => "model-only"));
-
-		const target = h.session.getUserMessagesForForking()[0];
-		expect(target).toBeDefined();
-		const result = await h.session.navigateTree(target!.entryId, { summarize: false });
-		expect(result.cancelled).toBe(false);
-
-		// The branch above the mode entry has no preference: auto applies again, which is codemode
-		// while the codemode tool is active.
+		await h.session.prompt("/subagents mode auto");
 		expect(
 			h.session
 				.getAllTools()
 				.filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))
 				.map((tool) => tool.exposure),
 		).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
+
+		const target = h.session.getUserMessagesForForking()[0];
+		expect(target).toBeDefined();
+		const result = await h.session.navigateTree(target!.entryId, { summarize: false });
+		expect(result.cancelled).toBe(false);
+
+		// The branch above the explicit opt-in returns to the legacy default.
+		expect(
+			h.session
+				.getAllTools()
+				.filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))
+				.map((tool) => tool.exposure),
+		).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
 	}, 90_000);
 
 	test("a model-issued invalid call is rejected by real schema validation before execution", async () => {
@@ -270,8 +271,9 @@ describe("native exposure modes at runtime", () => {
 		}
 	}, 90_000);
 
-	test("deferral still holds at a large inline budget", async () => {
+	test("deferral still holds at a large inline budget after explicit opt-in", async () => {
 		const h = await harness({ codemode: "on", inlineBudget: 1_000_000 });
+		await h.session.prompt("/subagents mode auto");
 		const context = await captureTextRequest(h, "hello");
 		const declarations = declaredTools(context);
 		const names = declarations.map((tool) => tool.name);
@@ -281,13 +283,13 @@ describe("native exposure modes at runtime", () => {
 		expect(codemode?.description).not.toContain("runId");
 	}, 60_000);
 
-	test("model-only direct tools are not callable from a codemode script", async () => {
+	test("legacy direct tools remain callable from a codemode script", async () => {
 		const h = await harness({ codemode: "on", inlineBudget: 3000 });
 		await h.session.prompt("/subagents mode direct");
 		h.faux.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("codemode", {
-					code: 'try { await tools.subagent_status({ runId: "x" }); return "CALLED"; } catch (error) { return "NOT_CALLABLE: " + String(error && error.message ? error.message : error); }',
+					code: 'try { return await tools.subagent_status({ runId: "x" }); } catch (error) { return String(error && error.message ? error.message : error); }',
 				}),
 			]),
 			fauxAssistantMessage("done"),
@@ -295,8 +297,7 @@ describe("native exposure modes at runtime", () => {
 		await h.session.prompt("try a nested call");
 
 		const result = lastCodemodeResult(h.session);
-		expect(result).toContain("NOT_CALLABLE");
-		expect(result).not.toContain("CALLED");
+		expect(result).toContain("Unknown runId: x");
 	}, 60_000);
 
 	test("excludeTools keeps the subagent tools out across mode switches", async () => {

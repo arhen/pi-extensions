@@ -43,8 +43,8 @@ function exposureOf(name: string): string | undefined {
 }
 
 function expectDirectProfile(): void {
-	for (const name of SUBAGENT_TOOLS) expect(exposureOf(name)).toBe("model-only");
-	// No script path is available in this profile, so the namespace pointer must not be promised.
+	for (const name of SUBAGENT_TOOLS) expect(exposureOf(name)).toBe("direct");
+	// Legacy direct registration stays ungrouped.
 	expect(h.tools.get("subagent")?.description).not.toContain("describeNamespace");
 	expect(h.tools.get("subagent_models")?.description).not.toContain("describeNamespace");
 }
@@ -61,7 +61,7 @@ function expectCodemodeProfile(): void {
 }
 
 describe("mode preference and effective profile", () => {
-	test("auto defaults to the model-only direct profile while codemode is inactive", async () => {
+	test("the default stays legacy direct while codemode is inactive", async () => {
 		h.activeTools.push("read", "bash", "subagent", "subagent_status", "await_subagent");
 		await h.startSession();
 
@@ -72,9 +72,10 @@ describe("mode preference and effective profile", () => {
 		expect(load.declared.map((tool) => tool.name)).toContain("subagent_status");
 	});
 
-	test("auto follows an active codemode into the deferred namespace profile", async () => {
+	test("explicit auto follows an active codemode into the deferred namespace profile", async () => {
 		h.activeTools.push("read", "codemode", "subagent", "subagent_status");
 		await h.startSession();
+		await cmd("mode auto");
 
 		expectCodemodeProfile();
 		const load = simulateLoadout(h);
@@ -92,7 +93,7 @@ describe("mode preference and effective profile", () => {
 		expect(guidance).toContain("describeNamespace");
 	});
 
-	test("explicit direct stays model-only even with codemode active", async () => {
+	test("explicit direct retains legacy exposure even with codemode active", async () => {
 		h.activeTools.push("read", "codemode", "subagent");
 		await h.startSession();
 		await cmd("mode direct");
@@ -120,7 +121,7 @@ describe("mode preference and effective profile", () => {
 		await h.startSession();
 		const inactive = await mode();
 
-		expect(inactive).toContain("mode auto");
+		expect(inactive).toContain("mode direct");
 		expect(inactive).toContain("effective direct");
 		expect(inactive).toContain("codemode is not active");
 		expect(inactive).toContain("/subagents mode auto|direct|codemode");
@@ -128,7 +129,9 @@ describe("mode preference and effective profile", () => {
 		h.activeTools.push("codemode");
 		await h.invoke("before_agent_start", h.ctx());
 		const active = await mode();
-		expect(active).toContain("effective codemode");
+		expect(active).toContain("effective direct");
+		await cmd("mode auto");
+		expect(await mode()).toContain("effective codemode");
 	});
 });
 
@@ -174,7 +177,7 @@ describe("persistence", () => {
 
 		h.branch.length = 0;
 		await h.invoke("session_tree", h.ctx());
-		expect(await mode()).toContain("mode auto");
+		expect(await mode()).toContain("mode direct");
 	});
 
 	test("an unknown stored preference is ignored", async () => {
@@ -183,14 +186,15 @@ describe("persistence", () => {
 		await h.startSession();
 
 		expectDirectProfile();
-		expect(await mode()).toContain("mode auto");
+		expect(await mode()).toContain("mode direct");
 	});
 });
 
 describe("boundary refresh", () => {
-	test("before_agent_start applies a codemode activation in auto mode", async () => {
+	test("before_agent_start applies a codemode activation in explicit auto mode", async () => {
 		h.activeTools.push("read", "subagent");
 		await h.startSession();
+		await cmd("mode auto");
 		expectDirectProfile();
 
 		h.activeTools.push("codemode");
@@ -201,6 +205,7 @@ describe("boundary refresh", () => {
 	test("before_agent_start returns to direct after codemode deactivation", async () => {
 		h.activeTools.push("codemode", "read", "subagent");
 		await h.startSession();
+		await cmd("mode auto");
 		expectCodemodeProfile();
 
 		h.activeTools.splice(h.activeTools.indexOf("codemode"), 1);
@@ -222,6 +227,7 @@ describe("boundary refresh", () => {
 	test("a mode command while streaming defers the exposure change to the next boundary", async () => {
 		h.activeTools.push("codemode", "read", "subagent");
 		await h.startSession();
+		await cmd("mode auto");
 		expectCodemodeProfile();
 
 		await cmdWith({ isIdle: () => false }, "mode direct");
@@ -264,6 +270,7 @@ describe("selection and state preservation", () => {
 	test("a native own-selection change re-registers at the next boundary", async () => {
 		h.activeTools.push("codemode", "read", "subagent", "subagent_status");
 		await h.startSession();
+		await cmd("mode auto");
 		expectCodemodeProfile();
 
 		// Deactivate one helper while the overall mode stays codemode: its exposure must follow.
@@ -282,6 +289,7 @@ describe("selection and state preservation", () => {
 	test("deactivated helpers stay model-only instead of becoming deferred", async () => {
 		h.activeTools.push("codemode", "read", "subagent", "subagent_models");
 		await h.startSession();
+		await cmd("mode auto");
 
 		for (const name of SUBAGENT_TOOLS)
 			expect(exposureOf(name)).toBe(h.activeTools.includes(name) ? "deferred" : "model-only");
@@ -306,6 +314,7 @@ describe("selection and state preservation", () => {
 	test("prepareLoadout hides only subagent declarations", async () => {
 		h.activeTools.push("codemode", "read", "subagent", "subagent_cancel");
 		await h.startSession();
+		await cmd("mode auto");
 
 		const load = simulateLoadout(h);
 		expect([...load.hidden].sort()).toEqual(["subagent", "subagent_cancel"]);
@@ -328,6 +337,7 @@ describe("context cleanup contract", () => {
 	test("the subagents namespace carries the long reference and the essentials stay upstream", async () => {
 		h.activeTools.push("codemode", "subagent", "subagent_status", "resume_subagent");
 		await h.startSession();
+		await cmd("mode auto");
 
 		const namespace = h.tools.get("subagent")?.namespace;
 		expect(namespace?.name).toBe("subagents");

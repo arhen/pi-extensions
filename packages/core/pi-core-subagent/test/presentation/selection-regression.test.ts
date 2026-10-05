@@ -30,6 +30,7 @@ afterEach(() => {
 async function setup() {
 	const h = await createRuntimeHarness({ codemode: "on" });
 	sessions.push(h);
+	await h.session.prompt("/subagents mode auto");
 	h.session.setActiveToolsByName(h.session.getActiveToolNames().filter((name) => !helpers.includes(name)));
 	return h;
 }
@@ -190,6 +191,7 @@ test("noTools leaves the subagent tools unreachable across mode switches", async
 test("codemode availability toggled between model turns reaches the next request", async () => {
 	const h = await createRuntimeHarness({ codemode: "on", extensions: [toggleExtension("codemode")] });
 	sessions.push(h);
+	await h.session.prompt("/subagents mode auto");
 	const contexts: TranscriptContext[] = [];
 	h.faux.setResponses([
 		() => fauxAssistantMessage([fauxToolCall("toggle_codemode", {})]),
@@ -232,6 +234,7 @@ test("codemode availability toggled between model turns reaches the next request
 test("a helper deactivated between model turns becomes non-callable in the same run", async () => {
 	const h = await createRuntimeHarness({ codemode: "on", extensions: [toggleExtension("subagent_status")] });
 	sessions.push(h);
+	await h.session.prompt("/subagents mode auto");
 	const contexts: TranscriptContext[] = [];
 	h.faux.setResponses([
 		() => fauxAssistantMessage([fauxToolCall("toggle_subagent_status", {})]),
@@ -267,6 +270,7 @@ test("a mode change during a blocked live script keeps that call usable and appl
 	const gate = gateExtension();
 	const h = await createRuntimeHarness({ codemode: "on", extensions: [gate.factory] });
 	sessions.push(h);
+	await h.session.prompt("/subagents mode auto");
 	let captured: TranscriptContext | undefined;
 	h.faux.setResponses([
 		() =>
@@ -298,7 +302,7 @@ test("a mode change during a blocked live script keeps that call usable and appl
 	expect(captured).toBeDefined();
 	if (!captured) throw new Error("no request after the blocked script");
 	expect(declaredNames(captured)).toContain("subagent_status");
-	expect(h.session.getToolDefinition("subagent_status")?.exposure).toBe("model-only");
+	expect(h.session.getToolDefinition("subagent_status")?.exposure).toBe("direct");
 	const result = lastCodemodeResult(h.session);
 	expect(result).toContain("script:gate released:");
 	expect(result).toContain("Unknown runId");

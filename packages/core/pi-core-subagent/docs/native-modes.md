@@ -3,27 +3,43 @@
 `pi-core-subagent` presents its subagent toolset in two native Pi profiles and switches between
 them with `/subagents mode`. This document describes the contract and measured startup/delegation
 trade-offs; initial evidence is in [native-modes-benchmarks.md](native-modes-benchmarks.md).
-The [targeted-discovery follow-up](targeted-discovery-benchmarks.md) records the current guide and
-first-versus-consecutive delegation costs.
+The [targeted-discovery follow-up](targeted-discovery-benchmarks.md) records its frozen guide and
+first-versus-consecutive delegation costs. Those measurements predate the legacy-default correction.
 
 ## Modes
 
 | Mode | Subagent tool exposure | Declared to the model | Callable from scripts |
 |---|---|---|---|
-| `direct` | `model-only` | yes, full schemas | no |
+| `direct` (default) | native `direct`, ungrouped | yes, full schemas under normal Pi loadout policy | only the active tools |
 | `codemode` | active tools `deferred` (namespace `subagents`), inactive tools `model-only` | no (the active declarations are hidden) | only the active tools |
 
-- `auto` (default) selects the codemode profile only while the built-in `codemode` tool is actually
-  in the active set (`pi.getActiveTools()`), and the direct profile otherwise. Registration alone
-  does not count.
+- `direct` is the default, including existing branches with no stored preference. Activating the
+  codemode tool alone does not change subagent routing. Native `direct` exposure preserves both
+  model-issued calls and legacy active-tool script calls; tools are not namespace-grouped.
+- `auto` is opt-in via `/subagents mode auto`. It selects the codemode profile only while the built-in
+  `codemode` tool is actually in the active set (`pi.getActiveTools()`), and direct otherwise.
+  Registration alone does not count.
 - An explicit `codemode` preference falls back to the direct profile while codemode is inactive and
   reports the reason; it switches automatically once codemode becomes active.
-- The direct profile uses `model-only` exposure, so the tools stay visible even under the global
-  `codemode.mode: "only"` setting. They are not callable from codemode scripts in that profile.
+- Native global `codemode.mode: "only"` remains authoritative, just as with legacy tools: it hides
+  direct declarations globally while retaining script callability. Merely activating codemode in
+  its normal `on` mode does not hide direct subagent declarations. This extension does not rewrite
+  global codemode policy.
 - The codemode profile keeps only own tools that are really active script-callable. A helper the
   user deactivated is re-registered as `model-only`, so it is neither declared nor reachable from a
   script; reactivating it natively makes it `deferred` again at the next boundary. This keeps a
   deactivated helper out of scripts even at the same request boundary.
+
+## Migration and trying codemode
+
+Published 1.3.63 used `auto` by default and `model-only` for its direct profile. The corrected source
+restores native legacy `direct` behavior. This correction is effective only after that source is
+released/loaded; it does not retroactively change the existing npm tarball.
+
+To try the new routing: `/subagents mode auto` (or `/subagents mode codemode`). To return:
+`/subagents mode direct`. Inspect the current preference/effective profile with `/subagents mode`.
+Explicit saved choices are preserved, including `auto` chosen in 1.3.63. New sessions and branches
+without an entry start direct. No global preference or consent is inferred from codemode activation.
 
 ## Tool surface
 
@@ -88,7 +104,7 @@ navigation keep it. Nothing is written to global or project settings, and the sh
 - **Native default activation**: the initial registration leaves `defaultActive` at its native
   default, so the tools are available by default. Every later re-registration sets
   `defaultActive: false`, which keeps the SDK's `_refreshToolRegistry` from auto-activating a tool the
-  user deactivated when an exposure moves from `deferred` to `model-only`.
+  user deactivated when an exposure moves from `deferred` to native `direct`.
 - **Allowlist restore**: with an explicit `--tools`/`defaultTools` allowlist the SDK activates every
   declarable tool whose name is listed, ignoring `defaultActive`. `register()` therefore restores
   exactly the own-name membership that was requested with `pi.setActiveTools()`, and only when the
@@ -152,7 +168,7 @@ navigation keep it. Nothing is written to global or project settings, and the sh
   (modes `on` and `only`, `inlineBudget: 3000` and `1_000_000`) and a faux provider: declaration
   capture, discovery through the QuickJS sandbox, nested validation, allowlist and `excludeTools`
   behavior, model-issued schema validation, `navigateTree` preference restore, session reopen, and
-  the profile boundary (direct model-only tools are not callable from a script).
+  the profile boundary (legacy direct tools retain active-tool script compatibility).
 - `test/presentation/runtime-child.test.ts` drives real child sessions through the manager with the
   faux provider and an isolated HOME: background spawn + await + result, `autoAwait`, ask/reply
   intercom, steer delivery to a parked child, cancellation, failed-task resume, and a nested
@@ -164,13 +180,18 @@ navigation keep it. Nothing is written to global or project settings, and the sh
   schema lookup and unavailable inactive spawn. Guidance was changed only after its new test failed.
 - The initial mode delivery passed 319 tests / 1310 assertions. Targeted discovery and repeated-use
   benchmark verification are recorded separately in the follow-up report.
-- The package README is intentionally untouched: the user's checkout has local README edits, so the
-  registered-tool table lives in this document instead. README reconciliation is left to the user.
+- `test/presentation/legacy-default.test.ts` adds tests-first regression coverage for the default
+  with active codemode, restored explicit choices, branch reset, availability toggles, all nine
+  native declarations, real script dispatch, explicit auto opt-in and direct reversion. Existing
+  codemode tests now select that profile explicitly. README migration guidance was added without
+  overwriting the pre-existing local edits.
 
 ## Initial measured results
 
-The table below predates targeted discovery guidance. Current startup input is 9,295 in the
-codemode profile; see [the follow-up](targeted-discovery-benchmarks.md) for matched current results.
+The table below predates targeted discovery guidance and the legacy-default correction. The frozen
+follow-up measured 9,295 startup input in the opt-in codemode profile; see
+[that report](targeted-discovery-benchmarks.md). Its direct profile was the former `model-only`
+implementation, not the corrected native `direct` profile. No new measurements are claimed here.
 
 Three samples per workflow/profile, Pi 1.0.1, DeepSeek V4.1 Flash MAX, default inline budget 3000.
 Matched before is the frozen installed nine-tool package, not the older eight-tool development tree.

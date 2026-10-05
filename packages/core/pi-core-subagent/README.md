@@ -317,6 +317,21 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 > **Ask urgency:** `ask_parent` takes `urgent` (default `false`). Both variants steer into the leader's current turn so the question is never deferred to the end of a long turn. `[URGENT]` tells the leader to answer before its next step; `[not urgent]` tells it that the child keeps waiting, so it may finish its current step first. Failures steer for the same reason; completions and aborts queue as follow-ups.
 
+## Tool exposure and opt-in codemode
+
+Default: **legacy direct calls**, even when the codemode tool is active. Active helpers remain
+model-visible and retain native script-call compatibility. Explicit global `codemode.mode: "only"`
+still applies Pi\'s global script-only policy; this extension does not override it.
+
+- `/subagents mode` — show preference and effective profile.
+- `/subagents mode auto` — opt in to script-based routing while codemode is active; direct otherwise.
+- `/subagents mode codemode` — explicitly select script-based routing (direct fallback when unavailable).
+- `/subagents mode direct` — return to legacy direct behavior.
+
+Choice is stored per session branch. New sessions/branches without a preference start direct;
+existing explicit choices remain intact. Published 1.3.63 defaulted to `auto`: this compatibility
+correction requires the corrected source/package, not a retroactive change to that npm release.
+
 ## Commands
 
 - `/subagents` — list runs; `/subagents peek` (or `ctrl+shift+a`) — browsable pane

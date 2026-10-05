@@ -336,6 +336,7 @@ return {
 
 	test("a live child survives a mode switch and still completes", async () => {
 		const h = await harness({ codemode: "on", inlineBudget: 3000 });
+		await h.session.prompt("/subagents mode auto");
 		let childTurn = 0;
 		await prime(h, 24, (context) => {
 			if (isChildRequest(context)) {
@@ -360,7 +361,7 @@ return {
 		expect(exposuresOf(h)).toEqual(BASELINE_OPERATIONS.map(() => "deferred"));
 
 		await h.session.prompt("/subagents mode direct");
-		expect(exposuresOf(h)).toEqual(BASELINE_OPERATIONS.map(() => "model-only"));
+		expect(exposuresOf(h)).toEqual(BASELINE_OPERATIONS.map(() => "direct"));
 
 		await h.session.prompt("answer the child");
 		await waitFor(() => JSON.stringify(h.session.messages).includes("SURVIVED_OK"));
