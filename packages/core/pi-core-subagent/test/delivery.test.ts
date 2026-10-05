@@ -31,24 +31,31 @@ describe("failure and ask notices steer, everything else queues", () => {
 		const run = { id: "run_x", mode: "parallel", status: kind, tasks: [base] } as unknown as RunSnapshot;
 		const manager = new SubagentManager(pi) as unknown as {
 			notifyTask: (run: RunSnapshot, task: TaskSnapshot, kind: Kind) => void;
+			outbox: Map<string, { deliverAs: string }>;
 		};
 		manager.notifyTask(run, base, kind);
-		return sent[0];
+		return { sent: sent[0], held: [...manager.outbox.values()][0] };
 	}
 
 	test("a task that died mid-work steers, so the leader stops instead of using a broken result", () => {
-		const notice = capture({ finalText: "half done", error: "429 rate limited" }, "failed");
+		const notice = capture({ finalText: "half done", error: "429 rate limited" }, "failed").sent;
 		expect(notice?.deliverAs).toBe("steer");
 		expect(notice?.body).toContain("resume_subagent");
 	});
 
 	test("a never-started task steers too (config error repeats on every respawn)", () => {
-		expect(capture({ finalText: "", error: "Model not found: nope/x" }, "failed")?.deliverAs).toBe("steer");
+		expect(capture({ finalText: "", error: "Model not found: nope/x" }, "failed").sent?.deliverAs).toBe("steer");
 	});
 
-	test("completed and aborted stay queued as follow-ups", () => {
-		expect(capture({ finalText: "done" }, "completed")?.deliverAs).toBe("followUp");
-		expect(capture({ error: "cancelled" }, "aborted")?.deliverAs).toBe("followUp");
+	test("completed and aborted are held for the next delivery boundary as follow-ups", () => {
+		for (const [kind, task] of [
+			["completed", { finalText: "done" }],
+			["aborted", { error: "cancelled" }],
+		] as const) {
+			const captured = capture(task, kind);
+			expect(captured.sent).toBeUndefined();
+			expect(captured.held?.deliverAs).toBe("followUp");
+		}
 	});
 
 	function captureAsk(extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean }) {

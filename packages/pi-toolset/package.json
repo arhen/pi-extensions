@@ -1,8 +1,8 @@
 {
   "name": "@arhen/pi-toolset",
-  "version": "1.0.93",
+  "version": "1.0.94",
   "type": "module",
-  "description": "Manage all @arhen/pi-* extensions dynamically: install the core set, add additional ones, update, remove.",
+  "description": "Manage all @arhen/pi-* extensions dynamically: install the whole family (core + add-ons), update, remove, list.",
   "license": "MIT",
   "bin": {
     "pi-toolset": "./pi-toolset"

@@ -208,6 +208,9 @@ function worktreeLine(task: TaskSnapshot, siblings?: TaskSnapshot[]): string {
 }
 
 export function makeSummary(run: RunSnapshot): string {
+	return makeSummaryWithCoverage(run).text;
+}
+export function makeSummaryWithCoverage(run: RunSnapshot): { text: string; coveredTaskIds: Set<string> } {
 	const succeeded = run.tasks.filter((t) => t.status === "completed").length;
 	const failed = run.tasks.filter((t) => t.status === "failed").length;
 	const aborted = run.tasks.filter((t) => t.status === "aborted").length;
@@ -217,6 +220,7 @@ export function makeSummary(run: RunSnapshot): string {
 	];
 	const usage = formatUsage(run.aggregateUsage);
 	if (usage) lines.push(`Usage: ${usage}`);
+	const taskEnds = new Map<string, number>();
 	for (const task of run.tasks) {
 		const edge = task.needs?.length ? ` (${task.id}, needs ${task.needs.join(", ")})` : ` (${task.id})`;
 		const fileNote = task.agentFile ? ` [${task.agentFile}]` : "";
@@ -225,9 +229,14 @@ export function makeSummary(run: RunSnapshot): string {
 		lines.push(
 			`\n## ${task.agent}${edge}${fileNote} ${statusIcon(task.status)}${swap}${tools}${task.error ? `\nError: ${task.error}` : `\n${truncateText(task.finalText || "(no output)")}`}${worktreeLine(task, run.tasks)}`,
 		);
+		taskEnds.set(task.id, lines.join("\n").length);
 	}
 
-	return truncateText(lines.join("\n"));
+	const fullText = lines.join("\n");
+	const text = truncateText(fullText);
+	let prefix = 0;
+	while (prefix < fullText.length && prefix < text.length && fullText[prefix] === text[prefix]) prefix++;
+	return { text, coveredTaskIds: new Set([...taskEnds].filter(([, end]) => end <= prefix).map(([id]) => id)) };
 }
 export function isStartupFailure(task: TaskSnapshot, kind: string): boolean {
 	return kind === "failed" && !task.finalText?.trim();
@@ -244,13 +253,16 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 	const tools = task.toolsNote ? `\nTools: ${task.toolsNote}` : "";
 	return [
 		`Task ${task.agent} (${task.id}) ${kind} in run ${run.id}: ${detail}${wt}`,
-		`Goal: ${goal}${src}${swap}${tools}`,
+		`Goal: ${goal}${src}${swap}${tools}${task.worktreeError ? `\nWorktree: ${task.worktreeError}` : ""}`,
 		isStartupFailure(task, kind)
 			? "Never started — stop and diagnose before spawning anything else: a config-level error (model, plan, auth, agent file) fails identically on every respawn."
 			: kind === "completed"
 				? `Use subagent_result({ runId: "${run.id}", taskId: "${task.id}" }) for full output.`
 				: `Session file kept — resume_subagent({ runId: "${run.id}", taskId: "${task.id}", model?: ... }) revives it with full context. subagent_result for what it produced so far.`,
 	].join("\n");
+}
+export function makeTaskArtifactNotice(run: RunSnapshot, task: TaskSnapshot): string {
+	return `Task ${task.agent} (${task.id}) completed in run ${run.id}; result already delivered.${worktreeLine(task, run.tasks)}\nUse subagent_result({ runId: "${run.id}", taskId: "${task.id}" }) for artifacts.`;
 }
 export function makeAskNotice(
 	run: RunSnapshot,
@@ -263,12 +275,14 @@ export function makeAskNotice(
 		: `[not urgent] Subagent ${who} asks: ${extra.question ?? ""}\nIt waits while you keep working — finish your current step first if you want, then answer with ${reply}.`;
 }
 
-export function makeNotice(run: RunSnapshot, kind: string): string {
+export function makeNotice(run: RunSnapshot, kind: string, tasks = run.tasks): string {
 	const lines = [
 		`Background subagent run ${run.id} ${kind}: ${run.tasks.filter((t) => t.status === "completed").length}/${run.tasks.length} succeeded.`,
 	];
-	for (const task of run.tasks) {
-		lines.push(`- ${task.agent}: ${task.status}${task.error ? ` — ${truncateText(task.error, 200)}` : ""}`);
+	for (const task of tasks) {
+		lines.push(
+			`- ${task.agent}: ${task.status}${task.error ? ` — ${truncateText(task.error, 200)}` : ""}${worktreeLine(task, run.tasks)}`,
+		);
 	}
 	lines.push(`Use subagent_result({ runId: "${run.id}" }) for full output.`);
 	return lines.join("\n");

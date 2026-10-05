@@ -27,10 +27,10 @@ import {
 	activitySnippet,
 	describeCall,
 	getFirstText,
-	isStartupFailure,
 	isTalking,
 	makeAskNotice,
 	makeNotice,
+	makeTaskArtifactNotice,
 	makeTaskNotice,
 	SubagentsWidget,
 	truncateText,
@@ -38,6 +38,7 @@ import {
 import { applyUpstream, resolveNeeds, runWaveScheduler } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
 import { chooseModel, resolveChildModel } from "./models.ts";
+import { artifactFingerprint, outcomeFingerprint, textFingerprint } from "./notification-state.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
 import {
 	MAX_TASKS,
@@ -77,6 +78,12 @@ const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "cod
 const WRITE_CAPABLE = ["bash", "edit", "write"];
 const SAFE_TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const WIDGET_THROTTLE_MS = 150;
+/** A submitted notice missing from the canonical context this long is treated as lost. */
+const RECEIPT_GRACE_MS = 3_000;
+/** Minimum wait before retrying a failed submission, so one flush cannot burn every attempt. */
+const RETRY_BACKOFF_MS = 1_000;
+/** Total submission attempts before a notice is declared lost. */
+const MAX_DELIVERY_ATTEMPTS = 3;
 
 function newId(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -291,6 +298,36 @@ export interface ParkedMsg {
 	taskId: string;
 	agent: string;
 	text: string;
+	final?: boolean;
+}
+
+interface LeaderMessageReceipt {
+	runId: string;
+	taskIds: string[];
+	kind: "update" | "final" | "terminal";
+	deliverAs: "steer" | "followUp";
+	delivered: boolean;
+	submitted: boolean;
+	lost: boolean;
+	submittedAt: number;
+	attempts: number;
+	/** Agent runs started when this receipt was submitted; a later run is needed to prove loss. */
+	submittedRunCount: number;
+}
+
+interface OutboxEntry {
+	runId: string;
+	taskIds: string[];
+	kind: "update" | "final" | "terminal";
+	deliverAs: "steer" | "followUp";
+	attempts?: number;
+	attemptedAt?: number;
+}
+
+interface TerminalNotice {
+	body: string;
+	fingerprint: string;
+	delivery: "pending" | "received" | "lost";
 }
 
 export class SubagentManager {
@@ -313,6 +350,17 @@ export class SubagentManager {
 	private persistChain: Promise<unknown> = Promise.resolve();
 	private readonly instanceNonce = Math.random().toString(36).slice(2, 8);
 	private cleared = false;
+	private leaderMessages = new Map<string, LeaderMessageReceipt>();
+	private outbox = new Map<string, OutboxEntry>();
+	private parkedBodies = new Map<string, Set<string>>();
+	private agentRunCount = 0;
+	private terminalNotices = new Map<string, TerminalNotice>();
+	private awaitedTaskNotices = new Map<string, string>();
+	private pendingTaskNotices = new Map<string, { run: RunSnapshot; task: TaskSnapshot }>();
+	private pendingRunNotices = new Map<string, RunSnapshot>();
+	private notificationRetries = new Set<string>();
+	private notificationFlushTimer: ReturnType<typeof setTimeout> | undefined;
+	private notificationContext: ExtensionContext | undefined;
 
 	private autoLimit = false;
 
@@ -384,6 +432,17 @@ export class SubagentManager {
 			pending.resolve("(session ended — stop work immediately)");
 		}
 		this.parked.clear();
+		this.leaderMessages.clear();
+		this.outbox.clear();
+		this.parkedBodies.clear();
+		this.terminalNotices.clear();
+		this.awaitedTaskNotices.clear();
+		this.pendingTaskNotices.clear();
+		this.pendingRunNotices.clear();
+		this.notificationRetries.clear();
+		if (this.notificationFlushTimer) clearTimeout(this.notificationFlushTimer);
+		this.notificationFlushTimer = undefined;
+		this.notificationContext = undefined;
 
 		this.liveWorktrees.clear();
 		this.runs.clear();
@@ -483,27 +542,511 @@ export class SubagentManager {
 		this.pi.events.emit(type, { type, timestamp: Date.now(), ...payload });
 	}
 
-	private deliverMode(kind: string, task: TaskSnapshot): "steer" | "followUp" {
-		// failures interrupt the leader's turn: it must decide immediately (resume, swap model, respawn)
-		// instead of finding out after its own turn ended. Aborts are user-initiated, so they queue.
-		return kind === "failed" || isStartupFailure(task, kind) ? "steer" : "followUp";
+	private finalReportMatches(task: TaskSnapshot): boolean {
+		const report = task.finalParentReport;
+		if (!report || report.toolCalls !== task.toolCalls) return false;
+		const fingerprint = task.finalTextFingerprint ?? textFingerprint(task.finalText ?? "");
+		return report.fingerprint === fingerprint;
+	}
+
+	private hasArtifactDelta(task: TaskSnapshot): boolean {
+		return artifactFingerprint(task) !== task.finalParentReport?.artifacts;
+	}
+
+	private leaderMessageText(content: unknown): string {
+		return typeof content === "string"
+			? content
+			: Array.isArray(content)
+				? content
+						.filter((part) => part?.type === "text")
+						.map((part) => part.text ?? "")
+						.join("\n")
+				: "";
+	}
+
+	/**
+	 * One pass over the finalized leader projection. Returns undefined when the pinned pi build
+	 * cannot project (never treat that as loss, or every receipt would be replayed).
+	 */
+	private projectionBody(ctx: ExtensionContext): string | undefined {
+		try {
+			const manager = ctx.sessionManager as unknown as {
+				buildSessionProjection?: () => { messages: readonly { role?: string; content?: unknown }[] };
+			};
+			if (typeof manager.buildSessionProjection !== "function") return undefined;
+			const messages = manager.buildSessionProjection().messages;
+			const parts: string[] = [];
+			for (const message of messages) {
+				if (message.role !== "user" && message.role !== "custom") continue;
+				parts.push(this.leaderMessageText(message.content));
+			}
+			return parts.join("\n");
+		} catch {
+			return undefined;
+		}
+	}
+
+	/** An agent run started; a receipt can only be declared lost after one full later run. */
+	noteAgentStart(): void {
+		this.agentRunCount += 1;
+	}
+
+	/** True when a terminal await already rendered this task's outcome. */
+	private coveredByAwait(runId: string, taskId: string, fingerprint: string): boolean {
+		return this.awaitedTaskNotices.get(`${runId}:${taskId}`) === fingerprint;
+	}
+
+	/** Record what a terminal await actually rendered, so held notices are dropped instead of echoed. */
+	markAwaitCoverage(run: RunSnapshot, coveredTaskIds?: ReadonlySet<string>): void {
+		for (const task of run.tasks) {
+			if (!TERMINAL.includes(task.status)) continue;
+			if (coveredTaskIds && !coveredTaskIds.has(task.id)) continue;
+			const scope = `${run.id}:${task.id}`;
+			this.awaitedTaskNotices.set(scope, outcomeFingerprint(task));
+			this.pendingTaskNotices.delete(scope);
+		}
+		for (const [body, entry] of [...this.outbox]) {
+			if (entry.runId !== run.id) continue;
+			if (!this.outboxCovered(entry)) continue;
+			const task = run.tasks.find((t) => t.id === entry.taskIds[0]);
+			// An update is not part of the rendered summary; only terminal/aggregate entries are safe to drop.
+			if (entry.kind === "update") continue;
+			if (entry.kind === "final" && (!task || !this.finalReportMatches(task))) continue;
+			this.dropOutbox(body, entry, "awaited");
+		}
+	}
+
+	private outboxCovered(entry: OutboxEntry): boolean {
+		const run = this.runs.get(entry.runId);
+		if (!run) return false;
+		return entry.taskIds.every((taskId) => {
+			const task = run.tasks.find((t) => t.id === taskId);
+			if (!task || !TERMINAL.includes(task.status)) return false;
+			return this.coveredByAwait(entry.runId, taskId, outcomeFingerprint(task));
+		});
+	}
+
+	private dropOutbox(body: string, entry: OutboxEntry, delivery: string): void {
+		this.outbox.delete(body);
+		const task = this.runs.get(entry.runId)?.tasks.find((t) => t.id === entry.taskIds[0]);
+		if (entry.kind === "final" && task?.finalParentReport?.body === body) task.finalParentReport.delivery = "awaited";
+		if (entry.kind === "terminal") {
+			for (const taskId of entry.taskIds) {
+				const notice = this.terminalNotices.get(`${entry.runId}:${taskId}`);
+				if (notice?.body === body) notice.delivery = "received";
+			}
+		}
+		this.emit("subagent:notification", {
+			runId: entry.runId,
+			taskId: entry.taskIds[0],
+			kind: "completed",
+			body: "",
+			suppressed: true,
+			delivery,
+		});
+	}
+
+	private enqueueNotification(body: string, entry: OutboxEntry, ctx?: ExtensionContext): void {
+		this.outbox.set(body, entry);
+		const flushContext = ctx ?? this.notificationContext;
+		if (flushContext) this.scheduleNotificationFlush(flushContext);
+	}
+
+	private noteTerminal(runId: string, taskId: string, body: string, fingerprint: string): void {
+		this.terminalNotices.set(`${runId}:${taskId}`, { body, fingerprint, delivery: "pending" });
+	}
+
+	private submitLeaderReport(
+		run: RunSnapshot,
+		task: TaskSnapshot,
+		message: string,
+		level: "info" | "warning" | "error",
+		final: boolean,
+		ctx: ExtensionContext,
+	): boolean {
+		if (this.cleared) return false;
+		this.notificationContext = ctx;
+		const body = `[Subagent ${task.agent} (${task.id}, ${run.id})]${final ? " Final result:" : ""}${level === "info" ? "" : ` [${level}]`} ${message}`;
+		const previous = this.leaderMessages.get(body);
+		if ((previous && !previous.lost) || this.outbox.has(body)) {
+			if (final) {
+				task.finalParentReport = {
+					body,
+					message,
+					toolCalls: task.toolCalls,
+					fingerprint: textFingerprint(message),
+					artifacts: artifactFingerprint(task),
+					delivery: previous?.delivered ? "message" : "pending",
+				};
+			}
+			return true;
+		}
+		if (previous?.lost) this.leaderMessages.delete(body);
+		const report: TaskSnapshot["finalParentReport"] = final
+			? {
+					body,
+					message,
+					toolCalls: task.toolCalls,
+					fingerprint: textFingerprint(message),
+					artifacts: artifactFingerprint(task),
+					delivery: "pending",
+				}
+			: undefined;
+		if (report) task.finalParentReport = report;
+		this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message, final });
+		if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text: message, final })) {
+			let parked = this.parkedBodies.get(run.id);
+			if (!parked) {
+				parked = new Set();
+				this.parkedBodies.set(run.id, parked);
+			}
+			if (parked.has(body)) return true;
+			parked.add(body);
+			task.notifiedParent = true;
+			if (report) report.delivery = "parked";
+			return true;
+		}
+		this.enqueueNotification(body, {
+			runId: run.id,
+			taskIds: [task.id],
+			kind: final ? "final" : "update",
+			deliverAs: "followUp",
+		});
+		return true;
+	}
+
+	private hasPendingSuccessMessages(run: RunSnapshot): boolean {
+		return run.tasks.some((task) => {
+			const notice = this.terminalNotices.get(`${run.id}:${task.id}`);
+			if (notice?.delivery !== "pending") return false;
+			const receipt = this.leaderMessages.get(notice.body);
+			return receipt ? !receipt.delivered && !receipt.lost : this.outbox.has(notice.body);
+		});
+	}
+
+	confirmLeaderMessages(ctx: ExtensionContext): void {
+		if (this.cleared) return;
+		const projection = this.projectionBody(ctx);
+		let changed = false;
+		for (const [body, receipt] of [...this.leaderMessages]) {
+			if (receipt.delivered || receipt.lost || projection === undefined || !projection.includes(body)) continue;
+			receipt.delivered = true;
+			changed = true;
+			const run = this.runs.get(receipt.runId);
+			for (const taskId of receipt.taskIds) {
+				const task = run?.tasks.find((t) => t.id === taskId);
+				if (!task) continue;
+				task.notifiedParent = true;
+				if (task.finalParentReport?.body === body) task.finalParentReport.delivery = "message";
+				const key = `${receipt.runId}:${taskId}`;
+				const notice = this.terminalNotices.get(key);
+				if (notice?.body === body) notice.delivery = "received";
+				const pending = this.pendingTaskNotices.get(key);
+				if (pending && this.finalReportMatches(task)) {
+					this.pendingTaskNotices.delete(key);
+					if (this.hasArtifactDelta(task)) this.notifyTask(pending.run, task, "completed");
+				}
+			}
+			if (run && !this.hasPendingSuccessMessages(run)) this.pendingRunNotices.delete(run.id);
+		}
+		if (changed) this.persist(ctx);
+		for (const [body, receipt] of this.leaderMessages) {
+			if (!receipt.delivered && !receipt.lost) continue;
+			const run = this.runs.get(receipt.runId);
+			const tasks = run?.tasks.filter((task) => receipt.taskIds.includes(task.id)) ?? [];
+			if (
+				tasks.length > 0 &&
+				tasks.every((task) => TERMINAL.includes(task.status) && !this.liveChildren.has(`${receipt.runId}:${task.id}`))
+			)
+				this.leaderMessages.delete(body);
+		}
+	}
+
+	/**
+	 * A submitted receipt that never appears in the canonical context after a grace period is lost.
+	 * The grace period keeps the check from racing Pi's input/auth/start hooks, which run before the
+	 * message is appended to the session and can be slow while the session still reports idle.
+	 */
+	private markLostReceipts(ctx: ExtensionContext, existing: ReadonlySet<string>): void {
+		const now = Date.now();
+		const projection = this.projectionBody(ctx);
+		if (projection === undefined) return;
+		for (const [body, receipt] of [...this.leaderMessages]) {
+			if (receipt.delivered || receipt.lost || !existing.has(body)) continue;
+			if (this.outbox.has(body)) continue;
+			if (now - receipt.submittedAt < RECEIPT_GRACE_MS) continue;
+			// A later agent run proves the submitted prompt had its turn; a message that never runs
+			// at all is caught by the longer bound. While a prompt is still queued or in preflight
+			// (deferred settle, slow input/auth hooks) the session can report idle without the
+			// message being appended yet, so the short window alone must not declare loss.
+			const laterRun = this.agentRunCount > receipt.submittedRunCount;
+			const longWait = now - receipt.submittedAt >= RECEIPT_GRACE_MS * 2;
+			if (!laterRun && !longWait) continue;
+			if (projection.includes(body)) continue;
+			if (receipt.attempts < MAX_DELIVERY_ATTEMPTS) {
+				this.leaderMessages.delete(body);
+				this.outbox.set(body, {
+					runId: receipt.runId,
+					taskIds: receipt.taskIds,
+					kind: receipt.kind,
+					deliverAs: receipt.deliverAs,
+					attempts: receipt.attempts,
+					attemptedAt: now,
+				});
+				continue;
+			}
+			receipt.lost = true;
+			for (const taskId of receipt.taskIds) {
+				const key = `${receipt.runId}:${taskId}`;
+				const notice = this.terminalNotices.get(key);
+				if (notice?.body === body) notice.delivery = "lost";
+				const task = this.runs.get(receipt.runId)?.tasks.find((t) => t.id === taskId);
+				if (task?.finalParentReport?.body === body) task.finalParentReport.delivery = "lost";
+			}
+			this.emit("subagent:notification", {
+				runId: receipt.runId,
+				taskId: receipt.taskIds[0],
+				kind: "completed",
+				body,
+				delivery: "lost",
+			});
+			// A lost final report must still reach the leader: per-task hold or a direct full fallback.
+			if (receipt.kind === "final") {
+				const run = this.runs.get(receipt.runId);
+				for (const taskId of receipt.taskIds) {
+					if (this.pendingTaskNotices.has(`${receipt.runId}:${taskId}`)) continue;
+					const task = run?.tasks.find((t) => t.id === taskId);
+					if (run && task) this.notifyTask(run, task, "completed");
+				}
+			}
+		}
+	}
+
+	private flushOutbox(): void {
+		for (const [body, entry] of [...this.outbox]) {
+			if (this.outboxCovered(entry)) {
+				this.dropOutbox(body, entry, "awaited");
+				continue;
+			}
+			if (entry.attemptedAt && Date.now() - entry.attemptedAt < RETRY_BACKOFF_MS) continue;
+			this.outbox.delete(body);
+			try {
+				this.pi.sendUserMessage(body, { deliverAs: entry.deliverAs });
+				this.leaderMessages.set(body, {
+					runId: entry.runId,
+					taskIds: entry.taskIds,
+					kind: entry.kind,
+					deliverAs: entry.deliverAs,
+					delivered: false,
+					submitted: true,
+					lost: false,
+					submittedAt: Date.now(),
+					attempts: (entry.attempts ?? 0) + 1,
+					submittedRunCount: this.agentRunCount,
+				});
+				if (entry.kind === "terminal") {
+					for (const taskId of entry.taskIds) {
+						const notice = this.terminalNotices.get(`${entry.runId}:${taskId}`);
+						if (notice?.body === body) notice.delivery = "pending";
+					}
+				}
+				this.emit("subagent:notification", {
+					runId: entry.runId,
+					taskId: entry.taskIds[0],
+					kind: "completed",
+					body,
+					delivery: "submitted",
+				});
+			} catch {
+				const attempts = (entry.attempts ?? 0) + 1;
+				if (attempts < MAX_DELIVERY_ATTEMPTS) {
+					this.outbox.set(body, { ...entry, attempts, attemptedAt: Date.now() });
+					continue;
+				}
+				this.emit("subagent:notification", {
+					runId: entry.runId,
+					taskId: entry.taskIds[0],
+					kind: "completed",
+					body,
+					delivery: "failed",
+				});
+			}
+		}
+	}
+
+	flushPendingNotifications(ctx: ExtensionContext): void {
+		const existing = new Set([...this.leaderMessages.keys(), ...this.outbox.keys()]);
+		this.confirmLeaderMessages(ctx);
+		if (this.cleared) return;
+		let idle = false;
+		try {
+			idle = ctx.isIdle() && !ctx.hasPendingMessages();
+		} catch {
+			idle = false;
+		}
+		if (idle) this.markLostReceipts(ctx, existing);
+		const outstandingReceipts = () =>
+			[...this.leaderMessages.values()].some((receipt) => !receipt.delivered && !receipt.lost);
+		if (!this.pendingTaskNotices.size && !this.pendingRunNotices.size && !this.outbox.size && !outstandingReceipts())
+			return;
+		if (idle) {
+			this.flushOutbox();
+			for (const [key, pending] of [...this.pendingTaskNotices]) {
+				const report = pending.task.finalParentReport;
+				if (report?.delivery === "lost") {
+					this.pendingTaskNotices.delete(key);
+					pending.task.finalParentReport = undefined;
+					this.notifyTask(pending.run, pending.task, "completed");
+					continue;
+				}
+				if (report?.delivery === "pending") {
+					const outstanding = this.leaderMessages.has(report.body) || this.outbox.has(report.body);
+					if (outstanding) continue;
+					this.pendingTaskNotices.delete(key);
+					pending.task.finalParentReport = undefined;
+					this.notifyTask(pending.run, pending.task, "completed");
+					continue;
+				}
+				this.pendingTaskNotices.delete(key);
+				if (report && this.finalReportMatches(pending.task) && this.hasArtifactDelta(pending.task))
+					this.notifyTask(pending.run, pending.task, "completed");
+			}
+			for (const [key, run] of [...this.pendingRunNotices]) {
+				const notices = run.tasks
+					.map((task) => this.terminalNotices.get(`${run.id}:${task.id}`))
+					.filter((notice): notice is TerminalNotice => Boolean(notice));
+				const waiting = notices.some((notice) => {
+					const receipt = this.leaderMessages.get(notice.body);
+					return notice.delivery === "pending" && (!receipt || (!receipt.delivered && !receipt.lost));
+				});
+				if (waiting) continue;
+				this.pendingRunNotices.delete(key);
+				const lost = notices.some((notice) => notice.delivery === "lost");
+				if (!lost || this.notificationRetries.has(run.id)) continue;
+				this.notificationRetries.add(run.id);
+				this.notifyParent(run, run.status === "aborted" ? "aborted" : run.status === "failed" ? "failed" : "completed");
+			}
+			this.flushOutbox();
+		}
+		// Anything still unresolved (including a retry backoff) must be revisited without unrelated activity.
+		this.scheduleNotificationFlush(ctx, RETRY_BACKOFF_MS);
+	}
+
+	scheduleNotificationFlush(ctx: ExtensionContext, delayMs = 100): void {
+		if (
+			this.notificationFlushTimer ||
+			this.cleared ||
+			(!this.pendingTaskNotices.size &&
+				!this.pendingRunNotices.size &&
+				!this.outbox.size &&
+				![...this.leaderMessages.values()].some((receipt) => !receipt.delivered && !receipt.lost))
+		)
+			return;
+		this.notificationFlushTimer = setTimeout(() => {
+			this.notificationFlushTimer = undefined;
+			this.flushPendingNotifications(ctx);
+		}, delayMs);
+		this.notificationFlushTimer.unref?.();
 	}
 
 	private notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: "completed" | "failed" | "aborted"): void {
-		// ponytail: child already pushed its summary via notify_parent — pointer only, no second copy. Upgrade: drop notice entirely if the pointer noise also proves useless.
-		const body =
-			kind === "completed" && task.notifiedParent
-				? `Task ${task.agent} (${task.id}) completed in run ${run.id} — summary already reported. Use subagent_result(runId: "${run.id}", taskId: "${task.id}") for full output.`
-				: makeTaskNotice(run, task, kind);
-
-		if (this.collectParked(run.id, { kind: "done", taskId: task.id, agent: task.agent, text: body })) {
-			this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body });
+		const key = `${run.id}:${task.id}`;
+		const outcome = outcomeFingerprint(task);
+		const final = kind === "completed" && this.finalReportMatches(task);
+		const report = task.finalParentReport;
+		if (final && report?.delivery === "pending") {
+			this.pendingTaskNotices.set(key, { run, task });
+			if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext);
+			this.emit("subagent:notification", {
+				runId: run.id,
+				taskId: task.id,
+				kind,
+				body: "",
+				suppressed: true,
+				delivery: "pending",
+			});
 			return;
 		}
-		try {
-			this.pi.sendUserMessage(body, { deliverAs: this.deliverMode(kind, task) });
-		} catch {}
-		this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body });
+		if (
+			final &&
+			report &&
+			report.delivery !== "lost" &&
+			report.delivery !== "pending" &&
+			!this.hasArtifactDelta(task)
+		) {
+			this.emit("subagent:notification", {
+				runId: run.id,
+				taskId: task.id,
+				kind,
+				body: "",
+				suppressed: true,
+				delivery: report.delivery,
+			});
+			return;
+		}
+		const covered = this.terminalNotices.get(key);
+		if (covered?.fingerprint === outcome && covered.delivery !== "lost") {
+			this.emit("subagent:notification", {
+				runId: run.id,
+				taskId: task.id,
+				kind,
+				body: "",
+				suppressed: true,
+				delivery: covered.delivery,
+			});
+			return;
+		}
+		if (this.coveredByAwait(run.id, task.id, outcome)) {
+			this.emit("subagent:notification", {
+				runId: run.id,
+				taskId: task.id,
+				kind,
+				body: "",
+				suppressed: true,
+				delivery: "awaited",
+			});
+			return;
+		}
+		const artifactOnly = final && report?.delivery !== "lost";
+		const body = artifactOnly ? makeTaskArtifactNotice(run, task) : makeTaskNotice(run, task, kind);
+		if (this.collectParked(run.id, { kind: "done", taskId: task.id, agent: task.agent, text: body })) {
+			this.noteTerminal(run.id, task.id, body, outcome);
+			this.terminalNotices.get(key)!.delivery = "received";
+			this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body, delivery: "parked" });
+			return;
+		}
+		if (kind === "failed") {
+			this.noteTerminal(run.id, task.id, body, outcome);
+			try {
+				this.pi.sendUserMessage(body, { deliverAs: "steer" });
+				this.leaderMessages.set(body, {
+					runId: run.id,
+					taskIds: [task.id],
+					kind: "terminal",
+					deliverAs: "steer",
+					delivered: false,
+					submitted: true,
+					lost: false,
+					submittedAt: Date.now(),
+					attempts: 0,
+					submittedRunCount: this.agentRunCount,
+				});
+				this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body, delivery: "submitted" });
+				if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext, RECEIPT_GRACE_MS);
+			} catch {
+				this.terminalNotices.get(key)!.delivery = "lost";
+				this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body, delivery: "failed" });
+			}
+			return;
+		}
+		this.noteTerminal(run.id, task.id, body, outcome);
+		this.enqueueNotification(body, {
+			runId: run.id,
+			taskIds: [task.id],
+			kind: "terminal",
+			deliverAs: "followUp",
+		});
+		this.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body, delivery: "held" });
 	}
 
 	private notifyParent(
@@ -511,19 +1054,103 @@ export class SubagentManager {
 		kind: "completed" | "failed" | "aborted" | "asked",
 		extra?: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
 	): void {
-		if (kind !== "asked" && run.awaited) return;
-		// single-task completed run: the task notice already said everything (failure paths may not have notified per-task)
-		if (kind === "completed" && run.tasks.length === 1 && run.notifyPerTask) return;
-		const body = kind === "asked" ? makeAskNotice(run, extra ?? {}) : makeNotice(run, kind);
-		// asks steer: the leader sees the question during its turn and the urgent flag tells it whether to
-		// answer now or after the current step. Failures steer for the same reason — a broken result must
-		// not be consumed. Completions and aborts queue as follow-ups.
-		try {
-			this.pi.sendUserMessage(body, {
-				deliverAs: kind === "completed" || kind === "aborted" ? "followUp" : "steer",
+		if (kind !== "asked" && run.completionAwaited) return;
+		let tasks = run.tasks;
+		if (kind !== "asked") {
+			tasks = tasks.filter((task) => {
+				const key = `${run.id}:${task.id}`;
+				const outcome = outcomeFingerprint(task);
+				const covered = this.terminalNotices.get(key);
+				if (covered?.fingerprint === outcome && covered.delivery !== "lost") return false;
+				if (this.pendingTaskNotices.has(key)) return false;
+				if (this.coveredByAwait(run.id, task.id, outcome)) return false;
+				if (
+					kind === "completed" &&
+					task.finalParentReport?.delivery !== "lost" &&
+					this.finalReportMatches(task) &&
+					!this.hasArtifactDelta(task)
+				)
+					return false;
+				return true;
 			});
-		} catch {}
-		this.emit("subagent:notification", { runId: run.id, taskId: extra?.taskId, kind, body });
+			if (tasks.length === 0) {
+				if (!this.notificationRetries.has(run.id) && this.hasPendingSuccessMessages(run)) {
+					this.pendingRunNotices.set(run.id, run);
+					if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext);
+				}
+				this.emit("subagent:notification", { runId: run.id, kind, body: "", suppressed: true });
+				return;
+			}
+			// Aggregate-only mode has no per-task hold: keep a run-level watch so a pending report
+			// that later goes lost still produces a fallback.
+			if (
+				!this.notificationRetries.has(run.id) &&
+				!this.pendingRunNotices.has(run.id) &&
+				run.tasks.some((task) => task.finalParentReport?.delivery === "pending")
+			) {
+				this.pendingRunNotices.set(run.id, run);
+				if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext);
+			}
+		}
+		if (kind === "asked") {
+			const body = makeAskNotice(run, extra ?? {});
+			try {
+				this.pi.sendUserMessage(body, { deliverAs: "steer" });
+				this.emit("subagent:notification", { runId: run.id, taskId: extra?.taskId, kind, body, delivery: "submitted" });
+			} catch {
+				this.emit("subagent:notification", { runId: run.id, taskId: extra?.taskId, kind, body, delivery: "failed" });
+			}
+			return;
+		}
+		const body = makeNotice(run, kind, tasks);
+		const deliverAs = kind === "failed" ? "steer" : "followUp";
+		for (const task of tasks) this.noteTerminal(run.id, task.id, body, outcomeFingerprint(task));
+		if (deliverAs === "steer") {
+			try {
+				this.pi.sendUserMessage(body, { deliverAs });
+				this.leaderMessages.set(body, {
+					runId: run.id,
+					taskIds: tasks.map((t) => t.id),
+					kind: "terminal",
+					deliverAs,
+					delivered: false,
+					submitted: true,
+					lost: false,
+					submittedAt: Date.now(),
+					attempts: 0,
+					submittedRunCount: this.agentRunCount,
+				});
+				if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext, RECEIPT_GRACE_MS);
+			} catch {
+				for (const task of tasks) {
+					const notice = this.terminalNotices.get(`${run.id}:${task.id}`);
+					if (notice?.body === body) notice.delivery = "lost";
+				}
+			}
+			this.emit("subagent:notification", { runId: run.id, kind, body, delivery: "submitted" });
+			this.holdRunFallback(run, tasks);
+			return;
+		}
+		this.enqueueNotification(body, {
+			runId: run.id,
+			taskIds: tasks.map((t) => t.id),
+			kind: "terminal",
+			deliverAs,
+		});
+		this.emit("subagent:notification", { runId: run.id, kind, body, delivery: "held" });
+		this.holdRunFallback(run, tasks);
+	}
+
+	/** Keep one bounded retry for aggregates whose per-task receipts never arrived. */
+	private holdRunFallback(run: RunSnapshot, tasks: TaskSnapshot[]): void {
+		if (this.notificationRetries.has(run.id)) return;
+		const covered = tasks.filter((task) => {
+			const notice = this.terminalNotices.get(`${run.id}:${task.id}`);
+			return Boolean(notice && notice.body !== "");
+		});
+		if (covered.length === 0) return;
+		this.pendingRunNotices.set(run.id, run);
+		if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext);
 	}
 
 	private widgetTui: TUI | null = null;
@@ -630,6 +1257,7 @@ export class SubagentManager {
 	}
 
 	private makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): ChildHandlers {
+		this.notificationContext = ctx;
 		return {
 			onAskParent: async (_taskId, question, urgent) => {
 				if (TERMINAL.includes(task.status)) {
@@ -649,30 +1277,10 @@ export class SubagentManager {
 				this.updateTask(run, task, { status: "running" }, ctx);
 				return reply;
 			},
-			onNotifyParent: (_taskId, message, level) => {
-				this.emit("subagent:intercom", { runId: run.id, taskId: task.id, kind: "notify", level, message });
-				task.notifiedParent = true;
-
-				if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text: message })) return;
-				try {
-					this.pi.sendUserMessage(`[Subagent ${task.agent}] ${message}`, { deliverAs: "followUp" });
-				} catch {}
-			},
-			onSendMessage: (_taskId, to, text) => {
-				if (to === "leader") {
-					this.emit("subagent:intercom", {
-						runId: run.id,
-						taskId: task.id,
-						kind: "notify",
-						level: "info",
-						message: text,
-					});
-					if (this.collectParked(run.id, { kind: "notify", taskId: task.id, agent: task.agent, text })) return true;
-					try {
-						this.pi.sendUserMessage(`[Subagent ${task.agent}] ${text}`, { deliverAs: "followUp" });
-					} catch {}
-					return true;
-				}
+			onNotifyParent: (_taskId, message, level, final = false) =>
+				this.submitLeaderReport(run, task, message, level, final, ctx),
+			onSendMessage: (_taskId, to, text, final = false) => {
+				if (to === "leader") return this.submitLeaderReport(run, task, text, "info", final, ctx);
 
 				return this.mailboxes.send(`${run.id}:${task.id}`, `${run.id}:${to}`, text);
 			},
@@ -750,6 +1358,7 @@ export class SubagentManager {
 				const text = getFirstText(message);
 				if (text) {
 					task.finalText = truncateText(text);
+					task.finalTextFingerprint = textFingerprint(text);
 					task.lastActivity = activitySnippet(text);
 				}
 				state.pendingFailure = classifyFailure(message.stopReason, message.errorMessage);
@@ -908,7 +1517,7 @@ export class SubagentManager {
 			const worktreeNote = wt
 				? ` You work in an isolated git worktree (branch ${wt.branch})${task.stackedOn ? `, stacked on ${task.stackedOn} (its changes are already in your tree)` : ""}. Never run git commands that switch branches, create branches, or move the worktree (git switch/checkout/branch/worktree). The extension commits your changes when you finish. git status/diff are fine for inspecting your own changes. node_modules is a SHARED symlink to the main checkout: never install, upgrade, or delete dependencies (no npm/bun/yarn/pnpm install, no \`rm -rf node_modules\`) — those writes escape your worktree and damage the user's project. If the task truly needs a dependency change, edit the manifest only and say so in your answer.`
 				: "";
-			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has (set urgent: true only when nothing else can proceed while you wait); notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. An unanswered ask_parent times out after 10 minutes — proceed with your best judgment then. When your work is done, call notify_parent ONCE with a concise result summary — key findings, verdicts, file:line evidence — so the leader can start consuming your output before the run finishes.${worktreeNote}`;
+			const subagentInstruction = `You are running as a subagent. Your bash tool already executes in the project working directory — never prefix commands with \`cd\`. Do not call subagent/delegation tools unless the parent explicitly asks. Return a concise final answer. You MAY use ask_parent only when truly blocked on information only the parent has (set urgent: true only when nothing else can proceed while you wait); notify_parent for one-way updates; send_agent_message/poll_agent_messages to coordinate with siblings. Your mailbox address and siblings: ${task.roster ?? "(none)"}. Use the exact task ids (e.g. task_2) as send_agent_message targets. Siblings run independently and may start late or finish early — never block indefinitely on their replies: poll at most 5 times, then proceed with your best judgment. A gated sibling (marked ↳ waits in the graph) may not be running yet; do not wait for it. An unanswered ask_parent times out after 10 minutes — proceed with your best judgment then. When your work is done, call notify_parent ONCE with final: true and your complete concise result — key findings, verdicts, file:line evidence — as your last tool call. Repeat that exact message as your final answer; changing it or doing more tool work keeps a completion follow-up. Progress updates omit final. Identical updates to the leader are deduplicated.${worktreeNote}`;
 
 			const loader = new DefaultResourceLoader({
 				cwd: childCwd,
@@ -1014,12 +1623,22 @@ export class SubagentManager {
 			const finalText =
 				task.finalText ||
 				truncateText((child.messages as AssistantMessage[]).map(getFirstText).filter(Boolean).at(-1) || "");
+			// Prefer the fingerprint captured from the raw assistant text; never hash the 24-KiB-truncated copy.
+			const finalFingerprint =
+				task.finalTextFingerprint ??
+				textFingerprint((child.messages as AssistantMessage[]).map(getFirstText).filter(Boolean).at(-1) || finalText);
 
 			if (task.status === "awaiting_parent") {
 				this.pendingReplies.get(key)?.resolve("(your task is being finalized — stop work and return now)");
 			}
 			if (!TERMINAL.includes(task.status)) {
-				this.updateTask(run, task, { status: "completed", finalText, endedAt: Date.now() }, ctx, onUpdate);
+				this.updateTask(
+					run,
+					task,
+					{ status: "completed", finalText, finalTextFingerprint: finalFingerprint, endedAt: Date.now() },
+					ctx,
+					onUpdate,
+				);
 				if (wt) {
 					let committed: "committed" | "empty" | undefined;
 					try {
@@ -1075,11 +1694,9 @@ export class SubagentManager {
 				await Promise.race([child?.abort(), new Promise((r) => setTimeout(r, 5000))]);
 			} catch {}
 
-			const salvaged =
-				task.finalText ||
-				truncateText(
-					(child?.messages as AssistantMessage[] | undefined)?.map(getFirstText).filter(Boolean).at(-1) || "",
-				);
+			const salvageText =
+				(child?.messages as AssistantMessage[] | undefined)?.map(getFirstText).filter(Boolean).at(-1) || "";
+			const salvaged = task.finalText || truncateText(salvageText);
 			this.updateTask(
 				run,
 				task,
@@ -1087,6 +1704,7 @@ export class SubagentManager {
 					status: aborted ? "aborted" : ((subagentStatus as TaskStatus) ?? "failed"),
 					error: err instanceof Error ? err.message : String(err),
 					finalText: salvaged || undefined,
+					finalTextFingerprint: task.finalTextFingerprint ?? (salvageText ? textFingerprint(salvageText) : undefined),
 					endedAt: Date.now(),
 				},
 				ctx,
@@ -1459,14 +2077,46 @@ export class SubagentManager {
 			error: undefined,
 			endedAt: undefined,
 			finalText: undefined,
+			finalTextFingerprint: undefined,
 			notifiedParent: false,
+			finalParentReport: undefined,
 			diffStat: undefined,
 			changedFiles: undefined,
 			worktreeError: undefined,
 		});
+		const scope = `${run.id}:${task.id}`;
+		this.terminalNotices.delete(scope);
+		this.pendingTaskNotices.delete(scope);
+		this.pendingRunNotices.delete(run.id);
+		this.notificationRetries.delete(run.id);
+		for (const [body, receipt] of this.leaderMessages) {
+			if (receipt.runId !== run.id || !receipt.taskIds.includes(task.id)) continue;
+			if (receipt.taskIds.length === 1) {
+				this.leaderMessages.delete(body);
+				continue;
+			}
+			// A shared aggregate stays for its remaining tasks; the resumed task's slice is published
+			// again by the run's next settle.
+			receipt.taskIds = receipt.taskIds.filter((id) => id !== task.id);
+		}
+		for (const [body, entry] of this.outbox) {
+			if (entry.runId !== run.id || !entry.taskIds.includes(task.id)) continue;
+			if (entry.taskIds.length === 1) {
+				this.outbox.delete(body);
+				continue;
+			}
+			this.outbox.delete(body);
+			for (const otherId of entry.taskIds) {
+				if (otherId === task.id) continue;
+				const notice = this.terminalNotices.get(`${run.id}:${otherId}`);
+				if (notice) notice.delivery = "lost";
+			}
+		}
+		this.awaitedTaskNotices.delete(scope);
 		run.status = "running";
 		run.endedAt = undefined;
 		run.awaited = false;
+		run.completionAwaited = false;
 		this.settlers.set(run.id, true);
 		this.runControllers.set(run.id, new AbortController());
 		for (const t of run.tasks) this.mailboxes.open(`${run.id}:${t.id}`);
@@ -1579,7 +2229,11 @@ export class SubagentManager {
 		this.settlers.delete(runId);
 		const waiters = this.settleWaiters.get(runId);
 		this.settleWaiters.delete(runId);
-		if (!waiters) return;
+		if (!waiters?.size) return;
+		if (this.parked.get(runId)?.size) {
+			run.awaited = true;
+			run.completionAwaited = true;
+		}
 		const snapshot = cloneRun(run);
 		for (const waiter of waiters) waiter(snapshot);
 	}
@@ -1625,6 +2279,7 @@ export class SubagentManager {
 		};
 		if (TERMINAL.includes(run.status)) {
 			run.awaited = true;
+			run.completionAwaited = true;
 			return Promise.resolve({ run: cloneRun(run), intercom: [] });
 		}
 		const msgs: ParkedMsg[] = [];
@@ -1654,7 +2309,10 @@ export class SubagentManager {
 				settled.then((r) => {
 					finish();
 
-					if (!timedOut) run.awaited = true;
+					if (!timedOut) {
+						run.awaited = true;
+						if (r && TERMINAL.includes(r.status)) run.completionAwaited = true;
+					}
 					return { run: r, intercom: msgs };
 				}),
 				new Promise<{ run: RunSnapshot | undefined; intercom: ParkedMsg[] } | undefined>((resolve) => {
@@ -1670,6 +2328,7 @@ export class SubagentManager {
 		return settled.then((r) => {
 			finish();
 			run.awaited = true;
+			if (r && TERMINAL.includes(r.status)) run.completionAwaited = true;
 			return { run: r, intercom: msgs };
 		});
 	}

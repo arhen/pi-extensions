@@ -30,7 +30,16 @@ export interface TaskSnapshot {
 	toolCalls: number;
 	lastActivity?: string;
 	finalText?: string;
+	finalTextFingerprint?: string;
 	notifiedParent?: boolean;
+	finalParentReport?: {
+		body: string;
+		message: string;
+		toolCalls: number;
+		fingerprint?: string;
+		artifacts?: string;
+		delivery: "pending" | "message" | "parked" | "lost" | "awaited";
+	};
 	error?: string;
 	model?: string;
 	provider?: string;
@@ -62,6 +71,7 @@ export interface RunSnapshot {
 	tasks: TaskSnapshot[];
 	aggregateUsage: UsageStats;
 	awaited?: boolean;
+	completionAwaited?: boolean;
 }
 
 export interface RunDetails {

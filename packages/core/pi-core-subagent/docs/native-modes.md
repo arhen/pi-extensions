@@ -58,6 +58,12 @@ operation below follows the active mode:
 | `resume_subagent` | revive a failed/aborted task with its context and branch |
 | `subagent_cancel` | abort a run and kill its children |
 
+## Leader notifications
+
+Both profiles use the same [notification policy](notification-policy.md): identical leader updates
+coalesce, explicit received final reports suppress redundant success follow-ups, and new results,
+artifacts, failures and questions remain visible. Queue acceptance is not model-consumption evidence.
+
 ## Model discovery and precedence
 
 `subagent_models` follows the active profile like every other operation and preserves the installed

@@ -1,7 +1,7 @@
 # @arhen/pi-core-subagent
 
 [![npm version](https://img.shields.io/npm/v/%40arhen%2Fpi-core-subagent?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-core-subagent)
-[![CI](https://img.shields.io/github/actions/workflow/status/arhen/pi-core-subagent/ci.yml?branch=main&logo=github&label=CI)](https://github.com/arhen/pi-core-subagent/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/arhen/pi-extensions/pi-core-subagent.yml?branch=main&logo=github&label=CI)](https://github.com/arhen/pi-extensions/actions/workflows/pi-core-subagent.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://github.com/earendil-works/pi)
 
@@ -82,7 +82,7 @@ The dotted arrows are the whole point: a child may burn 200k tokens reading file
 
 ## Usage — the leader invents the agents
 
-Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: explicit `model` → agent-file `model` (validated against the pi model registry) → the parent's current model → settings default.
+Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: explicit `model` → agent-file `model` (validated against the pi model registry) → the parent's current model → settings default. Any model that is not the session model is preflight-probed; if the provider rejects it, the task falls back to the session model and the result carries a `Model:` note.
 
 ```json
 {
@@ -133,7 +133,7 @@ You are a strict API reviewer. Check auth, rate limiting, and error handling. Ci
 1. `.agents/agents/` then `.claude/agents/` then `.pi/agents/` in each directory from the task `cwd` up to the filesystem root (nearest ancestor wins).
 2. Home: `~/.agents/agents/` (single source) → `~/.claude/agents/` → `~/.pi/agents/`.
 
-Within a directory the file with the highest description-overlap score wins (≥2 shared meaningful tokens). A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). Files without a `description` frontmatter never match.
+Within a directory the file with the highest description-overlap score wins (≥2 shared meaningful tokens and ≥40% coverage of the shorter token set). A file `model` is validated against the pi model registry (unknown model fails the task with a catalog message). File bodies are capped at 64,000 characters. Files without a `description` frontmatter never match.
 
 ## Worktree isolation (write agents)
 
@@ -184,7 +184,6 @@ The call line renders the graph in §2 notation as the model types it:
 
 ```
 subagent graph 3
-  6 at a time
   wave1[api ∥ db] → gate → wave2[doc]
   api api-mapper Map every route in src/api/
   db  db-mapper Map the schema in src/db/
@@ -292,7 +291,7 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 |---|---|
 | `subagent_models` | list the models a subagent task may name, each with the exact `model` value, thinking levels the runtime honors, context window, and catalog price; scoped to the session's enabled set when scoping is configured, else the full available catalogue (the output says which) |
 | `subagent` | single / `tasks` (parallel or graph via `needs`) / `chain` (`{previous}`); every run is background — returns a runId, completion notifies you; `autoAwait:true` parks the call until the run finishes and returns the final result inline; children always carry talk tools (ask/notify/mailbox); `notifyPerTask` (default true) wakes you as each task completes |
-| `subagent_status` | live per-task snapshot (non-blocking), including each child's session file path |
+| `subagent_status` | live per-task snapshot (non-blocking), including each child's session file path; call it once right after spawning — a child that died on spawn is invisible until far later otherwise |
 | `subagent_result` | full output of a run or one task |
 | `await_subagent` | block until a run finishes (optional `timeoutMs`) |
 | `reply_subagent` | answer a child's `ask_parent` question |
@@ -302,20 +301,20 @@ Background (default) + intercom — the run returns a runId immediately; you sta
 
 ### Per-task fields
 
-`agent` (name you invent — required), `task` (required), `prompt` (system prompt, optional — minimal default used), `write` (toolset, default read-only), plus optional `model` (`provider/model-id`; omitted → the leader's current session model, a matched agent file's frontmatter wins), `thinking` (validated enum: `off|minimal|low|medium|high|xhigh|max`), `tools` (explicit allowlist), `cwd`, `maxRuntimeMs`, `id`, `needs` (dependency edges — see [Graph mode](#graph-mode--needs)). Top-level only: `autoAwait`, `notifyPerTask`, `concurrency`.
+`agent` (name you invent — required), `task` (required), `prompt` (system prompt, optional — minimal default used), `write` (toolset, default read-only), plus optional `model` (`provider/model-id`; omitted → the leader's current session model, a matched agent file's frontmatter wins), `thinking` (validated enum: `off|minimal|low|medium|high|xhigh|max`), `tools` (explicit allowlist), `cwd`, `maxRuntimeMs`, `id`, `needs` (dependency edges — see [Graph mode](#graph-mode--needs)). Top-level only: `autoAwait`, `notifyPerTask`, `concurrency` (default 3, max 8). A call carries at most 16 tasks.
 
 ### Child talk tools (always on)
 
 | Tool | Meaning |
 |---|---|
 | `ask_parent` | blocking question to the leader; delivered mid-turn as a **steering** message labelled `[URGENT]` or `[not urgent]`, parent answers via `reply_subagent` |
-| `notify_parent` | one-way message to the leader |
+| `notify_parent` | one-way message to the leader; identical updates coalesce, `final: true` declares the complete report |
 | `send_agent_message` | message to a sibling subagent's mailbox (`to` = its task id, or `"leader"`) |
 | `poll_agent_messages` | drain this subagent's mailbox |
 
 > **Intercom anti-deadlock:** children are told to never block indefinitely on intercom replies — an unanswered `ask_parent` times out after 10 minutes (the child is told to proceed with best judgment), and sibling polls are capped (~5 tries) with the same fallback. Gated siblings (later waves) may not be running yet — waiting on them is the top stall cause, so children are instructed not to.
 
-> **Ask urgency:** `ask_parent` takes `urgent` (default `false`). Both variants steer into the leader's current turn so the question is never deferred to the end of a long turn. `[URGENT]` tells the leader to answer before its next step; `[not urgent]` tells it that the child keeps waiting, so it may finish its current step first. Failures steer for the same reason; completions and aborts queue as follow-ups.
+> **Ask urgency:** `ask_parent` takes `urgent` (default `false`). Both variants steer into the leader's current turn so the question is never deferred to the end of a long turn. `[URGENT]` tells the leader to answer before its next step; `[not urgent]` tells it that the child keeps waiting, so it may finish its current step first. Failures steer for the same reason. Completions, aborts, and informational updates are held in an extension outbox and delivered as follow-ups when the leader settles; a receipt confirms against the finalized leader transcript, so a report the leader already consumed (or an awaited result that already rendered the outcome) suppresses its redundant queued notice. See [docs/notification-policy.md](docs/notification-policy.md).
 
 ## Tool exposure and opt-in codemode
 
@@ -375,6 +374,7 @@ The extension has no multiplexer integration and does not want one: it exposes t
 ## Context budget
 
 - Parent tools: 9 schemas with short descriptions. **No catalog, no context hook** — nothing injected per request.
+- The widget shows live work only: settled runs are pruned from it and stay reachable through `subagent_status` / `subagent_result`.
 - Background completion: 3-line notice. Full text only via `subagent_result`.
 - Children: isolated sessions; talk tools always injected; each child's prompt states its own task id and its siblings' so mailbox addressing works. Model resolution: explicit `provider/model-id` or bare id via the pi model registry → the parent's current model → settings default. Thinking levels validated against the resolved model's `thinkingLevelMap`; `subagent_models` lists the levels the runtime honors when you need a safe set.
 

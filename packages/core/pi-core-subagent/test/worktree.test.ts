@@ -36,6 +36,7 @@ beforeAll(() => {
 
 	git(["config", "user.name", "test"]);
 	git(["config", "user.email", "test@local"]);
+	git(["config", "commit.gpgsign", "false"]);
 	writeFileSync(join(repo, "a.txt"), "hello\n");
 	git(["add", "-A"]);
 	git(["commit", "-qm", "init"]);
@@ -156,6 +157,7 @@ describe("worktree", () => {
 		g(["init", "-q", "-b", "main"]);
 		g(["config", "user.name", "test"]);
 		g(["config", "user.email", "test@local"]);
+		g(["config", "commit.gpgsign", "false"]);
 		writeFileSync(join(spaced, "a.txt"), "hello\n");
 		g(["add", "-A"]);
 		g(["commit", "-qm", "init"]);

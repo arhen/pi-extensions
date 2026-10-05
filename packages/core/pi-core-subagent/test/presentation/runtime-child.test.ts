@@ -103,6 +103,200 @@ async function prime(
 	);
 }
 
+describe("native notification deduplication", () => {
+	test.each([true, false])(
+		"two queued final reports cause no completion echo (notifyPerTask: %p)",
+		async (notifyPerTask) => {
+			let release: () => void = () => {};
+			const finished = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const h = await harness({
+				codemode: false,
+				extensions: [
+					(pi) => {
+						pi.events.on("subagent:run-completed", release);
+					},
+				],
+			});
+			h.faux.setResponses(
+				Array.from({ length: 24 }, () => async (context: TranscriptContext) => {
+					const messages = contextMessages(context);
+					if (isChildRequest(context)) {
+						const report = JSON.stringify(messages).includes("notify-fixture-1") ? "RESULT_1" : "RESULT_2";
+						if (!lastToolResult(messages, "notify_parent"))
+							return fauxAssistantMessage([fauxToolCall("notify_parent", { message: report, final: true })]);
+						return fauxAssistantMessage(report);
+					}
+					if (!lastToolResult(messages, "subagent"))
+						return fauxAssistantMessage([
+							fauxToolCall("subagent", {
+								tasks: [
+									{ agent: "worker-1", task: "notify-fixture-1" },
+									{ agent: "worker-2", task: "notify-fixture-2" },
+								],
+								notifyPerTask,
+							}),
+						]);
+					await finished;
+					return fauxAssistantMessage("PARENT_DONE");
+				}),
+			);
+			await h.session.prompt("delegate two reporting workers");
+			await new Promise((resolve) => setTimeout(resolve, 150));
+			const notices = (h.session.messages as AnyMessage[]).filter(
+				(m) => m.role === "user" && /Subagent|Task worker|Background subagent/.test(messageText(m)),
+			);
+			expect(notices).toHaveLength(2);
+			expect(notices.filter((m) => messageText(m).includes("RESULT_1"))).toHaveLength(1);
+			expect(notices.filter((m) => messageText(m).includes("RESULT_2"))).toHaveLength(1);
+		},
+		60_000,
+	);
+
+	test("duplicate progress across both talk tools arrives once, with completion retained", async () => {
+		let release: () => void = () => {};
+		const finished = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const h = await harness({
+			codemode: false,
+			extensions: [
+				(pi) => {
+					pi.events.on("subagent:run-completed", release);
+				},
+			],
+		});
+		h.faux.setResponses(
+			Array.from({ length: 32 }, () => async (context: TranscriptContext) => {
+				const messages = contextMessages(context);
+				if (isChildRequest(context)) {
+					if (!lastToolResult(messages, "notify_parent"))
+						return fauxAssistantMessage([fauxToolCall("notify_parent", { message: "PROGRESS_QZX" })]);
+					if (!lastToolResult(messages, "send_agent_message"))
+						return fauxAssistantMessage([
+							fauxToolCall("send_agent_message", { to: "leader", message: "PROGRESS_QZX" }),
+						]);
+					return fauxAssistantMessage("COMPLETED_QZX");
+				}
+				if (!lastToolResult(messages, "subagent"))
+					return fauxAssistantMessage([fauxToolCall("subagent", { agent: "reporter", task: "report" })]);
+				await finished;
+				return fauxAssistantMessage("PARENT_DONE");
+			}),
+		);
+		await h.session.prompt("delegate a progress reporter");
+		await new Promise((resolve) => setTimeout(resolve, 150));
+		const notices = (h.session.messages as AnyMessage[]).filter(
+			(m) => m.role === "user" && /Subagent|Task reporter|Background subagent/.test(messageText(m)),
+		);
+		expect(notices).toHaveLength(2);
+		expect(notices.filter((m) => messageText(m).includes("PROGRESS_QZX"))).toHaveLength(1);
+		expect(notices.filter((m) => messageText(m).includes("COMPLETED_QZX"))).toHaveLength(1);
+	}, 60_000);
+
+	test("a report stripped from the leader transcript falls back exactly once", async () => {
+		let release: () => void = () => {};
+		const finished = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const h = await harness({
+			codemode: false,
+			extensions: [
+				(pi) => {
+					pi.events.on("subagent:run-completed", release);
+					pi.on("message_end", (event) => {
+						if (
+							event.message.role === "user" &&
+							messageText(event.message).startsWith('[{"type":"text","text":"[Subagent')
+						) {
+							return { message: { ...event.message, content: [{ type: "text", text: "REDACTED" }] } };
+						}
+					});
+				},
+			],
+		});
+		h.faux.setResponses(
+			Array.from({ length: 32 }, () => async (context: TranscriptContext) => {
+				const messages = contextMessages(context);
+				if (isChildRequest(context)) {
+					if (!lastToolResult(messages, "notify_parent"))
+						return fauxAssistantMessage([
+							fauxToolCall("notify_parent", { message: "STRIPPED_REPORT_QZX", final: true }),
+						]);
+					return fauxAssistantMessage("STRIPPED_REPORT_QZX");
+				}
+				if (!lastToolResult(messages, "subagent"))
+					return fauxAssistantMessage([fauxToolCall("subagent", { agent: "reporter", task: "report" })]);
+				await finished;
+				return fauxAssistantMessage("PARENT_DONE");
+			}),
+		);
+		await h.session.prompt("delegate a final reporter");
+		const notices = () =>
+			(h.session.messages as AnyMessage[]).filter((m) => m.role === "user" && messageText(m).includes("Task reporter"));
+		await waitFor(() => notices().some((m) => messageText(m).includes("STRIPPED_REPORT_QZX")), 25_000);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(notices()).toHaveLength(1);
+		expect(messageText(notices()[0]!)).toContain("STRIPPED_REPORT_QZX");
+	}, 60_000);
+
+	test("autoAwait retains final reports outside a truncated run summary", async () => {
+		const h = await harness({ codemode: false });
+		h.faux.setResponses(
+			Array.from({ length: 40 }, () => (context: TranscriptContext) => {
+				const messages = contextMessages(context);
+				if (isChildRequest(context)) {
+					const report = JSON.stringify(messages).includes("wide-report-qzx")
+						? `FIRST_${"x".repeat(24 * 1024 - 6)}`
+						: "LATE_REPORT_QZX";
+					if (!lastToolResult(messages, "notify_parent"))
+						return fauxAssistantMessage([fauxToolCall("notify_parent", { message: report, final: true })]);
+					return fauxAssistantMessage(report);
+				}
+				if (!lastToolResult(messages, "subagent"))
+					return fauxAssistantMessage([
+						fauxToolCall("subagent", {
+							tasks: [
+								{ agent: "wide", task: "wide-report-qzx" },
+								{ agent: "late", task: "late-report-qzx" },
+							],
+							concurrency: 1,
+							autoAwait: true,
+						}),
+					]);
+				return fauxAssistantMessage("PARENT_DONE");
+			}),
+		);
+		await h.session.prompt("delegate two final reporters");
+		const result = lastToolResult(h.session.messages as AnyMessage[], "subagent") ?? "";
+		expect(result.match(/LATE_REPORT_QZX/g)).toHaveLength(1);
+	}, 60_000);
+
+	test("autoAwait returns final report text once, without a parked done echo", async () => {
+		const h = await harness({ codemode: false });
+		await prime(h, 12, (context) => {
+			const messages = contextMessages(context);
+			if (isChildRequest(context)) {
+				if (!lastToolResult(messages, "notify_parent"))
+					return fauxAssistantMessage([fauxToolCall("notify_parent", { message: "FINAL_REPORT_QZX", final: true })]);
+				return fauxAssistantMessage("FINAL_REPORT_QZX");
+			}
+			if (!lastToolResult(messages, "subagent"))
+				return fauxAssistantMessage([fauxToolCall("subagent", { agent: "reporter", task: "report", autoAwait: true })]);
+			return fauxAssistantMessage("PARENT_DONE");
+		});
+		await h.session.prompt("await a reporting worker");
+		const result = lastToolResult(h.session.messages as AnyMessage[], "subagent") ?? "";
+		expect(result.match(/FINAL_REPORT_QZX/g)).toHaveLength(1);
+		expect(
+			(h.session.messages as AnyMessage[]).filter(
+				(m) => m.role === "user" && /Subagent|Task reporter|Background subagent/.test(messageText(m)),
+			),
+		).toHaveLength(0);
+	}, 60_000);
+});
+
 describe("real child lifecycle over the native pipeline", () => {
 	test("background run: spawn, await, result and session file", async () => {
 		const h = await harness({ codemode: false });
@@ -123,6 +317,7 @@ describe("real child lifecycle over the native pipeline", () => {
 		expect(result).toContain("CHILD_OK");
 		expect(result).toContain("completed");
 		expect(result).not.toContain("Branch:");
+		expect(lastToolResult(h.session.messages as AnyMessage[], "await_subagent")?.match(/CHILD_OK/g)).toHaveLength(1);
 
 		const status = lastToolResult(h.session.messages as AnyMessage[], "subagent") ?? "";
 		expect(status).toContain("Background run started");
@@ -139,6 +334,7 @@ describe("real child lifecycle over the native pipeline", () => {
 
 		const result = lastToolResult(h.session.messages as AnyMessage[], "subagent") ?? "";
 		expect(result).toContain("AUTO_OK");
+		expect(result.match(/AUTO_OK/g)).toHaveLength(1);
 		expect(result).toMatch(/succeeded|completed/);
 	}, 60_000);
 });

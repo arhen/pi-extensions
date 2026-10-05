@@ -5,10 +5,17 @@ import type { MailboxMessage } from "./mailbox.ts";
 
 export const CHILD_TALK_TOOLS = ["ask_parent", "notify_parent", "send_agent_message", "poll_agent_messages"] as const;
 
+type ParentNotifyHandler = (
+	taskId: string,
+	message: string,
+	level: "info" | "warning" | "error",
+	final?: boolean,
+) => boolean;
+
 export interface ChildHandlers {
 	onAskParent(taskId: string, question: string, urgent: boolean): Promise<string>;
-	onNotifyParent(taskId: string, message: string, level: "info" | "warning" | "error"): void;
-	onSendMessage(taskId: string, to: string, text: string): boolean;
+	onNotifyParent: ParentNotifyHandler | ((...args: Parameters<ParentNotifyHandler>) => void);
+	onSendMessage(taskId: string, to: string, text: string, final?: boolean): boolean;
 	onPollMailbox(taskId: string): MailboxMessage[];
 }
 
@@ -45,16 +52,37 @@ export function createChildTools(taskId: string, handlers: ChildHandlers): ToolD
 			name: "notify_parent",
 			label: "Notify Parent",
 			description:
-				"Send a non-blocking message to the parent agent (a finding, a risk, a heads-up). Your run continues immediately; the parent sees it on its next turn.",
+				"Send a non-blocking update to the parent. Identical updates send once per task attempt. Set final:true only for your complete final report, as your last tool call; repeat that exact report as your final answer. A received final report suppresses redundant success follow-ups, not new results or failures.",
 			promptSnippet: "Send the parent a non-blocking update or finding.",
 			parameters: Type.Object({
 				message: Type.String({ description: "The message content for the parent" }),
 				level: Type.Optional(StringEnum(["info", "warning", "error"] as const, { default: "info" })),
+				final: Type.Optional(
+					Type.Boolean({
+						description: "Complete final report; no further tool work. Repeat this exact message as your final answer.",
+						default: false,
+					}),
+				),
 			}),
 			async execute(_toolCallId, params) {
-				const { message, level } = params as { message: string; level?: "info" | "warning" | "error" };
-				handlers.onNotifyParent(taskId, message, level ?? "info");
-				return { content: [{ type: "text" as const, text: "Sent." }], details: {} };
+				const { message, level, final } = params as {
+					message: string;
+					level?: "info" | "warning" | "error";
+					final?: boolean;
+				};
+				const submitted = handlers.onNotifyParent(taskId, message, level ?? "info", final === true) !== false;
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text: submitted
+								? "Submitted to parent (or already submitted). Receipt is tracked separately."
+								: "Parent notification could not be submitted; retry or include it in your final answer.",
+						},
+					],
+					isError: !submitted,
+					details: {},
+				};
 			},
 		},
 		{
@@ -68,19 +96,42 @@ export function createChildTools(taskId: string, handlers: ChildHandlers): ToolD
 					description: "Target task id of another subagent in this run (e.g. task_2), or 'leader' for the parent agent",
 				}),
 				message: Type.String({ description: "Short message content (keep under ~500 chars)" }),
+				final: Type.Optional(
+					Type.Boolean({
+						description: "For to:leader only: complete final report, same contract as notify_parent final:true.",
+						default: false,
+					}),
+				),
 			}),
 			async execute(_toolCallId, params) {
-				const { to, message } = params as { to: string; message: string };
-				if (!handlers.onSendMessage(taskId, to, message)) {
+				const { to, message, final } = params as { to: string; message: string; final?: boolean };
+				if (!handlers.onSendMessage(taskId, to, message, final === true)) {
 					return {
 						content: [
-							{ type: "text" as const, text: `Unknown target '${to}'. Use a sibling task id in this run or 'leader'.` },
+							{
+								type: "text" as const,
+								text:
+									to === "leader"
+										? "Parent notification could not be submitted; retry or include it in your final answer."
+										: `Unknown target '${to}'. Use a sibling task id in this run or 'leader'.`,
+							},
 						],
 						isError: true,
 						details: {},
 					};
 				}
-				return { content: [{ type: "text" as const, text: "Sent." }], details: {} };
+				return {
+					content: [
+						{
+							type: "text" as const,
+							text:
+								to === "leader"
+									? "Submitted to leader (or already submitted). Receipt is tracked separately."
+									: "Sent.",
+						},
+					],
+					details: {},
+				};
 			},
 		},
 		{

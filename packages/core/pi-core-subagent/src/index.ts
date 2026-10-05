@@ -4,7 +4,7 @@ import type { TSchema } from "typebox";
 import {
 	compactLines,
 	formatUsage,
-	makeSummary,
+	makeSummaryWithCoverage,
 	renderModelCatalog,
 	statusIcon,
 	taskLine,
@@ -28,6 +28,24 @@ import {
 } from "./schemas.ts";
 import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
+
+function unreportedIntercom(run: RunSnapshot, messages: ParkedMsg[], covered: ReadonlySet<string>): ParkedMsg[] {
+	return messages.filter((message) => {
+		const task = run.tasks.find((task) => task.id === message.taskId);
+		return (
+			!covered.has(message.taskId) ||
+			task?.status !== "completed" ||
+			!(
+				message.kind === "done" ||
+				(message.kind === "notify" && message.final && task.finalText?.trim() === message.text.trim())
+			)
+		);
+	});
+}
+
+function intercomLine(message: ParkedMsg): string {
+	return `- [${message.kind === "notify" && message.final ? "final" : message.kind}] ${message.agent} (${message.taskId}): ${truncateText(message.text)}`;
+}
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
@@ -127,10 +145,24 @@ export default function (pi: ExtensionAPI) {
 	pi.registerShortcut("ctrl+shift+a", { description: "Peek at running subagents", handler: openPeek });
 
 	pi.on("agent_start", (_event, ctx) => {
+		manager.noteAgentStart();
 		if (!manager.turnActivity && !manager.hasActiveRun()) manager.clearWidget(ctx);
 		manager.turnActivity = false;
 	});
 
+	pi.on("context", (_event, ctx) => {
+		manager.confirmLeaderMessages(ctx);
+	});
+	pi.on("agent_end", (_event, ctx) => {
+		manager.confirmLeaderMessages(ctx);
+		manager.scheduleNotificationFlush(ctx);
+	});
+	// Settlement is the last automatic boundary: anything still held (a busy flush stopped earlier)
+	// must be released here, and receipts confirmed against the finalized projection.
+	pi.on("agent_settled", (_event, ctx) => {
+		manager.confirmLeaderMessages(ctx);
+		manager.flushPendingNotifications(ctx);
+	});
 	pi.on("before_agent_start", () => {
 		presentation.sync();
 	});
@@ -226,13 +258,15 @@ export default function (pi: ExtensionAPI) {
 					if (awaited.intercom.some((m) => m.kind === "ask")) break;
 				}
 
+				const summary = makeSummaryWithCoverage(run);
+				manager.markAwaitCoverage(run, summary.coveredTaskIds);
 				const asks = intercom.filter((m) => m.kind === "ask");
-				const heard = intercom.filter((m) => m.kind !== "ask");
+				const heard = unreportedIntercom(run, intercom, summary.coveredTaskIds).filter(
+					(message) => message.kind !== "ask",
+				);
 				const text = [
-					makeSummary(run),
-					heard.length > 0
-						? `\nIntercom while waiting:\n${heard.map((m) => `- [${m.kind}] ${m.agent} (${m.taskId}): ${truncateText(m.text)}`).join("\n")}`
-						: "",
+					summary.text,
+					heard.length > 0 ? `\nIntercom while waiting:\n${heard.map(intercomLine).join("\n")}` : "",
 					asks.length > 0
 						? `\n${asks.length} child(ren) waiting for your answer:\n${asks
 								.map(
@@ -384,13 +418,11 @@ export default function (pi: ExtensionAPI) {
 			if (!awaited) return { content: [{ type: "text", text: `Unknown runId: ${runId}` }], isError: true, details: {} };
 			const { run, intercom } = awaited;
 			if (!run) return { content: [{ type: "text", text: `Unknown runId: ${runId}` }], isError: true, details: {} };
-			const intercomText =
-				intercom.length > 0
-					? `\n\nIntercom while waiting:\n${intercom
-							.map((m) => `- [${m.kind}] ${m.agent} (${m.taskId}): ${truncateText(m.text)}`)
-							.join("\n")}`
-					: "";
-			return { content: [{ type: "text", text: makeSummary(run) + intercomText }], details: { run } };
+			const summary = makeSummaryWithCoverage(run);
+			manager.markAwaitCoverage(run, summary.coveredTaskIds);
+			const heard = unreportedIntercom(run, intercom, summary.coveredTaskIds);
+			const intercomText = heard.length > 0 ? `\n\nIntercom while waiting:\n${heard.map(intercomLine).join("\n")}` : "";
+			return { content: [{ type: "text", text: summary.text + intercomText }], details: { run } };
 		},
 	});
 
