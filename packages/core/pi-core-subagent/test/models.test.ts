@@ -342,4 +342,10 @@ describe("extension registration", () => {
 		expect(doc).toContain(`${tools.size} registered tools`);
 		for (const name of tools.keys()) expect(doc).toContain(`| \`${name}\` |`);
 	});
+	test("README tool count and table match the registered tools", () => {
+		const tools = loaded();
+		const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+		expect(readme).toContain(`${tools.size} slim tools total`);
+		for (const name of tools.keys()) expect(readme).toContain(`| \`${name}\` |`);
+	});
 });

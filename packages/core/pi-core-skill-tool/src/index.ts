@@ -8,6 +8,13 @@
  * The catalog comes from pi's own discovery (event.systemPromptOptions.skills):
  * project, user, settings, CLI, and package skills are all covered — no
  * re-scanning, no divergence.
+ *
+ * Compatibility: pi >= 0.99 renders the prompt on every read from mutable,
+ * normalized `systemPromptOptions`, so the extension removes the `skills` entry
+ * there and never returns `systemPrompt` (a forced prompt would stop pi's
+ * per-section delta updates). Older pi builds pass a prebuilt prompt string
+ * plus the resource loader's shared options, so only the rendered catalog text
+ * is stripped and the shared skill list is left untouched for `/skill:name`.
  */
 
 import { parseFrontmatter, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -15,6 +22,18 @@ import { readFileSync } from "node:fs";
 import { Type } from "typebox";
 
 const CATALOG_DESC_MAX = 100;
+const CATALOG_TAG = "<available_skills>";
+
+/**
+ * Rendered legacy catalog: `read` wording on old pi builds, `bash` wording when
+ * only the bash tool can read skill files. Ends at the closing catalog tag so
+ * surrounding prompt text is preserved.
+ */
+const RENDERED_CATALOG =
+	/\n*The following skills provide specialized instructions for specific tasks\.\nUse (?:the read tool|bash) to load a skill's file when the task matches its description\.[\s\S]*?<\/available_skills>/;
+
+/** `<skills>` section left empty after the catalog block was removed. */
+const EMPTY_SKILLS_SECTION = /<skills>\n\s*<\/skills>\n*/;
 
 interface SkillEntry {
 	name: string;
@@ -22,6 +41,13 @@ interface SkillEntry {
 	filePath?: string;
 	baseDir: string;
 	disableModelInvocation: boolean;
+}
+
+/** Prompt options after pi's normalization (>= 0.99). */
+interface StructuredPromptOptions {
+	skills?: unknown[];
+	sections?: Record<string, unknown>;
+	forceSystemPrompt?: string;
 }
 
 function truncateDescription(desc: string): string {
@@ -39,14 +65,46 @@ function readSkillBody(filePath: string): string {
 	}
 }
 
+/**
+ * pi >= 0.99 exposes `systemPrompt` as an accessor that re-renders from the
+ * normalized options; the older runner passes a prebuilt string and the
+ * resource loader's shared options object. Only the accessor host owns a private
+ * copy of `skills`/`sections`, so only there may the catalog be removed.
+ */
+function isStructuredPromptHost(event: object): boolean {
+	const descriptor = Object.getOwnPropertyDescriptor(event, "systemPrompt");
+	return typeof descriptor?.get === "function";
+}
+
+function clearStructuredSkillCatalog(options: StructuredPromptOptions): void {
+	try {
+		if (Array.isArray(options.skills)) options.skills.length = 0;
+		if (options.sections !== undefined && options.sections !== null) delete options.sections.skills;
+	} catch {
+		// Frozen options: leave the catalog in place and warn from the caller.
+	}
+}
+
+function stripRenderedSkillCatalog(prompt: string): string {
+	return prompt.replace(RENDERED_CATALOG, "").replace(EMPTY_SKILLS_SECTION, "");
+}
+
+function warnCatalogRemains(): void {
+	console.warn(
+		"[pi-core-skill-tool] strip failed — the skills catalog is still in the system prompt; pi's prompt format may have changed",
+	);
+}
+
 export default async function (pi: ExtensionAPI) {
 	let catalog: SkillEntry[] = [];
 	let toolRegistered = false;
 
 	// ── Strip built-in catalog from system prompt (intro + block) ──────────
 	pi.on("before_agent_start", (event) => {
-		const skills = event.systemPromptOptions.skills ?? [];
+		const options = event.systemPromptOptions as unknown as StructuredPromptOptions;
+		const skills = (options.skills ?? []) as SkillEntry[];
 		if (skills.length === 0) return; // no catalog → nothing to strip
+		// Copy the catalog before any removal: the tool description needs it.
 		catalog = skills.map((s) => ({
 			name: s.name,
 			description: s.description,
@@ -54,21 +112,38 @@ export default async function (pi: ExtensionAPI) {
 			baseDir: s.baseDir,
 			disableModelInvocation: s.disableModelInvocation,
 		}));
-		const stripped = event.systemPrompt.replace(
-			/\n\nThe following skills provide specialized instructions for specific tasks\.\nUse the read tool to load a skill's file[\s\S]*<\/available_skills>\n?/,
-			"",
-		);
-		if (stripped === event.systemPrompt) {
-			console.warn("[pi-core-skill-tool] strip failed — pi's skills prompt format changed; catalog left intact");
+
+		if (isStructuredPromptHost(event)) {
+			clearStructuredSkillCatalog(options);
+			const rendered = event.systemPrompt;
+			const stripped = typeof options.forceSystemPrompt === "string"
+				? stripRenderedSkillCatalog(rendered)
+				: rendered;
+			if (stripped.includes(CATALOG_TAG)) warnCatalogRemains();
+			registerToolOnce();
+			// Only replace a prompt another extension already made opaque.
+			return stripped !== rendered ? { systemPrompt: stripped } : undefined;
 		}
-		// H1: the tool's description must carry the populated catalog, so register
-		// lazily on the FIRST agent start (registration snapshots the description).
-		if (!toolRegistered && process.env.PI_SKILL_TOOL !== "0") {
-			toolRegistered = true;
-			registerSkillTool();
+
+		// Legacy host: strip the rendered catalog and return the text for this run.
+		const stripped = stripRenderedSkillCatalog(event.systemPrompt);
+		if (stripped !== event.systemPrompt) {
+			if (stripped.includes(CATALOG_TAG)) warnCatalogRemains();
+			registerToolOnce();
+			return { systemPrompt: stripped };
 		}
-		return { systemPrompt: stripped };
+		if (event.systemPrompt.includes(CATALOG_TAG)) warnCatalogRemains();
+		registerToolOnce();
+		return undefined;
 	});
+
+	// H1: the tool's description must carry the populated catalog, so register
+	// lazily on the FIRST agent start (registration snapshots the description).
+	function registerToolOnce() {
+		if (toolRegistered || process.env.PI_SKILL_TOOL === "0") return;
+		toolRegistered = true;
+		registerSkillTool();
+	}
 
 	// ── Register skill tool (opencode2-style) ────────────────────────────────
 	// Set PI_SKILL_TOOL=0 to disable the tool (catalog stripped, no tool —

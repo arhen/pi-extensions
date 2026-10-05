@@ -199,8 +199,9 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Define and delegate work to specialized subagents.",
 		promptGuidelines: [
 			"`model` is optional: omit it to inherit your current session model, or name one (agent-file `model` frontmatter wins) to pin the run. Call subagent_models for the exact references, thinking levels, and prices this session may use.",
-			"Use subagent for independent review, testing, research or parallel analysis; skip it when one direct action finishes the job.",
-			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls; declare ordering with `needs` edges, not separate calls.",
+			"Use subagent when independent review, testing, research, or parallel analysis improves quality.",
+			"Batch every sub-task in ONE call: subagent({ tasks: [...] }) — never multiple parallel subagent calls.",
+			"Declare ordering with `needs` edges on the tasks, never by splitting into separate calls; dependents receive upstream outputs automatically — do not restate them. Prefer flat `tasks` (plain parallel); add `needs` only when ordering genuinely matters.",
 			"Define each agent inline: invented name, focused system prompt, read-only by default (write:true to edit). Agent files are matched by description/goal, not name; a match is authoritative (body/model), and only per-call tools/write override its tools.",
 			"Write agents work in an isolated git worktree; review the branch diff and merge with `git merge --no-ff <branch>` when done.",
 			"After spawning, call subagent_status({ runId }) ONCE to confirm the tasks started; fix or respawn a task that died on spawn.",

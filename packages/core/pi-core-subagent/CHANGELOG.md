@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 1.3.62
+
+- **`subagent_models` discovery (selective PR #5).** New tool listing what a subagent task may name: the session's scoped models (`ctx.scopedModels`, the `/scoped-models` set) when scoping is configured, else every available model with the output stating the fallback. Each row carries an exact round-trippable `reference`, the thinking levels pi's own resolver honors (no silently clamped `xhigh`/`max`), the context window, and catalog per-Mtok pricing — only four explicitly zero rates read `free`, absent rates `unavailable`, and the output says the rates are not a billing quote. References whose bare id would shadow a `provider/id` are reported as ambiguous; a registry fault is reported separately; an empty list throws so the failure is not swallowed. `model` stays optional (omitted → session model; agent-file frontmatter still wins), preflight fallback and `modelNote` are kept. Optional `~/.pi/agent/subagent-models.json` (`prefer`/`hide`/`default`) can shape and order the listing only — validated, reported, and never permission-granting. Model precedence is consolidated in `chooseModel`, and resume now clamps the stored thinking level against the model the resumed task will actually run (agent-file model included), matching spawn. Spawn-time thinking validation keeps its existing clamp-tolerant behavior; the catalog is the surface that lists only levels the runtime honors.
+
+## Unreleased (historical)
 
 (Entries below cover 1.3.43–1.3.49; the section was never rotated per release. Newest first:)
 
