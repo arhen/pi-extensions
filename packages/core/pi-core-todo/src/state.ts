@@ -3,7 +3,7 @@
  * No pi imports — fully unit-testable.
  */
 
-import type { Task, TaskAction, TaskDetails, TaskMutationParams, TaskState, TaskStatus } from "./types.ts";
+import type { BatchOpResult, Task, TaskAction, TaskDetails, TaskMutationParams, TaskOp, TaskState, TaskStatus } from "./types.ts";
 import { TaskTree } from "./tree.ts";
 
 // ── transitions ──────────────────────────────────────────────────────────
@@ -152,6 +152,7 @@ export type Op =
 	| { kind: "create"; taskId: number }
 	| { kind: "update"; id: number; fromStatus: TaskStatus; toStatus: TaskStatus; changed: boolean }
 	| { kind: "delete"; id: number; subject: string }
+	| { kind: "batch"; results: BatchOpResult[] }
 	| { kind: "list"; statusFilter?: TaskStatus; includeDeleted: boolean }
 	| { kind: "get"; task: Task }
 	| { kind: "clear"; count: number }
@@ -185,8 +186,132 @@ function taskChanged(before: Task, after: Task): boolean {
 	);
 }
 
+// ── batch ────────────────────────────────────────────────────────────────
+
+const REF_PATTERN = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+
+/** Top-level fields rejected alongside action:batch — batch carries everything inside ops. */
+const BATCH_STRAY_FIELDS = [
+	"subject",
+	"description",
+	"activeForm",
+	"status",
+	"parentId",
+	"blockedBy",
+	"addBlockedBy",
+	"removeBlockedBy",
+	"owner",
+	"metadata",
+	"id",
+	"includeDeleted",
+] as const;
+
+const BATCH_REF_LIST_FIELDS = ["blockedBy", "addBlockedBy", "removeBlockedBy"] as const;
+
+interface BatchStep {
+	state: TaskState;
+	result: BatchOpResult;
+}
+
+/** Resolve a numeric id, a numeric string, or a ref created earlier in the same batch. */
+function resolveBatchRef(value: unknown, refs: ReadonlyMap<string, number>): { id: number } | { error: string } {
+	if (typeof value === "number") return isTaskId(value) ? { id: value } : { error: `invalid task id ${value}` };
+	if (typeof value !== "string" || !value.trim()) return { error: "expected a task id or a batch ref" };
+	const ref = value.trim();
+	if (/^\d+$/.test(ref)) {
+		const id = Number(ref);
+		return isTaskId(id) ? { id } : { error: `invalid task id ${ref}` };
+	}
+	const id = refs.get(ref);
+	return id === undefined ? { error: `unknown ref "${ref}" (use a numeric id or a ref defined by an earlier create op)` } : { id };
+}
+
+/** Apply one batch op to the accumulated state; register its ref on success. */
+function applyBatchOp(state: TaskState, op: TaskOp, refs: Map<string, number>): BatchStep | { error: string } {
+	if (!op || typeof op !== "object") return { error: "each op must be an object" };
+	const action = op.action;
+	if (action !== "create" && action !== "update" && action !== "delete") {
+		return { error: `action must be create, update, or delete (got ${action === undefined ? "nothing" : JSON.stringify(action)})` };
+	}
+	if (op.ref !== undefined) {
+		if (action !== "create") return { error: "ref is only valid on create ops" };
+		if (typeof op.ref !== "string" || !REF_PATTERN.test(op.ref)) {
+			return { error: "ref must start with a letter and use only letters, digits, '.', '_', or '-' (max 64 chars)" };
+		}
+		if (refs.has(op.ref)) return { error: `duplicate ref "${op.ref}"` };
+	}
+	const params: TaskMutationParams = {};
+	if (op.subject !== undefined) params.subject = op.subject;
+	if (op.description !== undefined) params.description = op.description;
+	if (op.activeForm !== undefined) params.activeForm = op.activeForm;
+	if (op.status !== undefined) params.status = op.status;
+	if (op.owner !== undefined) params.owner = op.owner;
+	if (op.metadata !== undefined) params.metadata = op.metadata;
+	if (op.id !== undefined) {
+		const resolved = resolveBatchRef(op.id, refs);
+		if ("error" in resolved) return resolved;
+		params.id = resolved.id;
+	}
+	if (op.parentId !== undefined) {
+		if (op.parentId === null) params.parentId = null;
+		else {
+			const resolved = resolveBatchRef(op.parentId, refs);
+			if ("error" in resolved) return resolved;
+			params.parentId = resolved.id;
+		}
+	}
+	for (const key of BATCH_REF_LIST_FIELDS) {
+		const value = op[key];
+		if (value === undefined) continue;
+		if (!Array.isArray(value)) return { error: `${key} must be an array of task ids or refs` };
+		const resolvedIds: number[] = [];
+		for (const item of value) {
+			const resolved = resolveBatchRef(item, refs);
+			if ("error" in resolved) return resolved;
+			resolvedIds.push(resolved.id);
+		}
+		params[key] = resolvedIds;
+	}
+	const outcome = applyTaskMutation(state, action, params);
+	if (outcome.op.kind === "error") return { error: outcome.op.message };
+	if (outcome.op.kind !== "create" && outcome.op.kind !== "update" && outcome.op.kind !== "delete") {
+		return { error: "internal error: unsupported op result" };
+	}
+	const taskId = outcome.op.kind === "create" ? outcome.op.taskId : outcome.op.id;
+	const task = outcome.state.tasks.find((t) => t.id === taskId)!;
+	if (action === "create" && op.ref !== undefined) refs.set(op.ref, taskId);
+	if (outcome.op.kind === "update") {
+		return {
+			state: outcome.state,
+			result: { action: "update", id: taskId, subject: task.subject, fromStatus: outcome.op.fromStatus, toStatus: outcome.op.toStatus, changed: outcome.op.changed },
+		};
+	}
+	if (outcome.op.kind === "delete") return { state: outcome.state, result: { action: "delete", id: taskId, subject: task.subject } };
+	return { state: outcome.state, result: { action: "create", id: taskId, subject: task.subject, toStatus: task.status } };
+}
+
 export function applyTaskMutation(state: TaskState, action: TaskAction, params: TaskMutationParams): ApplyResult {
+	if (action !== "batch" && params.ops !== undefined) return errorResult(state, "ops is only valid with action:batch");
 	switch (action) {
+		case "batch": {
+			const ops = params.ops;
+			if (!Array.isArray(ops) || ops.length === 0) return errorResult(state, "batch requires a non-empty ops array");
+			const stray = BATCH_STRAY_FIELDS.filter((key) => params[key] !== undefined);
+			if (stray.length) return errorResult(state, `batch accepts only: ops (remove: ${stray.join(", ")})`);
+			const refs = new Map<string, number>();
+			const results: BatchOpResult[] = [];
+			let working = state;
+			for (let i = 0; i < ops.length; i++) {
+				const step = applyBatchOp(working, ops[i]!, refs);
+				if ("error" in step) {
+					return errorResult(state, `batch op ${i + 1} (${ops[i]?.action ?? "?"}): ${step.error}; no changes applied`);
+				}
+				working = step.state;
+				results.push(step.result);
+			}
+			return { state: working, op: { kind: "batch", results } };
+		}
+
 		case "create": {
 			if (params.status !== undefined || params.addBlockedBy !== undefined || params.removeBlockedBy !== undefined || params.includeDeleted !== undefined || params.id !== undefined) {
 				return errorResult(state, "create accepts only: subject, description, activeForm, parentId, blockedBy, owner, metadata");
@@ -404,6 +529,20 @@ export function formatContent(op: Op, state: TaskState): string {
 		}
 		case "delete":
 			return `Deleted ${formatReference(new TaskTree(state.tasks), op.id)}: ${sanitizeTerminalText(op.subject)}`;
+		case "batch": {
+			const tree = new TaskTree(state.tasks);
+			const lines = op.results.map((result) => {
+				const reference = formatReference(tree, result.id);
+				if (result.action === "create") return `created ${reference}: ${sanitizeTerminalText(result.subject)}`;
+				if (result.action === "delete") return `deleted ${reference}: ${sanitizeTerminalText(result.subject)}`;
+				if (!result.changed) return `no change: ${reference} already matches the requested values (status: ${result.toStatus})`;
+				const transition = result.fromStatus !== result.toStatus ? ` (${result.fromStatus} → ${result.toStatus})` : "";
+				return `updated ${reference}${transition}`;
+			});
+			const shown = lines.slice(0, 30);
+			if (lines.length > shown.length) shown.push(`+${lines.length - shown.length} more ops`);
+			return `Batch: ${op.results.length} ops\n${shown.join("\n")}`;
+		}
 		case "clear":
 			return `Cleared ${op.count} tasks`;
 		case "list": {
@@ -429,6 +568,7 @@ export function buildToolResult(action: TaskAction, params: TaskMutationParams, 
 		tasks: state.tasks,
 		nextId: state.nextId,
 		...(op.kind === "error" ? { error: op.message } : {}),
+		...(op.kind === "batch" ? { batchResults: op.results } : {}),
 	};
 	return { content: [{ type: "text", text: formatContent(op, state) }], details };
 }

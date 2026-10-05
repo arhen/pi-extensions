@@ -89,6 +89,19 @@ export function resultLines(details: TaskDetails | undefined, fallback: string, 
 	if (!details || details.error) return fallback.split(/\r?\n/).map((line) => theme.fg(details?.error ? "error" : "muted", sanitizeTerminalText(line)));
 	if (details.action === "clear") return [theme.fg("muted", "Cleared todos")];
 	const tree = new TaskTree(details.tasks);
+	if (details.action === "batch") {
+		const seen = new Map<number, TaskRow>();
+		for (const result of details.batchResults ?? []) {
+			const row = tree.preorder.find((entry) => entry.task.id === result.id);
+			if (row) seen.set(result.id, row);
+		}
+		const rows = [...seen.values()];
+		if (!rows.length) return [theme.fg("muted", sanitizeTerminalText(fallback.split(/\r?\n/)[0] ?? ""))];
+		const count = Math.max(1, limit - (rows.length > limit ? 1 : 0));
+		const lines = rows.slice(0, count).map((row) => taskLine(tree, row, theme, width));
+		if (rows.length > count && lines.length < limit) lines.push(theme.fg("dim", `+${rows.length - count} hidden · /todos`));
+		return lines;
+	}
 	if (details.action === "list") {
 		const includeDeleted = Boolean(details.params.includeDeleted);
 		const rows = tree.preorder.filter((row) => (includeDeleted || row.task.status !== "deleted") && (!details.params.status || row.task.status === details.params.status));

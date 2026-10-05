@@ -30,6 +30,65 @@ const details: TaskDetails = {
 	nextId: 4,
 };
 
+describe("batch rendering", () => {
+	test("heading summarizes ops and result rows dedupe affected tasks", () => {
+		const tool = registeredTool();
+		const ctx = context();
+		const ops = [
+			{ action: "create" as const, subject: "Parent" },
+			{ action: "create" as const, subject: "Child", parentId: 1 },
+			{ action: "update" as const, id: 2, status: "in_progress" as const },
+		];
+		expect(tool.renderCall!({ action: "batch", ops }, theme, ctx).render(80)[0]).toBe("todo ≡ 3 ops · 2 create, 1 update");
+		const batchDetails: TaskDetails = {
+			action: "batch",
+			params: { ops },
+			tasks: [
+				{ id: 1, subject: "Parent", status: "pending" },
+				{ id: 2, parentId: 1, subject: "Child", status: "in_progress", activeForm: "working" },
+			],
+			nextId: 3,
+			batchResults: [
+				{ action: "create", id: 1, subject: "Parent" },
+				{ action: "create", id: 2, subject: "Child" },
+				{ action: "update", id: 2, subject: "Child", fromStatus: "pending", toStatus: "in_progress", changed: true },
+			],
+		};
+		const lines = tool
+			.renderResult!({ content: [{ type: "text", text: "Batch: 3 ops" }], details: batchDetails }, { expanded: false, isPartial: false }, theme, ctx)
+			.render(80);
+		expect(lines.join("\n")).toContain("Parent");
+		expect(lines.filter((line) => line.includes("Child")).length).toBe(1);
+	});
+	test("large batch preview stays bounded", () => {
+		const tool = registeredTool();
+		const ctx = context();
+		const tasks = Array.from({ length: 20 }, (_, index) => ({ id: index + 1, subject: `Task ${index + 1}`, status: "pending" as const }));
+		const batchDetails: TaskDetails = {
+			action: "batch",
+			params: {},
+			tasks,
+			nextId: 21,
+			batchResults: tasks.map((task) => ({ action: "create" as const, id: task.id, subject: task.subject })),
+		};
+		const lines = tool
+			.renderResult!({ content: [{ type: "text", text: "Batch: 20 ops" }], details: batchDetails }, { expanded: false, isPartial: false }, theme, ctx)
+			.render(80);
+		expect(lines.length).toBeLessThanOrEqual(8);
+		expect(lines.join("\n")).toContain("hidden");
+	});
+	test("failed batch falls back to the error message", () => {
+		const tool = registeredTool();
+		const ctx = context();
+		const errorDetails: TaskDetails = { ...details, action: "batch", error: "batch op 2 (update): #99 not found; no changes applied" };
+		const text = tool
+			.renderResult!({ content: [{ type: "text", text: `Error: ${errorDetails.error}` }], details: errorDetails }, { expanded: false, isPartial: false }, theme, ctx)
+			.render(80)
+			.join("\n");
+		expect(text).toContain("batch op 2 (update)");
+	});
+});
+
 describe("tool heading identifiers", () => {
 	test("hierarchical label appears only in heading, never todo rows", () => {
 		const tool = registeredTool();
