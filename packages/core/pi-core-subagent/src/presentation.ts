@@ -7,17 +7,18 @@ import type {
 	ToolLoadoutChanges,
 	ToolNamespace,
 } from "@earendil-works/pi-coding-agent";
+import {
+	DEFAULT_SUBAGENT_MODE,
+	isSubagentMode,
+	readStoredMode,
+	type SubagentMode,
+	writeSubagentConfig,
+} from "./config.ts";
 
-/**
- * Presentation preference for the subagent toolset.
- * - auto: native codemode presentation when the codemode tool is active, direct otherwise.
- * - direct (default): legacy native declarations and active-tool script callability.
- * - codemode: subagent tools are callable from codemode scripts but not declared or listed.
- */
-export type SubagentMode = "auto" | "direct" | "codemode";
+export { isSubagentMode, type SubagentMode } from "./config.ts";
 export type EffectiveMode = "direct" | "codemode";
 
-/** Branch-scoped custom entry holding the preference, so resume/tree keep it. */
+/** Branch-scoped custom entry holding the legacy preference; the global config file now wins. */
 export const MODE_ENTRY_TYPE = "subagent-mode";
 export const CODEMODE_TOOL_NAME = "codemode";
 
@@ -30,7 +31,7 @@ export const SUBAGENT_NAMESPACE: ToolNamespace = {
 - direct (default): legacy native tool declarations and active-tool script callability; activating codemode alone does not switch profiles.
 - auto (opt-in): codemode presentation while the \`codemode\` tool is active, direct otherwise.
 - codemode: active tools are callable from scripts but not declared; inactive tools stay model-only and are not callable at all.
-Switch with \`/subagents mode auto|direct|codemode\`. The preference is stored on the session branch and restored on reload, resume and tree navigation.
+Switch with \`/subagents mode auto|direct|codemode\`. The preference is stored in the global \`subagents-config.json\` and applies to every session — reload, resume and tree navigation included.
 
 ## Operations
 Object arguments, exactly as validated when issued by the model:
@@ -67,10 +68,6 @@ export const CODEMODE_DISCOVERY_GUIDELINE =
 /** The full-reference pointer only resolves while codemode scripts can reach `describeNamespace`. */
 const NAMESPACE_REFERENCE = / Full reference: `describeNamespace\('subagents'\)`\./;
 
-export function isSubagentMode(value: unknown): value is SubagentMode {
-	return value === "auto" || value === "direct" || value === "codemode";
-}
-
 export type AnyToolDefinition = ToolDefinition<any, any, any>;
 
 export interface Presentation {
@@ -82,12 +79,23 @@ export interface Presentation {
 	/** Report preference, effective mode and codemode availability. */
 	describe(): string;
 	setPreference(mode: SubagentMode): void;
-	/** Restore the latest preference stored on the session branch. */
+	/** Restore the globally stored preference, with the session branch as the legacy fallback. */
 	restore(ctx: ExtensionContext): void;
 	/** Register the tools for the current effective mode; no-op when already applied. */
 	sync(): boolean;
 	/** Initial registration during extension load, before any session state exists. */
 	registerInitial(): void;
+}
+
+/** Latest mode stored by an older package version on this session branch, if any. */
+function branchPreference(ctx: ExtensionContext): SubagentMode | undefined {
+	let restored: SubagentMode | undefined;
+	for (const entry of ctx.sessionManager.getBranch()) {
+		const candidate = entry as { type?: string; customType?: string; data?: { mode?: unknown } };
+		if (candidate.type === "custom" && candidate.customType === MODE_ENTRY_TYPE && isSubagentMode(candidate.data?.mode))
+			restored = candidate.data.mode;
+	}
+	return restored;
 }
 
 /**
@@ -169,25 +177,19 @@ export function createPresentation(pi: ExtensionAPI, definitions: readonly AnyTo
 			const availability = available ? "codemode is active" : "codemode is not active";
 			const fallback = !available && preference === "codemode" ? "; using direct fallback" : "";
 			const pending = target !== shown ? `; pending ${target} at the next request boundary` : "";
-			return `Subagent exposure: mode ${preference} → effective ${shown} (${availability}${fallback}${pending}). Use /subagents mode auto|direct|codemode.`;
+			return `Subagent exposure: mode ${preference} → effective ${shown} (${availability}${fallback}${pending}). Saved for all sessions. Use /subagents mode auto|direct|codemode.`;
 		},
 		setPreference(mode) {
 			preference = mode;
+			// The global config file is authoritative for every session; the branch entry stays as a
+			// fallback for sessions that predate it and for readers of older package versions.
+			void writeSubagentConfig({ mode }).catch(() => {});
 			pi.appendEntry(MODE_ENTRY_TYPE, { mode });
 		},
 		restore(ctx) {
-			let restored: SubagentMode | undefined;
-			for (const entry of ctx.sessionManager.getBranch()) {
-				const candidate = entry as { type?: string; customType?: string; data?: { mode?: unknown } };
-				if (
-					candidate.type === "custom" &&
-					candidate.customType === MODE_ENTRY_TYPE &&
-					isSubagentMode(candidate.data?.mode)
-				)
-					restored = candidate.data.mode;
-			}
-			// Branch-sensitive state: a branch without an entry uses the package default again.
-			preference = restored ?? "direct";
+			// Global preference wins over the branch; the branch entry is the legacy fallback for
+			// sessions that chose a mode before the preference moved into the config file.
+			preference = readStoredMode() ?? branchPreference(ctx) ?? DEFAULT_SUBAGENT_MODE;
 		},
 		sync() {
 			const own = new Set(ownNames());

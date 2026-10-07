@@ -23,6 +23,7 @@ import {
 import type { TUI } from "@earendil-works/pi-tui";
 import { resolveAgentFile } from "./agentfile.ts";
 import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools } from "./child.ts";
+import { readSubagentConfig, writeSubagentConfig } from "./config.ts";
 import {
 	activitySnippet,
 	describeCall,
@@ -368,16 +369,14 @@ export class SubagentManager {
 
 	constructor(private readonly pi: ExtensionAPI) {
 		try {
-			const cfg = JSON.parse(readFileSync(join(getAgentDir(), "subagents-config.json"), "utf8"));
+			const cfg = readSubagentConfig();
 			if (typeof cfg.autoLimit === "boolean") this.autoLimit = cfg.autoLimit;
 		} catch {}
 	}
 
 	setAutoLimit(on: boolean): boolean {
 		this.autoLimit = on;
-		void writeFile(join(getAgentDir(), "subagents-config.json"), JSON.stringify({ autoLimit: on }, null, 2)).catch(
-			() => {},
-		);
+		void writeSubagentConfig({ autoLimit: on }).catch(() => {});
 		return on;
 	}
 

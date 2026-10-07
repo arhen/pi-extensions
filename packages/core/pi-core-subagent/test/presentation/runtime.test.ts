@@ -1,11 +1,13 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { writeSubagentConfig } from "../../src/config.ts";
 import { BASELINE_OPERATIONS } from "../parity/harness.ts";
+import { isolateAgentDir } from "./agent-dir.ts";
 import {
 	captureTextRequest,
 	createRuntimeHarness,
@@ -17,9 +19,12 @@ import {
 const SUBAGENT_TOOLS = [...BASELINE_OPERATIONS];
 
 const cleanups: (() => void)[] = [];
+const agentDir = isolateAgentDir();
+beforeEach(() => agentDir.reset());
 afterEach(() => {
 	for (const cleanup of cleanups.splice(0)) cleanup();
 });
+afterAll(() => agentDir.restore());
 
 async function harness(options: Parameters<typeof createRuntimeHarness>[0] = {}): Promise<RuntimeHarness> {
 	const created = await createRuntimeHarness(options);
@@ -140,7 +145,7 @@ describe("native exposure modes at runtime", () => {
 		expect(h.session.systemPrompt).not.toContain("Define and delegate");
 	}, 60_000);
 
-	test("reopening a persisted session restores the branch preference", async () => {
+	test("a globally stored preference drives a reopened session and outranks its branch", async () => {
 		const dir = mkdtempSync(join(tmpdir(), "subagent-resume-"));
 		cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
 		const sessionDir = join(dir, "sessions");
@@ -153,14 +158,17 @@ describe("native exposure modes at runtime", () => {
 		expect(typeof sessionFile).toBe("string");
 		first.session.dispose();
 
+		// A mode chosen in another session lands in the global config file; reopening this one must honor
+		// it over the branch entry written above.
+		await writeSubagentConfig({ mode: "codemode" });
 		const reopened = await harness({
 			codemode: "on",
 			dir,
 			sessionManager: SessionManager.open(sessionFile as string),
 		});
-		expect(exposures(reopened)).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
+		expect(exposures(reopened)).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
 
-		await reopened.session.prompt("/subagents mode codemode");
+		await reopened.session.prompt("/subagents mode direct");
 		const sessionFile2 = reopened.session.sessionFile;
 		reopened.session.dispose();
 
@@ -169,7 +177,7 @@ describe("native exposure modes at runtime", () => {
 			dir,
 			sessionManager: SessionManager.open(sessionFile2 as string),
 		});
-		expect(exposures(third)).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
+		expect(exposures(third)).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
 	}, 90_000);
 
 	test("deactivating codemode restores direct declarations in explicit auto mode", async () => {
@@ -193,7 +201,7 @@ describe("native exposure modes at runtime", () => {
 		expect([...h.session.getActiveToolNames()].sort()).toEqual(["bash", "codemode", "read"]);
 	}, 60_000);
 
-	test("tree navigation restores the preference branch in a real session", async () => {
+	test("tree navigation keeps the globally stored preference in a real session", async () => {
 		const h = await harness({ codemode: "on" });
 		await captureTextRequest(h, "hello");
 		await h.session.prompt("/subagents mode auto");
@@ -209,13 +217,13 @@ describe("native exposure modes at runtime", () => {
 		const result = await h.session.navigateTree(target!.entryId, { summarize: false });
 		expect(result.cancelled).toBe(false);
 
-		// The branch above the explicit opt-in returns to the legacy default.
+		// The global preference applies to the new branch too: navigating above the opt-in keeps it.
 		expect(
 			h.session
 				.getAllTools()
 				.filter((tool) => (SUBAGENT_TOOLS as readonly string[]).includes(tool.name))
 				.map((tool) => tool.exposure),
-		).toEqual(SUBAGENT_TOOLS.map(() => "direct"));
+		).toEqual(SUBAGENT_TOOLS.map(() => "deferred"));
 	}, 90_000);
 
 	test("a model-issued invalid call is rejected by real schema validation before execution", async () => {

@@ -327,9 +327,12 @@ still applies Pi\'s global script-only policy; this extension does not override 
 - `/subagents mode codemode` — explicitly select script-based routing (direct fallback when unavailable).
 - `/subagents mode direct` — return to legacy direct behavior.
 
-Choice is stored per session branch. New sessions/branches without a preference start direct;
-existing explicit choices remain intact. Published 1.3.63 defaulted to `auto`: this compatibility
-correction requires the corrected source/package, not a retroactive change to that npm release.
+Choice is stored globally in `~/.pi/agent/subagents-config.json` (the same file as `auto-limit`,
+written with a merge, never a clobber) and applies to every session — reload, resume, fork and tree
+navigation included. Sessions that chose a mode before the preference moved into that file keep their
+branch entry only while the config has no `mode`; the built-in default is still `direct`. Published
+1.3.63 defaulted to `auto`: this compatibility correction requires the corrected source/package, not
+a retroactive change to that npm release.
 
 ## Commands
 

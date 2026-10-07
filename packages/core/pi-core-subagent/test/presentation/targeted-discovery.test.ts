@@ -1,12 +1,16 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { CODEMODE_DISCOVERY_GUIDELINE, SUBAGENT_NAMESPACE } from "../../src/presentation.ts";
+import { isolateAgentDir } from "./agent-dir.ts";
 import { createRuntimeHarness, lastCodemodeResult, type RuntimeHarness } from "./runtime-harness.ts";
 
 const sessions: RuntimeHarness[] = [];
+const agentDir = isolateAgentDir();
+beforeEach(() => agentDir.reset());
 afterEach(() => {
 	for (const session of sessions.splice(0)) session.cleanup();
 });
+afterAll(() => agentDir.restore());
 
 test("the upfront guide names the spawn path and one reusable targeted lookup", () => {
 	expect(CODEMODE_DISCOVERY_GUIDELINE).toContain("tools.subagent(args)");

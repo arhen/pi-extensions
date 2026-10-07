@@ -13,7 +13,7 @@ first-versus-consecutive delegation costs. Those measurements predate the legacy
 | `direct` (default) | native `direct`, ungrouped | yes, full schemas under normal Pi loadout policy | only the active tools |
 | `codemode` | active tools `deferred` (namespace `subagents`), inactive tools `model-only` | no (the active declarations are hidden) | only the active tools |
 
-- `direct` is the default, including existing branches with no stored preference. Activating the
+- `direct` is the default, including sessions with no stored preference. Activating the
   codemode tool alone does not change subagent routing. Native `direct` exposure preserves both
   model-issued calls and legacy active-tool script calls; tools are not namespace-grouped.
 - `auto` is opt-in via `/subagents mode auto`. It selects the codemode profile only while the built-in
@@ -38,8 +38,8 @@ released/loaded; it does not retroactively change the existing npm tarball.
 
 To try the new routing: `/subagents mode auto` (or `/subagents mode codemode`). To return:
 `/subagents mode direct`. Inspect the current preference/effective profile with `/subagents mode`.
-Explicit saved choices are preserved, including `auto` chosen in 1.3.63. New sessions and branches
-without an entry start direct. No global preference or consent is inferred from codemode activation.
+Explicit saved choices are preserved, including `auto` chosen in 1.3.63. Sessions with no stored
+preference start direct. No preference or consent is inferred from codemode activation.
 
 ## Tool surface
 
@@ -91,15 +91,23 @@ artifacts, failures and questions remain visible. Queue acceptance is not model-
 ## Commands
 
 - `/subagents mode` — report preference, effective mode and codemode availability.
-- `/subagents mode auto|direct|codemode` — set the preference for this session branch.
+- `/subagents mode auto|direct|codemode` — set the globally stored preference for every session.
 - Existing `/subagents`, `/subagents peek` and `/subagents auto-limit` behavior is unchanged.
 
 ## Persistence
 
-The preference is stored per session branch with `pi.appendEntry("subagent-mode", { mode })` and
-restored from `ctx.sessionManager.getBranch()` on `session_start`, so reload, resume, fork and tree
-navigation keep it. Nothing is written to global or project settings, and the shared
-`subagents-config.json` (auto-limit) is untouched.
+The preference is stored globally in `~/.pi/agent/subagents-config.json` (`mode`) and read on
+`session_start`, so a change applies to every session: new, reloaded, resumed, forked and
+tree-navigated. The session transcript still receives a `pi.appendEntry("subagent-mode", { mode })`
+mirror, but it is only a fallback: the config `mode` wins over it, and it is read at all only while
+the file stores no usable `mode` — so sessions that chose a mode before the file existed keep their
+choice instead of being reset. An unusable config file (missing, malformed, unknown `mode`) degrades
+to the branch fallback and then to the built-in `direct`, never to an error. The file is shared with
+`auto-limit`; both keys are written through one serialized read-modify-write, so a mode change never
+drops the ceiling setting and vice versa.
+
+Test files that can trigger a global write redirect `PI_CODING_AGENT_DIR` to a throwaway directory,
+so a test run can never rewrite the user's real `subagents-config.json`.
 
 ## How the profiles map to native Pi APIs
 
@@ -147,7 +155,8 @@ navigation keep it. Nothing is written to global or project settings, and the sh
 ## Safety invariants
 
 - No global or project settings, codemode settings, version numbers or installed packages are
-  changed. `codemode` is never enabled behind the user's back.
+  changed. The only file written is the extension's own `subagents-config.json` (the exposure mode,
+  next to the existing `auto-limit` key). `codemode` is never enabled behind the user's back.
 - The active tool selection is preserved; unrelated tool names are never added or removed. The only
   `pi.setActiveTools()` call removes an SDK force-activation of **own** names under an explicit
   allowlist; unrelated names keep their membership and order.
@@ -158,10 +167,13 @@ navigation keep it. Nothing is written to global or project settings, and the sh
 
 - `bun run typecheck && bunx tsc --noEmit -p bench/tsconfig.json && bun run lint && bun test &&
   bun bench/subagent-bench.ts --self-test` in `packages/core/pi-core-subagent`.
-- `test/presentation/mode-contract.test.ts` pins the exposure, hiding, command, persistence,
-  selection-preservation, pending-preference and boundary-deferral contract with a harness that
-  mirrors `_applyToolLoadout`. All nine operations are asserted, not just the eight legacy ones; the
-  codemode profile is asserted per active membership (active = `deferred`, inactive = `model-only`).
+- `test/presentation/mode-contract.test.ts` pins the exposure, hiding, command, global-persistence
+  (config file written, global outranking the branch entry, legacy branch fallback, unknown/malformed
+  config), selection-preservation, pending-preference and boundary-deferral contract with a harness
+  that mirrors `_applyToolLoadout`. All nine operations are asserted, not just the eight legacy ones;
+  the codemode profile is asserted per active membership (active = `deferred`, inactive = `model-only`).
+- `test/config.test.ts` pins the shared config file contract: tolerant reads, mode validation, key
+  merging and concurrent writers.
 - `test/presentation/selection-regression.test.ts` runs real Pi 1.0.1 sessions with the native
   codemode extension and a faux provider: manually deactivated helpers stay deactivated across a
   mode switch and stay non-callable after the next request boundary; a partial `--tools` allowlist
@@ -173,15 +185,16 @@ navigation keep it. Nothing is written to global or project settings, and the sh
 - `test/presentation/runtime.test.ts` runs real Pi 1.0.1 sessions with the native codemode extension
   (modes `on` and `only`, `inlineBudget: 3000` and `1_000_000`) and a faux provider: declaration
   capture, discovery through the QuickJS sandbox, nested validation, allowlist and `excludeTools`
-  behavior, model-issued schema validation, `navigateTree` preference restore, session reopen, and
-  the profile boundary (legacy direct tools retain active-tool script compatibility).
+  behavior, model-issued schema validation, `navigateTree` preference retention, session reopen with
+  the global preference outranking the stored branch entry, and the profile boundary (legacy direct
+  tools retain active-tool script compatibility).
 - `test/presentation/runtime-child.test.ts` drives real child sessions through the manager with the
   faux provider and an isolated HOME: background spawn + await + result, `autoAwait`, ask/reply
   intercom, steer delivery to a parked child, cancellation, failed-task resume, and a nested
   `tools.subagent`/`tools.await_subagent` codemode route. A live child is asserted to survive a mode
   switch and still complete. `fork()`/`new session` are not exercised natively (no public session
-  API in this harness); branch-scoped preference across replacement is covered by `navigateTree` and
-  session reopen plus the mode-contract branch tests.
+  API in this harness); the global preference's cross-session behavior is covered by the mode-contract
+  harness, session reopen and `navigateTree` in `runtime.test.ts`.
 - `test/presentation/targeted-discovery.test.ts` checks the explicit spawn pointer, targeted native
   schema lookup and unavailable inactive spawn. Guidance was changed only after its new test failed.
 - The initial mode delivery passed 319 tests / 1310 assertions. Targeted discovery and repeated-use

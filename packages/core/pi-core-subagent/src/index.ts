@@ -92,7 +92,7 @@ export default function (pi: ExtensionAPI) {
 	};
 	pi.registerCommand("subagents", {
 		description:
-			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents mode [auto|direct|codemode]` reports or switches the tool exposure profile; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
+			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents mode [auto|direct|codemode]` reports or switches the globally stored tool exposure profile; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
 		handler: async (args, ctx) => {
 			const arg = String(args ?? "")
 				.trim()

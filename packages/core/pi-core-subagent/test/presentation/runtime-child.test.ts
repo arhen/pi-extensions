@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { AssistantMessage, TranscriptContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import { BASELINE_OPERATIONS } from "../parity/harness.ts";
+import { isolateAgentDir } from "./agent-dir.ts";
 import { createRuntimeHarness, type RuntimeHarness } from "./runtime-harness.ts";
 
 /**
@@ -13,6 +14,7 @@ import { createRuntimeHarness, type RuntimeHarness } from "./runtime-harness.ts"
  * HOME is redirected to a temp dir for this file to keep session files out of the user's home.
  */
 const fakeHome = mkdtempSync(join(tmpdir(), "subagent-runtime-home-"));
+const agentDir = isolateAgentDir();
 const originalHome = process.env.HOME;
 beforeAll(() => {
 	process.env.HOME = fakeHome;
@@ -21,6 +23,7 @@ afterAll(() => {
 	if (originalHome === undefined) delete process.env.HOME;
 	else process.env.HOME = originalHome;
 	rmSync(fakeHome, { recursive: true, force: true });
+	agentDir.restore();
 });
 
 interface AnyMessage {

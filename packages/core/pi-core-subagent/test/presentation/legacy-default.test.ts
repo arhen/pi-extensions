@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
+import { writeSubagentConfig } from "../../src/config.ts";
 import { createPresentation, MODE_ENTRY_TYPE } from "../../src/presentation.ts";
 import { BASELINE_OPERATIONS } from "../parity/harness.ts";
+import { isolateAgentDir } from "./agent-dir.ts";
 import {
 	captureTextRequest,
 	createRuntimeHarness,
@@ -11,9 +13,20 @@ import {
 } from "./runtime-harness.ts";
 
 const sessions: RuntimeHarness[] = [];
+const agentDir = isolateAgentDir();
+beforeEach(() => agentDir.reset());
 afterEach(() => {
 	for (const h of sessions.splice(0)) h.cleanup();
 });
+afterAll(() => agentDir.restore());
+
+async function storedMode(expected: string): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if (agentDir.config().mode === expected) return;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	expect(agentDir.config().mode).toBe(expected);
+}
 
 function controller(branch: unknown[] = []) {
 	let active = ["codemode", "subagent", "subagent_status"];
@@ -56,20 +69,30 @@ describe("legacy default requires explicit codemode opt-in", () => {
 		expect(h.entries).toEqual([]);
 	});
 
-	test("explicit auto opts in and remains branch-scoped", () => {
+	test("explicit auto opts in and persists globally", async () => {
 		const h = controller();
 		h.p.setPreference("auto");
 		h.p.sync();
 		expect(h.p.applied).toBe("codemode");
 		expect(h.definitions.get("subagent").exposure).toBe("deferred");
 		expect(h.entries).toEqual([{ customType: MODE_ENTRY_TYPE, data: { mode: "auto" } }]);
+		await storedMode("auto");
+
+		// The global write, not the branch mirror, is what a restore reads back.
 		h.p.restore(h.ctx);
 		h.p.sync();
+		expect(h.p.preference).toBe("auto");
+		expect(h.p.applied).toBe("codemode");
+	});
+
+	test("a stored global preference outranks the branch entry", async () => {
+		await writeSubagentConfig({ mode: "direct" }, agentDir.configFile);
+		const h = controller([{ type: "custom", customType: MODE_ENTRY_TYPE, data: { mode: "codemode" } }]);
 		expect(h.p.preference).toBe("direct");
 		expect(h.p.applied).toBe("direct");
 	});
 
-	test.each(["auto", "codemode"])("restored explicit %s is not overwritten", (mode) => {
+	test.each(["auto", "codemode"])("restored legacy branch %s applies when no global preference exists", (mode) => {
 		const h = controller([{ type: "custom", customType: MODE_ENTRY_TYPE, data: { mode } }]);
 		expect(h.p.preference).toBe(mode);
 		expect(h.p.applied).toBe("codemode");

@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { writeSubagentConfig } from "../../src/config.ts";
 import { run as runFixture } from "../parity/fixtures.ts";
 import {
 	BASELINE_OPERATIONS,
@@ -7,19 +8,33 @@ import {
 	requireTool,
 	runTool,
 } from "../parity/harness.ts";
+import { isolateAgentDir } from "./agent-dir.ts";
 import { callableTools, simulateLoadout } from "./loadout-sim.ts";
 
 const SUBAGENT_TOOLS = [...BASELINE_OPERATIONS];
 const MODE_ENTRY = "subagent-mode";
 
+const agentDir = isolateAgentDir();
+
 let h: ExtensionHarness;
 
 beforeEach(() => {
+	agentDir.reset();
 	h = createExtensionHarness();
 });
 afterEach(async () => {
 	await h.dispose();
 });
+afterAll(() => agentDir.restore());
+
+/** The mode write is fire-and-forget; wait until the config file reflects it. */
+async function storedMode(expected: string): Promise<void> {
+	for (let attempt = 0; attempt < 100; attempt++) {
+		if (agentDir.config().mode === expected) return;
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+	expect(agentDir.config().mode).toBe(expected);
+}
 
 async function cmd(args: string): Promise<void> {
 	const command = h.commands.get("subagents");
@@ -136,19 +151,51 @@ describe("mode preference and effective profile", () => {
 });
 
 describe("persistence", () => {
-	test("mode changes append a branch entry", async () => {
+	test("mode changes write the global config and keep the branch entry", async () => {
 		h.activeTools.push("subagent");
 		await h.startSession();
 
 		await cmd("mode codemode");
+		await storedMode("codemode");
 		await cmd("mode auto");
+		await storedMode("auto");
+
 		expect(h.appended).toEqual([
 			{ customType: MODE_ENTRY, data: { mode: "codemode" } },
 			{ customType: MODE_ENTRY, data: { mode: "auto" } },
 		]);
 	});
 
-	test("session_start restores the latest preference on the branch", async () => {
+	test("writing the mode preserves the auto-limit key", async () => {
+		h.activeTools.push("subagent");
+		await h.startSession();
+		await writeSubagentConfig({ autoLimit: true }, agentDir.configFile);
+
+		await cmd("mode codemode");
+		await storedMode("codemode");
+		expect(agentDir.config().autoLimit).toBe(true);
+	});
+
+	test("session_start applies a globally stored preference", async () => {
+		h.activeTools.push("codemode", "subagent");
+		await writeSubagentConfig({ mode: "codemode" }, agentDir.configFile);
+		await h.startSession();
+
+		expectCodemodeProfile();
+		expect(await mode()).toContain("mode codemode");
+	});
+
+	test("the global preference outranks a session branch entry", async () => {
+		h.activeTools.push("codemode", "subagent");
+		h.branch.push({ type: "custom", customType: MODE_ENTRY, data: { mode: "direct" } });
+		await writeSubagentConfig({ mode: "codemode" }, agentDir.configFile);
+		await h.startSession();
+
+		expectCodemodeProfile();
+		expect(await mode()).toContain("mode codemode");
+	});
+
+	test("a branch entry remains the fallback when no global preference is stored", async () => {
 		h.activeTools.push("codemode", "subagent");
 		h.branch.push(
 			{ type: "custom", customType: MODE_ENTRY, data: { mode: "codemode" } },
@@ -160,7 +207,7 @@ describe("persistence", () => {
 		expect(await mode()).toContain("mode direct");
 	});
 
-	test("a restored codemode preference applies once codemode is active", async () => {
+	test("a restored legacy codemode branch entry applies once codemode is active", async () => {
 		h.activeTools.push("codemode", "subagent");
 		h.branch.push({ type: "custom", customType: MODE_ENTRY, data: { mode: "codemode" } });
 		await h.startSession();
@@ -169,15 +216,16 @@ describe("persistence", () => {
 		expect(await mode()).toContain("mode codemode");
 	});
 
-	test("tree navigation restores the preference of the new branch", async () => {
+	test("tree navigation keeps the globally stored preference", async () => {
 		h.activeTools.push("subagent");
 		await h.startSession();
 		await cmd("mode codemode");
+		await storedMode("codemode");
 		expect(await mode()).toContain("mode codemode");
 
 		h.branch.length = 0;
 		await h.invoke("session_tree", h.ctx());
-		expect(await mode()).toContain("mode direct");
+		expect(await mode()).toContain("mode codemode");
 	});
 
 	test("an unknown stored preference is ignored", async () => {
@@ -187,6 +235,19 @@ describe("persistence", () => {
 
 		expectDirectProfile();
 		expect(await mode()).toContain("mode direct");
+	});
+
+	test("an unknown global mode falls back to the branch and then the default", async () => {
+		h.activeTools.push("codemode", "subagent");
+		await writeSubagentConfig({ mode: "sideways" }, agentDir.configFile);
+		await h.startSession();
+		expectDirectProfile();
+		expect(await mode()).toContain("mode direct");
+
+		h.branch.push({ type: "custom", customType: MODE_ENTRY, data: { mode: "codemode" } });
+		await h.startSession();
+		expectCodemodeProfile();
+		expect(await mode()).toContain("mode codemode");
 	});
 });
 
@@ -343,6 +404,8 @@ describe("context cleanup contract", () => {
 		expect(namespace?.name).toBe("subagents");
 		expect(namespace?.instructions).toMatch(/describeTool/);
 		expect(namespace?.instructions).toMatch(/subagent\(/);
+		// The mode contract states where the preference lives, so the model can explain persistence.
+		expect(namespace?.instructions).toContain("subagents-config.json");
 		// Long signatures use the real object arguments, not positional prose.
 		expect(namespace?.instructions).toContain("subagent_status({ runId })");
 		expect(namespace?.instructions).toContain("resume_subagent({ runId, taskId, message?, model?, thinking? })");

@@ -1,8 +1,9 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
 import type { TranscriptContext } from "@earendil-works/pi-ai";
 import { fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { isolateAgentDir } from "./agent-dir.ts";
 import {
 	captureTextRequest,
 	createRuntimeHarness,
@@ -23,9 +24,12 @@ const helpers = [
 	"subagent_cancel",
 ];
 const sessions: RuntimeHarness[] = [];
+const agentDir = isolateAgentDir();
+beforeEach(() => agentDir.reset());
 afterEach(() => {
 	for (const session of sessions.splice(0)) session.cleanup();
 });
+afterAll(() => agentDir.restore());
 
 async function setup() {
 	const h = await createRuntimeHarness({ codemode: "on" });
