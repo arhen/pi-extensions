@@ -133,3 +133,12 @@ export interface ModelCatalog {
 	/** Set when the catalog is empty, so the caller knows it is not looking at a legitimate empty list. */
 	unavailable?: string;
 }
+
+/** A child message collected by a parked `await` instead of being sent to the leader. */
+export interface ParkedMsg {
+	kind: "ask" | "notify" | "done";
+	taskId: string;
+	agent: string;
+	text: string;
+	final?: boolean;
+}

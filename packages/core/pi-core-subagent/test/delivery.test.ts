@@ -29,12 +29,14 @@ describe("failure and ask notices steer, everything else queues", () => {
 			...task,
 		};
 		const run = { id: "run_x", mode: "parallel", status: kind, tasks: [base] } as unknown as RunSnapshot;
-		const manager = new SubagentManager(pi) as unknown as {
-			notifyTask: (run: RunSnapshot, task: TaskSnapshot, kind: Kind) => void;
-			outbox: Map<string, { deliverAs: string }>;
+		const { delivery } = new SubagentManager(pi) as unknown as {
+			delivery: {
+				notifyTask: (run: RunSnapshot, task: TaskSnapshot, kind: Kind) => void;
+				outbox: Map<string, { deliverAs: string }>;
+			};
 		};
-		manager.notifyTask(run, base, kind);
-		return { sent: sent[0], held: [...manager.outbox.values()][0] };
+		delivery.notifyTask(run, base, kind);
+		return { sent: sent[0], held: [...delivery.outbox.values()][0] };
 	}
 
 	test("a task that died mid-work steers, so the leader stops instead of using a broken result", () => {
@@ -67,14 +69,16 @@ describe("failure and ask notices steer, everything else queues", () => {
 			},
 		} as unknown as ExtensionAPI;
 		const run = { id: "run_x", mode: "parallel", status: "running", tasks: [] } as unknown as RunSnapshot;
-		const manager = new SubagentManager(pi) as unknown as {
-			notifyParent: (
-				run: RunSnapshot,
-				kind: "asked",
-				extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
-			) => void;
+		const { delivery } = new SubagentManager(pi) as unknown as {
+			delivery: {
+				notifyParent: (
+					run: RunSnapshot,
+					kind: "asked",
+					extra: { taskId?: string; agent?: string; question?: string; urgent?: boolean },
+				) => void;
+			};
 		};
-		manager.notifyParent(run, "asked", extra);
+		delivery.notifyParent(run, "asked", extra);
 		return sent[0];
 	}
 

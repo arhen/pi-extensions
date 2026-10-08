@@ -9,16 +9,17 @@ type Handlers = {
 	onNotifyParent(taskId: string, message: string, level: "info" | "warning" | "error", final?: boolean): boolean;
 	onSendMessage(taskId: string, to: string, message: string, final?: boolean): boolean;
 };
-type PrivateManager = {
-	makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): Handlers;
+type PrivateDelivery = {
 	notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: Kind): void;
 	notifyParent(run: RunSnapshot, kind: Kind): void;
-	finishRunIfSettled(run: RunSnapshot, ctx: ExtensionContext): void;
-	settleRun(runId: string, run: RunSnapshot): void;
 	leaderMessages: Map<string, { submittedAt: number; lost: boolean; delivered: boolean; attempts: number }>;
 	outbox: Map<string, unknown>;
 	terminalNotices: Map<string, { body: string; delivery: string }>;
 	pendingRunNotices: Map<string, unknown>;
+};
+type PrivateManager = {
+	makeChildHandlers(run: RunSnapshot, task: TaskSnapshot, ctx: ExtensionContext): Handlers;
+	delivery: PrivateDelivery;
 };
 const cleanups: (() => void)[] = [];
 afterEach(() => {
@@ -57,7 +58,8 @@ function fixture(count = 1, notifyPerTask = true) {
 	} as unknown as ExtensionContext;
 	const manager = new SubagentManager(pi);
 	cleanups.push(() => manager.clearRuns());
-	const internals = manager as unknown as PrivateManager;
+	const privateManager = manager as unknown as PrivateManager;
+	const internals = privateManager.delivery;
 	const { run } = manager.createRun(
 		{
 			tasks: Array.from({ length: count }, (_value, i) => ({ agent: `worker-${i}`, task: "fixture-qzx-91" })),
@@ -70,7 +72,7 @@ function fixture(count = 1, notifyPerTask = true) {
 		task.status = "running";
 		task.toolCalls = 1;
 	}
-	const handlers = (i = 0) => internals.makeChildHandlers(run, run.tasks[i]!, ctx);
+	const handlers = (i = 0) => privateManager.makeChildHandlers(run, run.tasks[i]!, ctx);
 	const end = (i = 0, finalText = "RESULT_OK", kind: Kind = "completed") => {
 		const task = run.tasks[i]!;
 		task.status = kind;
