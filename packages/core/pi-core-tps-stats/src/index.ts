@@ -59,11 +59,7 @@ export function mean(values: number[]): number {
  * included: this is the rate you actually wait for, which is why it reads
  * lower than a provider's marketing number. Tool execution is not included.
  */
-export function tps(
-	outputTokens: number,
-	turnStartMs: number,
-	endMs: number,
-): number | undefined {
+export function tps(outputTokens: number, turnStartMs: number, endMs: number): number | undefined {
 	const durationMs = endMs - turnStartMs;
 	if (outputTokens <= 0 || durationMs <= 0) return undefined;
 	return outputTokens / (durationMs / 1000);
@@ -77,11 +73,7 @@ export function fmtDur(ms: number): string {
 }
 
 /** first stream event of any kind — thinking counts, it is generated tokens too */
-const CONTENT_START_EVENTS = new Set([
-	"text_start",
-	"thinking_start",
-	"toolcall_start",
-]);
+const CONTENT_START_EVENTS = new Set(["text_start", "thinking_start", "toolcall_start"]);
 
 export default function (pi: ExtensionAPI) {
 	let tpsValues: number[] = [];
@@ -92,10 +84,7 @@ export default function (pi: ExtensionAPI) {
 	let resetTimer: ReturnType<typeof setTimeout> | undefined;
 
 	// ponytail: color by speed — <=40 red, <=80 yellow, <100 white, >=100 green
-	function tpsColored(
-		t: { fg(color: string, text: string): string },
-		v: number,
-	): string {
+	function tpsColored(t: { fg(color: string, text: string): string }, v: number): string {
 		const s = String(Math.round(v));
 		if (v <= 40) return t.fg("error", s);
 		if (v <= 80) return t.fg("warning", s);
@@ -129,10 +118,7 @@ export default function (pi: ExtensionAPI) {
 			return;
 		}
 		const t = ctx.ui.theme;
-		ctx.ui.setStatus(
-			"tps",
-			`${t.fg("dim", "t/s reset")} ${t.fg("accent", modelLabel)}`,
-		);
+		ctx.ui.setStatus("tps", `${t.fg("dim", "t/s reset")} ${t.fg("accent", modelLabel)}`);
 		resetTimer = setTimeout(() => {
 			if (tpsValues.length === 0) ctx.ui.setStatus("tps", undefined);
 		}, 2000);
@@ -146,15 +132,12 @@ export default function (pi: ExtensionAPI) {
 	// TTFT only — the first token's arrival is a real observation. Where the
 	// *rest* of the chunks land is the gateway's flush schedule, so no rate is
 	// derived from them.
-	pi.on(
-		"message_update",
-		(event: MessageUpdateEvent, _ctx: ExtensionContext) => {
-			if (!turnStart || streamStart !== 0) return;
-			if (CONTENT_START_EVENTS.has(event.assistantMessageEvent?.type)) {
-				streamStart = Date.now();
-			}
-		},
-	);
+	pi.on("message_update", (event: MessageUpdateEvent, _ctx: ExtensionContext) => {
+		if (!turnStart || streamStart !== 0) return;
+		if (CONTENT_START_EVENTS.has(event.assistantMessageEvent?.type)) {
+			streamStart = Date.now();
+		}
+	});
 
 	pi.on("message_end", (event: MessageEndEvent, ctx: ExtensionContext) => {
 		if (event.message.role !== "assistant") return;
@@ -203,11 +186,7 @@ export default function (pi: ExtensionAPI) {
 				`Max:     ${sorted[n - 1]!.toFixed(1)}`,
 			];
 			if (ttftValues.length > 0) {
-				lines.push(
-					"---",
-					`TTFT avg:    ${fmtDur(mean(ttftValues))}`,
-					`TTFT median: ${fmtDur(median(ttftValues))}`,
-				);
+				lines.push("---", `TTFT avg:    ${fmtDur(mean(ttftValues))}`, `TTFT median: ${fmtDur(median(ttftValues))}`);
 			}
 			ctx.ui.notify(lines.join("\n"), "info");
 		},

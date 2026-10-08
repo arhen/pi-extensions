@@ -3,8 +3,17 @@
  * No pi imports — fully unit-testable.
  */
 
-import type { BatchOpResult, Task, TaskAction, TaskDetails, TaskMutationParams, TaskOp, TaskState, TaskStatus } from "./types.ts";
 import { TaskTree } from "./tree.ts";
+import type {
+	BatchOpResult,
+	Task,
+	TaskAction,
+	TaskDetails,
+	TaskMutationParams,
+	TaskOp,
+	TaskState,
+	TaskStatus,
+} from "./types.ts";
 
 // ── transitions ──────────────────────────────────────────────────────────
 
@@ -89,7 +98,12 @@ function unfinishedDescendant(taskList: readonly Task[], taskId: number): Task |
 	return undefined;
 }
 
-function validateParent(taskList: readonly Task[], taskId: number, parentId: number | null, unfinished: boolean): string | undefined {
+function validateParent(
+	taskList: readonly Task[],
+	taskId: number,
+	parentId: number | null,
+	unfinished: boolean,
+): string | undefined {
 	if (parentId === null) return undefined;
 	if (!isTaskId(parentId)) return "parentId must be a positive safe integer or null";
 	if (parentId === taskId) return `cannot parent #${taskId} to itself`;
@@ -223,7 +237,9 @@ function resolveBatchRef(value: unknown, refs: ReadonlyMap<string, number>): { i
 		return isTaskId(id) ? { id } : { error: `invalid task id ${ref}` };
 	}
 	const id = refs.get(ref);
-	return id === undefined ? { error: `unknown ref "${ref}" (use a numeric id or a ref defined by an earlier create op)` } : { id };
+	return id === undefined
+		? { error: `unknown ref "${ref}" (use a numeric id or a ref defined by an earlier create op)` }
+		: { id };
 }
 
 /** Apply one batch op to the accumulated state; register its ref on success. */
@@ -231,7 +247,9 @@ function applyBatchOp(state: TaskState, op: TaskOp, refs: Map<string, number>): 
 	if (!op || typeof op !== "object") return { error: "each op must be an object" };
 	const action = op.action;
 	if (action !== "create" && action !== "update" && action !== "delete") {
-		return { error: `action must be create, update, or delete (got ${action === undefined ? "nothing" : JSON.stringify(action)})` };
+		return {
+			error: `action must be create, update, or delete (got ${action === undefined ? "nothing" : JSON.stringify(action)})`,
+		};
 	}
 	if (op.ref !== undefined) {
 		if (action !== "create") return { error: "ref is only valid on create ops" };
@@ -283,11 +301,22 @@ function applyBatchOp(state: TaskState, op: TaskOp, refs: Map<string, number>): 
 	if (outcome.op.kind === "update") {
 		return {
 			state: outcome.state,
-			result: { action: "update", id: taskId, subject: task.subject, fromStatus: outcome.op.fromStatus, toStatus: outcome.op.toStatus, changed: outcome.op.changed },
+			result: {
+				action: "update",
+				id: taskId,
+				subject: task.subject,
+				fromStatus: outcome.op.fromStatus,
+				toStatus: outcome.op.toStatus,
+				changed: outcome.op.changed,
+			},
 		};
 	}
-	if (outcome.op.kind === "delete") return { state: outcome.state, result: { action: "delete", id: taskId, subject: task.subject } };
-	return { state: outcome.state, result: { action: "create", id: taskId, subject: task.subject, toStatus: task.status } };
+	if (outcome.op.kind === "delete")
+		return { state: outcome.state, result: { action: "delete", id: taskId, subject: task.subject } };
+	return {
+		state: outcome.state,
+		result: { action: "create", id: taskId, subject: task.subject, toStatus: task.status },
+	};
 }
 
 export function applyTaskMutation(state: TaskState, action: TaskAction, params: TaskMutationParams): ApplyResult {
@@ -313,8 +342,17 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 		}
 
 		case "create": {
-			if (params.status !== undefined || params.addBlockedBy !== undefined || params.removeBlockedBy !== undefined || params.includeDeleted !== undefined || params.id !== undefined) {
-				return errorResult(state, "create accepts only: subject, description, activeForm, parentId, blockedBy, owner, metadata");
+			if (
+				params.status !== undefined ||
+				params.addBlockedBy !== undefined ||
+				params.removeBlockedBy !== undefined ||
+				params.includeDeleted !== undefined ||
+				params.id !== undefined
+			) {
+				return errorResult(
+					state,
+					"create accepts only: subject, description, activeForm, parentId, blockedBy, owner, metadata",
+				);
 			}
 			if (!params.subject?.trim()) return errorResult(state, "subject required for create");
 			if (params.parentId !== undefined) {
@@ -346,7 +384,8 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			const idx = state.tasks.findIndex((t) => t.id === params.id);
 			if (idx === -1) return errorResult(state, `#${params.id} not found`);
 			const current = state.tasks[idx]!;
-			if (current.status === "deleted") return errorResult(state, `task #${current.id} is deleted; tombstones are immutable`);
+			if (current.status === "deleted")
+				return errorResult(state, `task #${current.id} is deleted; tombstones are immutable`);
 
 			const hasMutation =
 				params.subject !== undefined ||
@@ -380,10 +419,13 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			}
 			if (params.status === "completed") {
 				const descendant = unfinishedDescendant(state.tasks, current.id);
-				if (descendant) return errorResult(state, `cannot complete #${current.id}: descendant #${descendant.id} is unfinished`);
+				if (descendant)
+					return errorResult(state, `cannot complete #${current.id}: descendant #${descendant.id} is unfinished`);
 			}
 			if (params.parentId !== undefined) {
-				const unfinished = (newStatus !== "completed" && newStatus !== "deleted") || unfinishedDescendant(state.tasks, current.id) !== undefined;
+				const unfinished =
+					(newStatus !== "completed" && newStatus !== "deleted") ||
+					unfinishedDescendant(state.tasks, current.id) !== undefined;
 				const error = validateParent(state.tasks, current.id, params.parentId, unfinished);
 				if (error) return errorResult(state, error);
 			}
@@ -434,14 +476,24 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			if (newStatus === "deleted") newTasks = removeDeletedRelations(newTasks, updated);
 			return {
 				state: { tasks: newTasks, nextId: state.nextId },
-				op: { kind: "update", id: updated.id, fromStatus: current.status, toStatus: newStatus, changed: taskChanged(current, updated) },
+				op: {
+					kind: "update",
+					id: updated.id,
+					fromStatus: current.status,
+					toStatus: newStatus,
+					changed: taskChanged(current, updated),
+				},
 			};
 		}
 
 		case "list": {
 			return {
 				state,
-				op: { kind: "list", includeDeleted: params.includeDeleted === true, ...(params.status !== undefined ? { statusFilter: params.status } : {}) },
+				op: {
+					kind: "list",
+					includeDeleted: params.includeDeleted === true,
+					...(params.status !== undefined ? { statusFilter: params.status } : {}),
+				},
 			};
 		}
 
@@ -461,7 +513,10 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 			const newTasks = [...state.tasks];
 			const deleted: Task = { ...current, status: "deleted" };
 			newTasks[idx] = deleted;
-			return { state: { tasks: removeDeletedRelations(newTasks, deleted), nextId: state.nextId }, op: { kind: "delete", id: current.id, subject: current.subject } };
+			return {
+				state: { tasks: removeDeletedRelations(newTasks, deleted), nextId: state.nextId },
+				op: { kind: "delete", id: current.id, subject: current.subject },
+			};
 		}
 
 		case "clear": {
@@ -502,14 +557,17 @@ function formatGetLines(task: Task, state: TaskState): string {
 	const blocks = deriveBlocks(state.tasks).get(task.id) ?? [];
 	const tree = new TaskTree(state.tasks);
 	const { done, total } = tree.progress(task.id);
-	const lines = [`${formatReference(tree, task.id)} [${task.status}] ${sanitizeTerminalText(task.subject)}${total ? ` [${done}/${total}]` : ""}`];
+	const lines = [
+		`${formatReference(tree, task.id)} [${task.status}] ${sanitizeTerminalText(task.subject)}${total ? ` [${done}/${total}]` : ""}`,
+	];
 	const parent = tree.parent.get(task.id);
 	lines.push(`  parent: ${parent === undefined ? "root" : formatReference(tree, parent)}`);
 	const children = (tree.children.get(task.id) ?? []).filter((child) => child.status !== "deleted");
 	if (children.length) lines.push(`  children: ${children.map((child) => formatReference(tree, child.id)).join(", ")}`);
 	if (task.description) lines.push(`  description: ${sanitizeTerminalText(task.description)}`);
 	if (task.activeForm) lines.push(`  activeForm: ${sanitizeTerminalText(task.activeForm)}`);
-	if (task.blockedBy?.length) lines.push(`  blockedBy: ${task.blockedBy.map((id) => formatReference(tree, id)).join(", ")}`);
+	if (task.blockedBy?.length)
+		lines.push(`  blockedBy: ${task.blockedBy.map((id) => formatReference(tree, id)).join(", ")}`);
 	if (blocks.length) lines.push(`  blocks: ${blocks.map((id) => formatReference(tree, id)).join(", ")}`);
 	if (task.owner) lines.push(`  owner: ${sanitizeTerminalText(task.owner)}`);
 	return lines.join("\n");
@@ -519,7 +577,9 @@ export function formatContent(op: Op, state: TaskState): string {
 	switch (op.kind) {
 		case "create": {
 			const t = state.tasks.find((x) => x.id === op.taskId);
-			return t ? `Created ${formatReference(new TaskTree(state.tasks), t.id)}: ${sanitizeTerminalText(t.subject)} (pending)` : `Created #${op.taskId}`;
+			return t
+				? `Created ${formatReference(new TaskTree(state.tasks), t.id)}: ${sanitizeTerminalText(t.subject)} (pending)`
+				: `Created #${op.taskId}`;
 		}
 		case "update": {
 			const label = formatReference(new TaskTree(state.tasks), op.id);
@@ -535,7 +595,8 @@ export function formatContent(op: Op, state: TaskState): string {
 				const reference = formatReference(tree, result.id);
 				if (result.action === "create") return `created ${reference}: ${sanitizeTerminalText(result.subject)}`;
 				if (result.action === "delete") return `deleted ${reference}: ${sanitizeTerminalText(result.subject)}`;
-				if (!result.changed) return `no change: ${reference} already matches the requested values (status: ${result.toStatus})`;
+				if (!result.changed)
+					return `no change: ${reference} already matches the requested values (status: ${result.toStatus})`;
 				const transition = result.fromStatus !== result.toStatus ? ` (${result.fromStatus} → ${result.toStatus})` : "";
 				return `updated ${reference}${transition}`;
 			});
@@ -561,7 +622,12 @@ export function formatContent(op: Op, state: TaskState): string {
 	}
 }
 
-export function buildToolResult(action: TaskAction, params: TaskMutationParams, state: TaskState, op: Op): { content: Array<{ type: "text"; text: string }>; details: TaskDetails } {
+export function buildToolResult(
+	action: TaskAction,
+	params: TaskMutationParams,
+	state: TaskState,
+	op: Op,
+): { content: Array<{ type: "text"; text: string }>; details: TaskDetails } {
 	const details: TaskDetails = {
 		action,
 		params: params as Record<string, unknown>,

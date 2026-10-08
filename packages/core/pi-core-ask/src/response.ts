@@ -3,7 +3,7 @@
  * rpiv-ask-user-question (messages pinned by its tests).
  */
 
-import type { QuestionAnswer, QuestionnaireError, QuestionParams, QuestionnaireResult } from "./types.ts";
+import type { QuestionAnswer, QuestionnaireError, QuestionnaireResult, QuestionParams } from "./types.ts";
 import { MAX_OPTIONS, MAX_QUESTIONS, MIN_OPTIONS, RESERVED_LABELS } from "./types.ts";
 
 export const ERROR_NO_QUESTIONS = "Error: At least one question is required";
@@ -20,12 +20,14 @@ export type ValidationResult = { ok: true } | { ok: false; error: QuestionnaireE
 
 export function validateQuestionnaire(typed: QuestionParams): ValidationResult {
 	if (typed.questions.length === 0) return { ok: false, error: "no_questions", message: ERROR_NO_QUESTIONS };
-	if (typed.questions.length > MAX_QUESTIONS) return { ok: false, error: "too_many_questions", message: ERROR_TOO_MANY_QUESTIONS };
+	if (typed.questions.length > MAX_QUESTIONS)
+		return { ok: false, error: "too_many_questions", message: ERROR_TOO_MANY_QUESTIONS };
 
 	const seenQuestions = new Set<string>();
 	for (const q of typed.questions) {
 		const question = q.question.trim();
-		if (seenQuestions.has(question)) return { ok: false, error: "duplicate_question", message: ERROR_DUPLICATE_QUESTION };
+		if (seenQuestions.has(question))
+			return { ok: false, error: "duplicate_question", message: ERROR_DUPLICATE_QUESTION };
 		seenQuestions.add(question);
 	}
 
@@ -38,10 +40,15 @@ export function validateQuestionnaire(typed: QuestionParams): ValidationResult {
 			if (RESERVED_LABEL_SET.has(label) || label.startsWith("__type_something__")) {
 				return { ok: false, error: "reserved_label", message: ERROR_RESERVED_LABEL };
 			}
-			if (seenLabels.has(label)) return { ok: false, error: "duplicate_option_label", message: ERROR_DUPLICATE_OPTION_LABEL };
+			if (seenLabels.has(label))
+				return { ok: false, error: "duplicate_option_label", message: ERROR_DUPLICATE_OPTION_LABEL };
 			seenLabels.add(label);
 			if (q.multiSelect && o.preview !== undefined && o.preview.trim().length > 0) {
-				return { ok: false, error: "preview_on_multiselect", message: "Error: preview is only supported on single-select questions" };
+				return {
+					ok: false,
+					error: "preview_on_multiselect",
+					message: "Error: preview is only supported on single-select questions",
+				};
 			}
 		}
 	}

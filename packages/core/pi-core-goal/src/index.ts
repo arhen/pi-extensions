@@ -34,7 +34,9 @@ const CreateGoalParams = Type.Object({
 			"Required. The concrete objective to start pursuing. This starts a new active goal when no unfinished goal exists. If the previous goal is complete, it is replaced.",
 	}),
 	token_budget: Type.Optional(
-		Type.Number({ description: "Optional positive integer token budget for the new goal. Omit unless explicitly requested." }),
+		Type.Number({
+			description: "Optional positive integer token budget for the new goal. Omit unless explicitly requested.",
+		}),
 	),
 });
 
@@ -252,7 +254,8 @@ function goalSummary(goal: Goal): string {
 
 function continuationPrompt(goal: Goal): string {
 	const tokenBudget = goal.tokenBudget === undefined ? "none" : String(goal.tokenBudget);
-	const remainingTokens = goal.tokenBudget === undefined ? "unbounded" : String(Math.max(0, goal.tokenBudget - goal.tokensUsed));
+	const remainingTokens =
+		goal.tokenBudget === undefined ? "unbounded" : String(Math.max(0, goal.tokenBudget - goal.tokensUsed));
 	const objective = escapeXmlText(goal.objective);
 	return `Continue working toward the active thread goal.
 
@@ -629,7 +632,10 @@ export default function goalExtension(pi: ExtensionAPI) {
 		if (abortedAtAgentEnd) {
 			abortedAtAgentEnd = false;
 			const pause = ctx.hasUI
-				? await ctx.ui.confirm("Pause active goal?", "Operation aborted. Pause this goal instead of automatically continuing?")
+				? await ctx.ui.confirm(
+						"Pause active goal?",
+						"Operation aborted. Pause this goal instead of automatically continuing?",
+					)
 				: true;
 			if (pause) {
 				setGoalStatus("paused");
@@ -752,7 +758,9 @@ export default function goalExtension(pi: ExtensionAPI) {
 
 			if (goal && isUnfinishedGoal(goal)) {
 				if (!ctx.hasUI) {
-					showGoalMessage("An unfinished goal already exists. Run /goal clear first, or use interactive mode to confirm replacement.");
+					showGoalMessage(
+						"An unfinished goal already exists. Run /goal clear first, or use interactive mode to confirm replacement.",
+					);
 					return;
 				}
 				const replace = await ctx.ui.confirm("Replace goal?", `New objective: ${objective}`);
@@ -834,7 +842,11 @@ export default function goalExtension(pi: ExtensionAPI) {
 			setGoalStatus(params.status);
 			persist("status");
 			updateStatus(ctx);
-			const response = goalResponse(currentGoalSnapshot(), ctx.sessionManager.getSessionId(), params.status === "complete");
+			const response = goalResponse(
+				currentGoalSnapshot(),
+				ctx.sessionManager.getSessionId(),
+				params.status === "complete",
+			);
 			return {
 				content: [{ type: "text", text: JSON.stringify(response, null, 2) }],
 				details: response,

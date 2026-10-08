@@ -115,12 +115,17 @@ describe("batch validation", () => {
 		expect(batch(EMPTY_STATE, []).op.kind).toBe("error");
 	});
 	test("rejects stray top-level fields", () => {
-		const result = applyTaskMutation(EMPTY_STATE, "batch", { ops: [{ action: "create", subject: "x" }], subject: "sneaky" });
+		const result = applyTaskMutation(EMPTY_STATE, "batch", {
+			ops: [{ action: "create", subject: "x" }],
+			subject: "sneaky",
+		});
 		expect(result.op.kind).toBe("error");
 		expect(result.op.kind === "error" && result.op.message).toContain("batch accepts only: ops");
 	});
 	test("rejects ops outside batch", () => {
-		expect(applyTaskMutation(EMPTY_STATE, "create", { subject: "x", ops: [{ action: "create", subject: "y" }] }).op.kind).toBe("error");
+		expect(
+			applyTaskMutation(EMPTY_STATE, "create", { subject: "x", ops: [{ action: "create", subject: "y" }] }).op.kind,
+		).toBe("error");
 	});
 	test("rejects non-mutation op actions", () => {
 		const result = applyTaskMutation(EMPTY_STATE, "batch", { ops: [{ action: "list" } as unknown as TaskOp] });

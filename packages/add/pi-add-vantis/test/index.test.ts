@@ -27,7 +27,10 @@ async function load() {
 }
 
 const catalog = {
-	data: [{ id: "deepseek-v4-flash", family: "open" }, { id: "frontier-x", context_window: 400_000 }],
+	data: [
+		{ id: "deepseek-v4-flash", family: "open" },
+		{ id: "frontier-x", context_window: 400_000 },
+	],
 	pricing: [
 		{
 			model: "deepseek-v4-flash",

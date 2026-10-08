@@ -1,5 +1,5 @@
 import { strict as assert } from "node:assert";
-import { MAX_SAMPLES, fmtDur, mean, median, push, tps } from "./index.ts";
+import { fmtDur, MAX_SAMPLES, mean, median, push, tps } from "./index.ts";
 
 // median / mean
 assert.equal(median([]), 0);
@@ -38,14 +38,8 @@ const turnRates = captures.map(([o, t]) => tps(o, 0, t * 1000)!);
 
 // the old window math is wildly unstable across those three prompts...
 const windowSpread = Math.max(...windowRates) / Math.min(...windowRates);
-assert.ok(
-	windowSpread > 8,
-	`window-based rate swings ${windowSpread.toFixed(1)}x on one model`,
-);
-assert.ok(
-	Math.max(...windowRates) > 700,
-	"window math produces the implausible readings users reported",
-);
+assert.ok(windowSpread > 8, `window-based rate swings ${windowSpread.toFixed(1)}x on one model`);
+assert.ok(Math.max(...windowRates) > 700, "window math produces the implausible readings users reported");
 
 // ...while every turn-based rate stays in a band a real model can hit
 for (const r of turnRates) {

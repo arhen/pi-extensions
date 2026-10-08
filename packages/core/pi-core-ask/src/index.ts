@@ -5,9 +5,16 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { QuestionnaireComponent } from "./ui.ts";
 import { buildQuestionnaireResponse, buildToolResult, validateQuestionnaire } from "./response.ts";
-import { MAX_OPTIONS, MAX_QUESTIONS, MIN_OPTIONS, QuestionParamsSchema, type QuestionParams, type QuestionnaireResult } from "./types.ts";
+import {
+	MAX_OPTIONS,
+	MAX_QUESTIONS,
+	MIN_OPTIONS,
+	type QuestionnaireResult,
+	type QuestionParams,
+	QuestionParamsSchema,
+} from "./types.ts";
+import { QuestionnaireComponent } from "./ui.ts";
 
 const TOOL_NAME = "ask_user_question";
 const TOOL_LABEL = "Ask User Question";

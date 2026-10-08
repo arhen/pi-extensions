@@ -37,7 +37,7 @@ interface CheckConfig {
 }
 
 export function sanitize(root: string): string {
-	return root.replace(/[\/\\:]/g, "_");
+	return root.replace(/[/\\:]/g, "_");
 }
 export function configPath(root: string): string {
 	return path.join(REPO_DIR, sanitize(root) + ".json");
@@ -117,9 +117,7 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("diagnostic", {
 		description: "show code-diagnostic config, run check now, or clear config",
 		getArgumentCompletions: (prefix) =>
-			["status", "run", "clear"]
-				.filter((s) => s.startsWith(prefix))
-				.map((s) => ({ value: s, label: s })),
+			["status", "run", "clear"].filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s })),
 		handler: async (args, ctx) => {
 			const sub = args.trim().split(/\s+/)[0];
 			const found = findConfig(ctx.cwd);
@@ -133,7 +131,10 @@ export default function (pi: ExtensionAPI) {
 					}
 				}
 				loadFor(ctx.cwd);
-				ctx.ui.notify(removed ? `code-diagnostic config cleared (${removed}) — discovery will re-run` : "no config found to clear", "info");
+				ctx.ui.notify(
+					removed ? `code-diagnostic config cleared (${removed}) — discovery will re-run` : "no config found to clear",
+					"info",
+				);
 				return;
 			}
 			if (sub === "run") {
@@ -169,7 +170,7 @@ export default function (pi: ExtensionAPI) {
 
 	// per-repo-root state, re-resolved every session (config can change on disk)
 	let current: { config: CheckConfig; root: string } | null = null;
-	let fileErrors = new Map<string, string>(); // path -> formatted errors (latest per path)
+	const fileErrors = new Map<string, string>(); // path -> formatted errors (latest per path)
 	let badRuns = 0;
 	let lastReport = "";
 	let dirtySinceReport = false; // any file-mutating tool call since last report
@@ -307,7 +308,12 @@ export default function (pi: ExtensionAPI) {
 		if (inFlight.size) await Promise.all([...inFlight]);
 		const sections: string[] = [];
 		if (globalOut) sections.push(`[${config.check}] ${globalOut}`);
-		for (const [file, out] of fileErrors) sections.push(`[${splitFileCmd(config.fileCheck ?? "", file).flat().join(" ")}] ${out}`);
+		for (const [file, out] of fileErrors)
+			sections.push(
+				`[${splitFileCmd(config.fileCheck ?? "", file)
+					.flat()
+					.join(" ")}] ${out}`,
+			);
 		fileErrors.clear();
 		dirtySinceReport = false;
 

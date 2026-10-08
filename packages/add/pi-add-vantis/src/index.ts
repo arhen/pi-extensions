@@ -23,18 +23,12 @@
  *   /vantis balance   key lane balance + $VANTIS conversion
  *   /vantis hide      clear the models widget
  */
-import type {
-	ExtensionAPI,
-	ProviderConfig,
-	ProviderModelConfig,
-} from "@earendil-works/pi-coding-agent";
-import {
-	getAgentDir,
-	readStoredCredential,
-} from "@earendil-works/pi-coding-agent";
-import type { RefreshModelsContext } from "@earendil-works/pi-ai";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { RefreshModelsContext } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 
 const BASE = "https://card.vantis.sh/v1";
 // vantis's WAF blocks the OpenAI SDK user-agent (403 "Your request was blocked."
@@ -107,10 +101,7 @@ async function saveState() {
 	);
 }
 
-function mapModel(
-	m: VantisCatalogModel,
-	p: VantisPricing | undefined,
-): MappedModel {
+function mapModel(m: VantisCatalogModel, p: VantisPricing | undefined): MappedModel {
 	const family = p?.family ?? m.family;
 	return {
 		id: m.id,
@@ -143,11 +134,8 @@ function mapModel(
 	};
 }
 
-async function refreshModels(
-	context: RefreshModelsContext,
-): Promise<ProviderModelConfig[]> {
-	if (context.allowNetwork === false)
-		return [...(context.stored?.models ?? [])];
+async function refreshModels(context: RefreshModelsContext): Promise<ProviderModelConfig[]> {
+	if (context.allowNetwork === false) return [...(context.stored?.models ?? [])];
 	const headers: Record<string, string> = {
 		Accept: "application/json",
 		"User-Agent": USER_AGENT,
@@ -167,16 +155,13 @@ async function refreshModels(
 		return [...(context.stored?.models ?? [])];
 	}
 	if (!res.ok) {
-		console.error(
-			`[vantis] models fetch failed: ${res.status} ${res.statusText}`,
-		);
+		console.error(`[vantis] models fetch failed: ${res.status} ${res.statusText}`);
 		return [...(context.stored?.models ?? [])];
 	}
 	const data = (await res.json()) as VantisCatalog;
 	const byId = new Map((data.pricing ?? []).map((p) => [p.model, p]));
 	const models = (data.data ?? []).map((m) => mapModel(m, byId.get(m.id)));
-	const lastModified =
-		Date.parse(res.headers.get("last-modified") ?? "") || undefined;
+	const lastModified = Date.parse(res.headers.get("last-modified") ?? "") || undefined;
 	await context.publish({
 		persist: {
 			models,
@@ -191,18 +176,12 @@ async function refreshModels(
 function vantisKey(): string | undefined {
 	const cred = readStoredCredential("vantis");
 	return (
-		(cred?.type === "api_key" ? cred.key : undefined) ??
-		process.env.VANTIS_CARD_API_KEY ??
-		process.env.VANTIS_CARD_KEY
+		(cred?.type === "api_key" ? cred.key : undefined) ?? process.env.VANTIS_CARD_API_KEY ?? process.env.VANTIS_CARD_KEY
 	);
 }
 
 const fmtTokens = (n: number) =>
-	n >= 1_000_000
-		? `${(n / 1_000_000).toFixed(1)}M`
-		: n >= 1_000
-			? `${(n / 1_000).toFixed(1)}k`
-			: `${n}`;
+	n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1_000 ? `${(n / 1_000).toFixed(1)}k` : `${n}`;
 
 export default async function (pi: ExtensionAPI) {
 	await loadState();
@@ -235,7 +214,10 @@ export default async function (pi: ExtensionAPI) {
 	};
 
 	// Footer status only while a vantis model is active.
-	const syncStatus = (ctx: { ui: { setStatus(k: string, v: string | undefined): void } }, model?: { provider?: string }) => {
+	const syncStatus = (
+		ctx: { ui: { setStatus(k: string, v: string | undefined): void } },
+		model?: { provider?: string },
+	) => {
 		ctx.ui.setStatus("vantis", model?.provider === "vantis" ? statusText() || undefined : undefined);
 	};
 
@@ -253,10 +235,7 @@ export default async function (pi: ExtensionAPI) {
 	// X-Vantis-ZDR: honored (ZDR attestation) on live chat responses.
 	pi.on("after_provider_response", (event, ctx) => {
 		if (ctx.model?.provider !== "vantis") return;
-		const get = (k: string) =>
-			Object.entries(event.headers).find(
-				([key]) => key.toLowerCase() === k,
-			)?.[1];
+		const get = (k: string) => Object.entries(event.headers).find(([key]) => key.toLowerCase() === k)?.[1];
 		const tier = get("x-vantis-tier");
 		if (tier) lastTier = tier;
 		const zdr = get("x-vantis-zdr");
@@ -271,16 +250,9 @@ export default async function (pi: ExtensionAPI) {
 		ui: { notify(msg: string, kind?: string): void; setStatus(k: string, v: string | undefined): void };
 		model?: { provider?: string };
 	};
-	const toggleZdr = async (
-		ctx: Ctx,
-		next?: boolean,
-		requireVantis = false,
-	) => {
+	const toggleZdr = async (ctx: Ctx, next?: boolean, requireVantis = false) => {
 		if (requireVantis && ctx.model?.provider !== "vantis") {
-			ctx.ui.notify(
-				"Vantis ZDR: not on a vantis model (ctrl+shift+z applies to vantis only)",
-				"warning",
-			);
+			ctx.ui.notify("Vantis ZDR: not on a vantis model (ctrl+shift+z applies to vantis only)", "warning");
 			return;
 		}
 		zdrOn = next ?? !zdrOn;
@@ -303,14 +275,12 @@ export default async function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("vantis", {
-		description:
-			"Vantis cards: status / zdr [on|off] / refresh / models / balance / hide",
+		description: "Vantis cards: status / zdr [on|off] / refresh / models / balance / hide",
 		handler: async (args, ctx) => {
 			const [cmd, ...rest] = (args ?? "").trim().split(/\s+/);
 			switch (cmd) {
 				case "zdr": {
-					const next =
-						rest[0] === "on" ? true : rest[0] === "off" ? false : undefined;
+					const next = rest[0] === "on" ? true : rest[0] === "off" ? false : undefined;
 					await toggleZdr(ctx, next);
 					return;
 				}
@@ -320,17 +290,13 @@ export default async function (pi: ExtensionAPI) {
 						providers: ["vantis"],
 						force: true,
 					});
-					const n =
-						ctx.modelRegistry.getProvider("vantis")?.getModels().length ?? 0;
+					const n = ctx.modelRegistry.getProvider("vantis")?.getModels().length ?? 0;
 					ctx.ui.notify(`Vantis catalog refreshed: ${n} models`, "info");
 					return;
 				}
 				case "models": {
-					const models =
-						ctx.modelRegistry.getProvider("vantis")?.getModels() ?? [];
-					const lines = [
-						"Vantis models — ctx / max out / reasoning / family / tier:",
-					];
+					const models = ctx.modelRegistry.getProvider("vantis")?.getModels() ?? [];
+					const lines = ["Vantis models — ctx / max out / reasoning / family / tier:"];
 					for (const m of models) {
 						const family = m.reasoning ? "open" : "frontier(allowlist)";
 						const tier = m.id.endsWith("-fast") ? "fast" : "standard";
@@ -343,10 +309,7 @@ export default async function (pi: ExtensionAPI) {
 					ctx.ui.setWidget("vantis-models", lines, {
 						placement: "belowEditor",
 					});
-					ctx.ui.notify(
-						`Vantis: ${models.length} models (listed below editor, /vantis hide to clear)`,
-						"info",
-					);
+					ctx.ui.notify(`Vantis: ${models.length} models (listed below editor, /vantis hide to clear)`, "info");
 					return;
 				}
 				case "hide": {
@@ -356,10 +319,7 @@ export default async function (pi: ExtensionAPI) {
 				case "balance": {
 					const key = vantisKey();
 					if (!key) {
-						ctx.ui.notify(
-							"Vantis not logged in. Run /login → Vantis Cards, or set VANTIS_CARD_API_KEY.",
-							"warning",
-						);
+						ctx.ui.notify("Vantis not logged in. Run /login → Vantis Cards, or set VANTIS_CARD_API_KEY.", "warning");
 						return;
 					}
 					ctx.ui.notify("Fetching Vantis balance…", "info");
@@ -371,10 +331,7 @@ export default async function (pi: ExtensionAPI) {
 							},
 						});
 						if (!res.ok) {
-							ctx.ui.notify(
-								`Vantis balance failed: ${res.status} ${res.statusText}`,
-								"warning",
-							);
+							ctx.ui.notify(`Vantis balance failed: ${res.status} ${res.statusText}`, "warning");
 							return;
 						}
 						const b = (await res.json()) as Record<string, unknown>;
@@ -387,17 +344,13 @@ export default async function (pi: ExtensionAPI) {
 							.map(([k, v]) => `${k}=${v}`);
 						ctx.ui.notify(`Vantis balance: ${parts.join(" · ")}`, "info");
 					} catch (err) {
-						ctx.ui.notify(
-							`Vantis balance request failed: ${(err as Error).message}`,
-							"warning",
-						);
+						ctx.ui.notify(`Vantis balance request failed: ${(err as Error).message}`, "warning");
 					}
 					return;
 				}
 				default: {
 					const key = vantisKey();
-					const n =
-						ctx.modelRegistry.getProvider("vantis")?.getModels().length ?? 0;
+					const n = ctx.modelRegistry.getProvider("vantis")?.getModels().length ?? 0;
 					ctx.ui.notify(
 						`Vantis: ${key ? "logged in" : "no key (/login → Vantis Cards or VANTIS_CARD_API_KEY)"} · ` +
 							`${n} models · ZDR ${zdrOn ? "on" : "off"}\n` +

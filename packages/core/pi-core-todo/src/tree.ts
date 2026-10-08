@@ -8,7 +8,7 @@ export interface TaskRow {
 export function childLetter(index: number): string {
 	let label = "";
 	for (let n = index + 1; n > 0; n = Math.floor((n - 1) / 26)) {
-		label = String.fromCharCode(97 + (n - 1) % 26) + label;
+		label = String.fromCharCode(97 + ((n - 1) % 26)) + label;
 	}
 	return label;
 }
@@ -58,7 +58,10 @@ export class TaskTree {
 			const last = siblings.filter((task) => task.status !== "deleted").at(-1);
 			if (last) this.lastSiblings.add(last.id);
 		}
-		const stack = roots.slice().reverse().map((task) => ({ task, depth: 0 }));
+		const stack = roots
+			.slice()
+			.reverse()
+			.map((task) => ({ task, depth: 0 }));
 		while (stack.length) {
 			const row = stack.pop()!;
 			this.preorder.push(row);

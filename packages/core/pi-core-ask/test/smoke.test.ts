@@ -36,15 +36,39 @@ describe("validateQuestionnaire", () => {
 		expect(validateQuestionnaire(params([okQuestions[0]!, okQuestions[0]!])).ok).toBe(false);
 	});
 	test("reserved label rejected (Other)", () => {
-		const q = [{ ...okQuestions[0]!, options: [{ label: "Other", description: "x" }, { label: "B", description: "y" }] }];
+		const q = [
+			{
+				...okQuestions[0]!,
+				options: [
+					{ label: "Other", description: "x" },
+					{ label: "B", description: "y" },
+				],
+			},
+		];
 		expect(validateQuestionnaire(params(q)).ok).toBe(false);
 	});
 	test("reserved label rejected (Type something.)", () => {
-		const q = [{ ...okQuestions[0]!, options: [{ label: "Type something.", description: "x" }, { label: "B", description: "y" }] }];
+		const q = [
+			{
+				...okQuestions[0]!,
+				options: [
+					{ label: "Type something.", description: "x" },
+					{ label: "B", description: "y" },
+				],
+			},
+		];
 		expect(validateQuestionnaire(params(q)).ok).toBe(false);
 	});
 	test("duplicate option label rejected", () => {
-		const q = [{ ...okQuestions[0]!, options: [{ label: "Same", description: "x" }, { label: "Same", description: "y" }] }];
+		const q = [
+			{
+				...okQuestions[0]!,
+				options: [
+					{ label: "Same", description: "x" },
+					{ label: "Same", description: "y" },
+				],
+			},
+		];
 		expect(validateQuestionnaire(params(q)).ok).toBe(false);
 	});
 	test("1 option rejected", () => {

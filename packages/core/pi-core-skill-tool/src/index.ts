@@ -17,8 +17,13 @@
  * is stripped and the shared skill list is left untouched for `/skill:name`.
  */
 
-import { parseFrontmatter, type AgentToolUpdateCallback, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
+import {
+	type AgentToolUpdateCallback,
+	type ExtensionAPI,
+	type ExtensionContext,
+	parseFrontmatter,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const CATALOG_DESC_MAX = 100;
@@ -116,9 +121,7 @@ export default async function (pi: ExtensionAPI) {
 		if (isStructuredPromptHost(event)) {
 			clearStructuredSkillCatalog(options);
 			const rendered = event.systemPrompt;
-			const stripped = typeof options.forceSystemPrompt === "string"
-				? stripRenderedSkillCatalog(rendered)
-				: rendered;
+			const stripped = typeof options.forceSystemPrompt === "string" ? stripRenderedSkillCatalog(rendered) : rendered;
 			if (stripped.includes(CATALOG_TAG)) warnCatalogRemains();
 			registerToolOnce();
 			// Only replace a prompt another extension already made opaque.
@@ -169,7 +172,13 @@ export default async function (pi: ExtensionAPI) {
 			parameters: Type.Object({
 				name: Type.String({ description: "The skill identifier from available_skills" }),
 			}),
-			async execute(_toolCallId: string, params: { name?: unknown }, _signal: AbortSignal | undefined, _onUpdate: AgentToolUpdateCallback<unknown> | undefined, _ctx: ExtensionContext): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
+			async execute(
+				_toolCallId: string,
+				params: { name?: unknown },
+				_signal: AbortSignal | undefined,
+				_onUpdate: AgentToolUpdateCallback<unknown> | undefined,
+				_ctx: ExtensionContext,
+			): Promise<{ content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }> {
 				const name = typeof params.name === "string" ? params.name : "";
 				const skill = catalog.find((s) => !s.disableModelInvocation && s.name === name);
 				if (!skill) {
@@ -177,7 +186,12 @@ export default async function (pi: ExtensionAPI) {
 						content: [
 							{
 								type: "text",
-								text: `Skill "${name}" not found. Available skills: ${catalog.filter((s) => !s.disableModelInvocation).map((s) => s.name).join(", ") || "(none)"}`,
+								text: `Skill "${name}" not found. Available skills: ${
+									catalog
+										.filter((s) => !s.disableModelInvocation)
+										.map((s) => s.name)
+										.join(", ") || "(none)"
+								}`,
 							},
 						],
 						details: {},

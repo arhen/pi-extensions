@@ -4,28 +4,36 @@ import { applyTaskMutation, buildToolResult, sanitizeTerminalText } from "./stat
 import {
 	clearActiveRenderSession,
 	commitState,
-	hasSession,
-	schedulePersist,
 	getActiveRenderSession,
 	getState,
+	hasSession,
 	restoreSession,
+	schedulePersist,
 	setActiveRenderSession,
 	sid,
 } from "./store.ts";
 import { TaskTree } from "./tree.ts";
-import { BoundedLines, TodoResultPreview } from "./view.ts";
-import { TodoViewer } from "./viewer.ts";
 import {
 	COMMAND_NAME,
-	TOOL_LABEL,
-	TOOL_NAME,
-	TodoParamsSchema,
 	type TaskAction,
 	type TaskDetails,
 	type TaskMutationParams,
+	TOOL_LABEL,
+	TOOL_NAME,
+	TodoParamsSchema,
 } from "./types.ts";
+import { BoundedLines, TodoResultPreview } from "./view.ts";
+import { TodoViewer } from "./viewer.ts";
 
-const ACTION_GLYPH: Record<TaskAction, string> = { create: "+", update: "→", batch: "≡", delete: "×", get: "›", list: "☰", clear: "∅" };
+const ACTION_GLYPH: Record<TaskAction, string> = {
+	create: "+",
+	update: "→",
+	batch: "≡",
+	delete: "×",
+	get: "›",
+	list: "☰",
+	clear: "∅",
+};
 
 const DEFAULT_PROMPT_GUIDELINES: string[] = [
 	"Use `todo` for complex work with 3+ steps, when the user gives you a list of tasks, or immediately after receiving new instructions to capture requirements. Skip it for single trivial tasks and purely conversational requests.",
@@ -54,7 +62,8 @@ export default function (pi: ExtensionAPI) {
 	pi.registerTool<typeof TodoParamsSchema, TaskDetails, { label?: string }>({
 		name: TOOL_NAME,
 		label: TOOL_LABEL,
-		description: "Manage flat or arbitrarily nested todos with optional parentId. Actions: create, update, batch, list, get, delete (tombstone), clear. batch applies ordered create/update/delete ops atomically; each create op may declare a ref alias for later ops. Statuses are explicit: pending → in_progress → completed, plus deleted. Parent completion requires all live descendants completed. Numeric ids stay stable; UI labels use #7.a.b and direct-child [done/total] counters. Use blockedBy for dependencies independently of nesting.",
+		description:
+			"Manage flat or arbitrarily nested todos with optional parentId. Actions: create, update, batch, list, get, delete (tombstone), clear. batch applies ordered create/update/delete ops atomically; each create op may declare a ref alias for later ops. Statuses are explicit: pending → in_progress → completed, plus deleted. Parent completion requires all live descendants completed. Numeric ids stay stable; UI labels use #7.a.b and direct-child [done/total] counters. Use blockedBy for dependencies independently of nesting.",
 		promptSnippet: "Manage flat or nested todos to track multi-step progress",
 		promptGuidelines: DEFAULT_PROMPT_GUIDELINES,
 		parameters: TodoParamsSchema,
@@ -68,20 +77,30 @@ export default function (pi: ExtensionAPI) {
 			return buildToolResult(action, typed, result.state, result.op);
 		},
 		renderCall(args, theme, context) {
-			return new BoundedLines(() => {
-				let text = theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", ACTION_GLYPH[args.action] ?? args.action);
-				const label = context.state.label ?? (args.id !== undefined ? new TaskTree(getState(getActiveRenderSession()).tasks).label(args.id, 4) : undefined);
-				if (label) text += ` ${theme.fg("dim", label)}`;
-				if (args.action === "create" && args.subject) text += ` ${theme.fg("dim", sanitizeTerminalText(args.subject))}`;
-				if (args.action === "batch") {
-					const ops = args.ops ?? [];
-					const counts = new Map<string, number>();
-					for (const op of ops) counts.set(op.action, (counts.get(op.action) ?? 0) + 1);
-					const breakdown = [...counts].map(([kind, count]) => `${count} ${kind}`).join(", ");
-					text += ` ${theme.fg("dim", `${ops.length} ops${breakdown ? ` · ${breakdown}` : ""}`)}`;
-				}
-				return [text];
-			}, () => 1, theme);
+			return new BoundedLines(
+				() => {
+					let text =
+						theme.fg("toolTitle", theme.bold("todo ")) + theme.fg("muted", ACTION_GLYPH[args.action] ?? args.action);
+					const label =
+						context.state.label ??
+						(args.id !== undefined
+							? new TaskTree(getState(getActiveRenderSession()).tasks).label(args.id, 4)
+							: undefined);
+					if (label) text += ` ${theme.fg("dim", label)}`;
+					if (args.action === "create" && args.subject)
+						text += ` ${theme.fg("dim", sanitizeTerminalText(args.subject))}`;
+					if (args.action === "batch") {
+						const ops = args.ops ?? [];
+						const counts = new Map<string, number>();
+						for (const op of ops) counts.set(op.action, (counts.get(op.action) ?? 0) + 1);
+						const breakdown = [...counts].map(([kind, count]) => `${count} ${kind}`).join(", ");
+						text += ` ${theme.fg("dim", `${ops.length} ops${breakdown ? ` · ${breakdown}` : ""}`)}`;
+					}
+					return [text];
+				},
+				() => 1,
+				theme,
+			);
 		},
 		renderResult(result, opts, theme, context) {
 			const details = result.details;
@@ -110,10 +129,13 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const sessionId = sid(ctx);
-			await ctx.ui.custom<void>((tui, theme, _kb, done) => new TodoViewer(tui, theme, () => getState(sessionId), done), {
-				overlay: true,
-				overlayOptions: { anchor: "center", width: "90%", maxHeight: "70%", margin: 0 },
-			});
+			await ctx.ui.custom<void>(
+				(tui, theme, _kb, done) => new TodoViewer(tui, theme, () => getState(sessionId), done),
+				{
+					overlay: true,
+					overlayOptions: { anchor: "center", width: "90%", maxHeight: "70%", margin: 0 },
+				},
+			);
 		},
 	});
 

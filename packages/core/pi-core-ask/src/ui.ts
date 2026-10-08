@@ -6,7 +6,18 @@
  */
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, Input, Key, matchesKey, SelectList, type SelectItem, type TUI, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Input,
+	Key,
+	matchesKey,
+	type SelectItem,
+	SelectList,
+	type TUI,
+	truncateToWidth,
+	visibleWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import type { QuestionAnswer, QuestionData } from "./types.ts";
 
 const TYPE_ROW_VALUE = "__type_something__";
@@ -111,7 +122,7 @@ export class QuestionnaireComponent implements Component {
 		const q = this.currentQuestion();
 		if (q.multiSelect) {
 			const prev = this.currentAnswer();
-			const selected = [...(prev?.kind === "multi" ? prev.selected ?? [] : [])];
+			const selected = [...(prev?.kind === "multi" ? (prev.selected ?? []) : [])];
 			const trimmed = value.trim();
 			if (trimmed && !selected.includes(trimmed)) selected.push(trimmed);
 			this.answers[this.tab] = { questionIndex: this.tab, question: q.question, kind: "multi", answer: null, selected };
@@ -149,7 +160,10 @@ export class QuestionnaireComponent implements Component {
 			const ib = q.options.findIndex((o) => o.label === b);
 			return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
 		});
-		this.answers[this.tab] = selected.length > 0 ? { questionIndex: this.tab, question: q.question, kind: "multi", answer: null, selected } : null;
+		this.answers[this.tab] =
+			selected.length > 0
+				? { questionIndex: this.tab, question: q.question, kind: "multi", answer: null, selected }
+				: null;
 	}
 
 	/** Move to another question, restoring its saved state (answers, selection, custom text). */
@@ -255,10 +269,17 @@ export class QuestionnaireComponent implements Component {
 		const pad = (line: string): string => line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 		const dim = (s: string): string => this.theme.fg("dim", s);
 		const bar = (): string => dim("├" + "─".repeat(boxWidth - 2) + "┤");
-		const row = (content: string): string => dim("│") + " " + content + " ".repeat(Math.max(0, boxWidth - visibleWidth(content) - 3)) + dim("│");
+		const row = (content: string): string =>
+			dim("│") + " " + content + " ".repeat(Math.max(0, boxWidth - visibleWidth(content) - 3)) + dim("│");
 
 		lines.push(pad(dim("╭" + "─".repeat(boxWidth - 2) + "╮")));
-		lines.push(pad(row(`${this.theme.fg("accent", this.theme.bold("Questions"))} ${this.theme.fg("dim", `(${this.tab + 1}/${this.questions.length})`)}`)));
+		lines.push(
+			pad(
+				row(
+					`${this.theme.fg("accent", this.theme.bold("Questions"))} ${this.theme.fg("dim", `(${this.tab + 1}/${this.questions.length})`)}`,
+				),
+			),
+		);
 		lines.push(pad(bar()));
 
 		// progress dots
@@ -291,13 +312,17 @@ export class QuestionnaireComponent implements Component {
 			// multi-select check state
 			if (q.multiSelect) {
 				const checked = [...this.multiChecked].map((i) => q.options[i]!.label);
-				const custom = this.currentAnswer()?.kind === "multi" ? (this.currentAnswer()!.selected ?? []).filter((l) => !q.options.some((o) => o.label === l)) : [];
+				const custom =
+					this.currentAnswer()?.kind === "multi"
+						? (this.currentAnswer()!.selected ?? []).filter((l) => !q.options.some((o) => o.label === l))
+						: [];
 				const shown = [...checked, ...custom].join(", ");
 				if (shown) lines.push(pad(row(this.theme.fg("success", `✓ ${shown}`))));
 			}
 			lines.push(pad(row("")));
 			// Pane for the focused option: full wrapped description + preview if present.
-			const focused = selected && !isTypeRow(selected.value) ? q.options.find((o) => o.label === selected.value) : undefined;
+			const focused =
+				selected && !isTypeRow(selected.value) ? q.options.find((o) => o.label === selected.value) : undefined;
 			if (focused) {
 				lines.push(pad(bar()));
 				lines.push(pad(row(this.theme.fg("accent", "Description"))));
@@ -313,7 +338,8 @@ export class QuestionnaireComponent implements Component {
 					for (const line of previewLines.slice(0, 8)) {
 						lines.push(pad(row(this.theme.fg("dim", truncateToWidth(line, contentWidth - 2)))));
 					}
-					if (previewLines.length > 8) lines.push(pad(row(this.theme.fg("dim", `… +${previewLines.length - 8} more lines`))));
+					if (previewLines.length > 8)
+						lines.push(pad(row(this.theme.fg("dim", `… +${previewLines.length - 8} more lines`))));
 				}
 				lines.push(pad(bar()));
 			}

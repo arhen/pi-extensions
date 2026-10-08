@@ -5,7 +5,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { formatContent } from "../src/state.ts";
 import { childLetter, prioritizeRows, TaskTree } from "../src/tree.ts";
 import type { Task, TaskDetails, TaskState } from "../src/types.ts";
-import { renderWidget, resultLines, taskLine, TodoResultPreview, viewerBudget, widgetBudget } from "../src/view.ts";
+import { renderWidget, resultLines, TodoResultPreview, taskLine, viewerBudget, widgetBudget } from "../src/view.ts";
 import { TodoViewer } from "../src/viewer.ts";
 
 const theme = {
@@ -14,10 +14,23 @@ const theme = {
 	strikethrough: (text: string) => `\u001b[9m${text}\u001b[29m`,
 } as unknown as Theme;
 const plain = (lines: string[]) => lines.join("\n").replace(/\u001b\[[0-9;]*m/g, "");
-const task = (id: number, parentId?: number, status: Task["status"] = "pending"): Task => ({ id, subject: `Task ${id}`, status, ...(parentId === undefined ? {} : { parentId }) });
+const task = (id: number, parentId?: number, status: Task["status"] = "pending"): Task => ({
+	id,
+	subject: `Task ${id}`,
+	status,
+	...(parentId === undefined ? {} : { parentId }),
+});
 const stateOf = (tasks: Task[]): TaskState => ({ tasks, nextId: Math.max(0, ...tasks.map((task) => task.id)) + 1 });
-const fixture = stateOf([task(7), task(8, 7, "completed"), task(9, 7), task(10, 9, "completed"), task(11, 9, "in_progress")]);
-const depths = Array.from({ length: 2000 }, (_, index) => task(index + 1, index ? index : undefined, index === 1999 ? "in_progress" : "pending"));
+const fixture = stateOf([
+	task(7),
+	task(8, 7, "completed"),
+	task(9, 7),
+	task(10, 9, "completed"),
+	task(11, 9, "in_progress"),
+]);
+const depths = Array.from({ length: 2000 }, (_, index) =>
+	task(index + 1, index ? index : undefined, index === 1999 ? "in_progress" : "pending"),
+);
 
 function checkBounds(lines: string[], width: number, height: number) {
 	expect(lines.length).toBeLessThanOrEqual(height);
@@ -28,8 +41,20 @@ function viewer(state: TaskState, rows = 32) {
 	const terminal = { rows };
 	let redraws = 0;
 	let closed = false;
-	const tui = { terminal, requestRender: () => { redraws++; } } as unknown as TUI;
-	const component = new TodoViewer(tui, theme, () => state, () => { closed = true; });
+	const tui = {
+		terminal,
+		requestRender: () => {
+			redraws++;
+		},
+	} as unknown as TUI;
+	const component = new TodoViewer(
+		tui,
+		theme,
+		() => state,
+		() => {
+			closed = true;
+		},
+	);
 	return { component, terminal, redraws: () => redraws, closed: () => closed };
 }
 
@@ -111,12 +136,14 @@ describe("compact widget", () => {
 	test("prioritization returns at most its row budget", () => {
 		const tree = new TaskTree(depths);
 		const visible = new Set(depths.map((task) => task.id));
-		for (let limit = 0; limit < 8; limit++) expect(prioritizeRows(tree, visible, limit).length).toBeLessThanOrEqual(limit);
+		for (let limit = 0; limit < 8; limit++)
+			expect(prioritizeRows(tree, visible, limit).length).toBeLessThanOrEqual(limit);
 	});
 	for (const height of [1, 3, 4, 8, 12, 24, 32, 60]) {
 		for (const width of [0, 1, 8, 20, 40, 80]) {
 			test(`height ${height}, width ${width}: flat and deep stay bounded`, () => {
-				for (const state of [fixture, stateOf(depths)]) checkBounds(renderWidget(state, new Set(), theme, width, height).lines, width, widgetBudget(height));
+				for (const state of [fixture, stateOf(depths)])
+					checkBounds(renderWidget(state, new Set(), theme, width, height).lines, width, widgetBudget(height));
 			});
 		}
 	}
@@ -132,7 +159,12 @@ describe("tool previews", () => {
 		expect(text).not.toContain("id: 11");
 	});
 	test("list status and tombstone filters are honored", () => {
-		const details: TaskDetails = { action: "list", params: { status: "completed" }, tasks: [...fixture.tasks, task(12, undefined, "deleted")], nextId: 13 };
+		const details: TaskDetails = {
+			action: "list",
+			params: { status: "completed" },
+			tasks: [...fixture.tasks, task(12, undefined, "deleted")],
+			nextId: 13,
+		};
 		expect(plain(resultLines(details, "", theme, 100))).not.toContain("Task 11");
 		details.params = { includeDeleted: true, status: "deleted" };
 		expect(plain(resultLines(details, "", theme, 100))).toContain("Task 12");
@@ -155,10 +187,24 @@ describe("tool previews", () => {
 	for (const action of ["create", "update", "list", "get", "delete", "clear"] as const) {
 		for (const expanded of [false, true]) {
 			test(`${action}, expanded=${expanded}: all result branches bounded`, () => {
-				const tasks = [...fixture.tasks, { ...task(12), description: "huge ".repeat(3000), activeForm: "working ".repeat(3000), owner: "owner ".repeat(3000) }];
+				const tasks = [
+					...fixture.tasks,
+					{
+						...task(12),
+						description: "huge ".repeat(3000),
+						activeForm: "working ".repeat(3000),
+						owner: "owner ".repeat(3000),
+					},
+				];
 				const details: TaskDetails = { action, params: { id: 12 }, tasks, nextId: 13 };
 				for (const data of [details, { ...details, error: "failure" }, undefined]) {
-					const component = new TodoResultPreview(data, "long 中文🌳 ".repeat(200) + "\n".repeat(100), theme, () => 12, expanded);
+					const component = new TodoResultPreview(
+						data,
+						"long 中文🌳 ".repeat(200) + "\n".repeat(100),
+						theme,
+						() => 12,
+						expanded,
+					);
 					checkBounds(component.render(20), 20, 3);
 				}
 			});

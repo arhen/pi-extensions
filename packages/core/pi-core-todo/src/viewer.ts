@@ -1,7 +1,7 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI } from "@earendil-works/pi-tui";
 import { matchesKey, visibleWidth } from "@earendil-works/pi-tui";
-import { TaskTree, type TaskRow } from "./tree.ts";
+import { type TaskRow, TaskTree } from "./tree.ts";
 import type { TaskState } from "./types.ts";
 import { clip, taskLine, viewerBudget } from "./view.ts";
 
@@ -12,14 +12,20 @@ export class TodoViewer implements Component {
 	private tasks: TaskState["tasks"] | undefined;
 	private tree = new TaskTree([]);
 
-	constructor(private readonly tui: TUI, private readonly theme: Theme, private readonly getState: () => TaskState, private readonly done: () => void) {}
+	constructor(
+		private readonly tui: TUI,
+		private readonly theme: Theme,
+		private readonly getState: () => TaskState,
+		private readonly done: () => void,
+	) {}
 
 	private rows(): TaskRow[] {
 		const state = this.getState();
 		if (state.tasks !== this.tasks) {
 			this.tasks = state.tasks;
 			this.tree = new TaskTree(state.tasks);
-			if (this.selectedId === undefined) this.selectedId = state.tasks.find((task) => task.status === "in_progress")?.id;
+			if (this.selectedId === undefined)
+				this.selectedId = state.tasks.find((task) => task.status === "in_progress")?.id;
 		}
 		const rows = this.tree.rows(this.collapsed);
 		if (!rows.some((row) => row.task.id === this.selectedId)) this.selectedId = rows[0]?.task.id;
@@ -79,14 +85,24 @@ export class TodoViewer implements Component {
 		const live = this.tasks?.filter((task) => task.status !== "deleted") ?? [];
 		const done = live.filter((task) => task.status === "completed").length;
 		const lines: string[] = [];
-		if (budget >= 3) lines.push(clip(this.theme.fg("accent", `Todos (${done}/${live.length}) · ${rows.length ? this.offset + 1 : 0}–${Math.min(rows.length, this.offset + capacity)} of ${rows.length}`), width));
+		if (budget >= 3)
+			lines.push(
+				clip(
+					this.theme.fg(
+						"accent",
+						`Todos (${done}/${live.length}) · ${rows.length ? this.offset + 1 : 0}–${Math.min(rows.length, this.offset + capacity)} of ${rows.length}`,
+					),
+					width,
+				),
+			);
 		for (const row of rows.slice(this.offset, this.offset + capacity)) {
 			const hasChildren = this.tree.progress(row.task.id).total > 0;
 			const branch = this.tree.isLastSibling(row.task.id) ? "└─" : "├─";
 			const disclosure = hasChildren ? branch + (this.collapsed.has(row.task.id) ? "▸" : "▾") : undefined;
 			const text = taskLine(this.tree, row, this.theme, Math.max(0, width - 2), disclosure);
 			let line = clip(`${row.task.id === this.selectedId ? "› " : "  "}${text}`, width);
-			if (row.task.id === this.selectedId) line = this.theme.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line))));
+			if (row.task.id === this.selectedId)
+				line = this.theme.bg("selectedBg", line + " ".repeat(Math.max(0, width - visibleWidth(line))));
 			lines.push(line);
 		}
 		if (!rows.length) lines.push(clip(this.theme.fg("muted", "No todos"), width));

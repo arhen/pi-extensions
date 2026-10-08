@@ -16,12 +16,9 @@ test("empty input yields empty command", () => {
 	assert.deepEqual(splitCmd("   "), ["", []]);
 });
 test("fileCheck substitutes placeholder and still wraps shell chains", () => {
-	assert.deepEqual(
-		splitFileCmd(`npx biome check --formatter-enabled=false \${file}`, "a b.ts"),
-		["npx", ["biome", "check", "--formatter-enabled=false", "a b.ts"]],
-	);
-	assert.deepEqual(
-		splitFileCmd(`cd pkg && lint \${file}`, "src/a.ts"),
-		["bash", ["-lc", "cd pkg && lint src/a.ts"]],
-	);
+	assert.deepEqual(splitFileCmd(`npx biome check --formatter-enabled=false \${file}`, "a b.ts"), [
+		"npx",
+		["biome", "check", "--formatter-enabled=false", "a b.ts"],
+	]);
+	assert.deepEqual(splitFileCmd(`cd pkg && lint \${file}`, "src/a.ts"), ["bash", ["-lc", "cd pkg && lint src/a.ts"]]);
 });

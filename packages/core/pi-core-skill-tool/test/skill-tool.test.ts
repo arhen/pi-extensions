@@ -6,12 +6,10 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import extension from "../src/index.ts";
 
 // Use the installed SDK's real modern prompt builder, like pi's extension runner does.
-const sdkEntry = (
-	import.meta as unknown as { resolve(specifier: string): string }
-).resolve("@earendil-works/pi-coding-agent");
-const modern = (await import(
-	new URL("./core/system-prompt.js", sdkEntry).href
-)) as {
+const sdkEntry = (import.meta as unknown as { resolve(specifier: string): string }).resolve(
+	"@earendil-works/pi-coding-agent",
+);
+const modern = (await import(new URL("./core/system-prompt.js", sdkEntry).href)) as {
 	buildSystemPrompt: (options: unknown) => string;
 	normalizeBuildSystemPromptOptions: (input: unknown) => StructuredOptions;
 };
@@ -85,15 +83,11 @@ async function runHandler(
 	warnings: string[];
 }> {
 	const warnings: string[] = [];
-	const warn = spyOn(console, "warn").mockImplementation(
-		(...args: unknown[]) => {
-			warnings.push(args.map(String).join(" "));
-		},
-	);
+	const warn = spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+		warnings.push(args.map(String).join(" "));
+	});
 	try {
-		const result = (await handlers[0]?.(event)) as
-			| { systemPrompt?: string }
-			| undefined;
+		const result = (await handlers[0]?.(event)) as { systemPrompt?: string } | undefined;
 		return { result, warnings };
 	} finally {
 		warn.mockRestore();
@@ -208,9 +202,7 @@ describe("structured prompt host (pi >= 0.99)", () => {
 			sections: { mode: "keep-mode", skills: "custom-skills-section" },
 			skills: [skill()],
 		});
-		expect(modern.buildSystemPrompt(options)).toContain(
-			"custom-skills-section",
-		);
+		expect(modern.buildSystemPrompt(options)).toContain("custom-skills-section");
 
 		await runHandler(handlers, event);
 
@@ -254,9 +246,7 @@ describe("structured prompt host (pi >= 0.99)", () => {
 			selectedTools: ["edit", "write"],
 			skills: [skill()],
 		});
-		expect(modern.buildSystemPrompt(options)).not.toContain(
-			"<available_skills>",
-		);
+		expect(modern.buildSystemPrompt(options)).not.toContain("<available_skills>");
 
 		const { result, warnings } = await runHandler(handlers, event);
 
@@ -300,8 +290,7 @@ describe("structured prompt host (pi >= 0.99)", () => {
 		const { handlers } = await loadExtension();
 		const { event, options } = modernHost({
 			skills: [skill()],
-			forceSystemPrompt:
-				"FORCED PROMPT\n<available_skills>\n</available_skills>",
+			forceSystemPrompt: "FORCED PROMPT\n<available_skills>\n</available_skills>",
 		});
 
 		const { result, warnings } = await runHandler(handlers, event);
@@ -339,14 +328,10 @@ describe("legacy prompt-string host (pi 0.84.x)", () => {
 
 		const { result, warnings } = await runHandler(handlers, event);
 
-		expect(result?.systemPrompt).toBe(
-			"Guidelines:\n- Be concise in your responses\nCurrent working directory: /work",
-		);
+		expect(result?.systemPrompt).toBe("Guidelines:\n- Be concise in your responses\nCurrent working directory: /work");
 		expect(shared).toHaveLength(1);
 		expect(event.systemPromptOptions.skills).toBe(shared);
-		expect(event.systemPromptOptions.sections.skills).toBe(
-			"keep-custom-section",
-		);
+		expect(event.systemPromptOptions.sections.skills).toBe("keep-custom-section");
 		expect(warnings).toEqual([]);
 		expect(tools).toHaveLength(1);
 	});
@@ -358,9 +343,7 @@ describe("legacy prompt-string host (pi 0.84.x)", () => {
 
 		const { result, warnings } = await runHandler(handlers, event);
 
-		expect(result?.systemPrompt).toBe(
-			"Guidelines:\n- Be concise in your responses\nCurrent working directory: /work",
-		);
+		expect(result?.systemPrompt).toBe("Guidelines:\n- Be concise in your responses\nCurrent working directory: /work");
 		expect(shared).toHaveLength(1);
 		expect(warnings).toEqual([]);
 	});
@@ -378,8 +361,7 @@ describe("legacy prompt-string host (pi 0.84.x)", () => {
 
 	test("leaves an unrelated non-empty <skills> tag untouched", async () => {
 		const { handlers } = await loadExtension();
-		const prompt =
-			"KEEP-BEFORE\n\n<skills>\nuser content\n</skills>\n\nKEEP-AFTER";
+		const prompt = "KEEP-BEFORE\n\n<skills>\nuser content\n</skills>\n\nKEEP-AFTER";
 		const event = legacyHost(prompt, [skill()]);
 
 		const { result, warnings } = await runHandler(handlers, event);
@@ -427,16 +409,7 @@ describe("skill tool", () => {
 			const filePath = join(dir, "SKILL.md");
 			writeFileSync(
 				filePath,
-				[
-					"---",
-					"name: probe",
-					"description: Probe skill",
-					"---",
-					"",
-					"# Body",
-					"",
-					"Follow these steps.",
-				].join("\n"),
+				["---", "name: probe", "description: Probe skill", "---", "", "# Body", "", "Follow these steps."].join("\n"),
 			);
 			const { handlers, tools } = await loadExtension();
 			const { event } = modernHost({

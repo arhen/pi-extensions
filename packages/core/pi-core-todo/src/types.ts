@@ -94,32 +94,47 @@ export const TaskOpSchema = Type.Object({
 	),
 	id: Type.Optional(
 		Type.Union([Type.Number(), Type.String()], {
-			description: "Task to update/delete: numeric id, or a ref defined by an earlier create op in this batch (required for update/delete)",
+			description:
+				"Task to update/delete: numeric id, or a ref defined by an earlier create op in this batch (required for update/delete)",
 		}),
 	),
 	subject: Type.Optional(Type.String({ description: "Task subject line (required for create)" })),
 	description: Type.Optional(Type.String({ description: "Long-form task description" })),
 	activeForm: Type.Optional(
-		Type.String({ description: "Present-continuous spinner label shown while status is in_progress (e.g. 'writing tests')" }),
+		Type.String({
+			description: "Present-continuous spinner label shown while status is in_progress (e.g. 'writing tests')",
+		}),
 	),
-	status: Type.Optional(StringEnum(["pending", "in_progress", "completed", "deleted"] as const, { description: "Set this task's status (update)" })),
+	status: Type.Optional(
+		StringEnum(["pending", "in_progress", "completed", "deleted"] as const, {
+			description: "Set this task's status (update)",
+		}),
+	),
 	parentId: Type.Optional(
 		Type.Union([Type.Number(), Type.String(), Type.Null()], {
 			description: "Parent (create/update): numeric id, a ref defined by an earlier create op, or null for a root task",
 		}),
 	),
 	blockedBy: Type.Optional(
-		Type.Array(Type.Union([Type.Number(), Type.String()]), { description: "Initial blockedBy ids or refs (create only)" }),
+		Type.Array(Type.Union([Type.Number(), Type.String()]), {
+			description: "Initial blockedBy ids or refs (create only)",
+		}),
 	),
 	addBlockedBy: Type.Optional(
-		Type.Array(Type.Union([Type.Number(), Type.String()]), { description: "Ids or refs to add to blockedBy (update only, additive merge)" }),
+		Type.Array(Type.Union([Type.Number(), Type.String()]), {
+			description: "Ids or refs to add to blockedBy (update only, additive merge)",
+		}),
 	),
 	removeBlockedBy: Type.Optional(
-		Type.Array(Type.Union([Type.Number(), Type.String()]), { description: "Ids or refs to remove from blockedBy (update only, additive merge)" }),
+		Type.Array(Type.Union([Type.Number(), Type.String()]), {
+			description: "Ids or refs to remove from blockedBy (update only, additive merge)",
+		}),
 	),
 	owner: Type.Optional(Type.String({ description: "Agent/owner assigned to this task" })),
 	metadata: Type.Optional(
-		Type.Record(Type.String(), Type.Unknown(), { description: "Arbitrary metadata; pass null value for a key to delete that key on update" }),
+		Type.Record(Type.String(), Type.Unknown(), {
+			description: "Arbitrary metadata; pass null value for a key to delete that key on update",
+		}),
 	),
 });
 
@@ -148,7 +163,8 @@ export const TodoParamsSchema = Type.Object({
 	),
 	parentId: Type.Optional(
 		Type.Union([Type.Number(), Type.Null()], {
-			description: "Parent task id (create/update). Pass null for a root task; omit to leave parent unchanged on update. Statuses are explicit: a parent cannot complete until all live descendants complete.",
+			description:
+				"Parent task id (create/update). Pass null for a root task; omit to leave parent unchanged on update. Statuses are explicit: a parent cannot complete until all live descendants complete.",
 		}),
 	),
 	blockedBy: Type.Optional(Type.Array(Type.Number(), { description: "Initial blockedBy ids (create only)" })),
@@ -169,4 +185,3 @@ export const TodoParamsSchema = Type.Object({
 		Type.Boolean({ description: "If true, list action returns deleted (tombstoned) tasks as well. Default: false." }),
 	),
 });
-

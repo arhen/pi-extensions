@@ -38,21 +38,32 @@ export class TodoOverlay {
 			return;
 		}
 		if (!this.widgetRegistered) {
-			this.uiCtx.setWidget(WIDGET_KEY, (tui, factoryTheme) => {
-				this.tui = tui;
-				return {
-					render: (width) => {
-						const state = getRenderState();
-						this.trackSnapshot(state);
-						const result = renderWidget(state, this.hiddenCompletedTaskIds, this.uiCtx?.theme ?? factoryTheme, width, tui.terminal.rows);
-						for (const id of result.displayedIds) {
-							if (state.tasks.find((task) => task.id === id)?.status === "completed") this.completedTaskIdsPendingHide.add(id);
-						}
-						return result.lines;
-					},
-					invalidate: () => {},
-				};
-			}, { placement: "aboveEditor" });
+			this.uiCtx.setWidget(
+				WIDGET_KEY,
+				(tui, factoryTheme) => {
+					this.tui = tui;
+					return {
+						render: (width) => {
+							const state = getRenderState();
+							this.trackSnapshot(state);
+							const result = renderWidget(
+								state,
+								this.hiddenCompletedTaskIds,
+								this.uiCtx?.theme ?? factoryTheme,
+								width,
+								tui.terminal.rows,
+							);
+							for (const id of result.displayedIds) {
+								if (state.tasks.find((task) => task.id === id)?.status === "completed")
+									this.completedTaskIdsPendingHide.add(id);
+							}
+							return result.lines;
+						},
+						invalidate: () => {},
+					};
+				},
+				{ placement: "aboveEditor" },
+			);
 			this.widgetRegistered = true;
 		} else this.tui?.requestRender();
 	}

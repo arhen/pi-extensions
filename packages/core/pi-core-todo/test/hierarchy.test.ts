@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { applyTaskMutation, buildToolResult, deriveBlocks } from "../src/state.ts";
-import { EMPTY_STATE, TodoParamsSchema, type Task, type TaskAction, type TaskMutationParams, type TaskState, type TaskStatus } from "../src/types.ts";
+import {
+	EMPTY_STATE,
+	type Task,
+	type TaskAction,
+	type TaskMutationParams,
+	type TaskState,
+	type TaskStatus,
+	TodoParamsSchema,
+} from "../src/types.ts";
 
 function task(id: number, status: TaskStatus = "pending", parentId?: number): Task {
 	return { id, subject: `task ${id}`, status, ...(parentId === undefined ? {} : { parentId }) };
@@ -36,7 +44,9 @@ function chain(depth: number, status: TaskStatus): TaskState {
 
 describe("hierarchy compatibility and API", () => {
 	test("old flat snapshots retain their shape and behavior", () => {
-		let state: TaskState = JSON.parse('{"tasks":[{"id":1,"subject":"old root","status":"pending"},{"id":2,"subject":"old dependent","status":"pending","blockedBy":[1]},{"id":3,"subject":"old tombstone","status":"deleted"}],"nextId":4}');
+		let state: TaskState = JSON.parse(
+			'{"tasks":[{"id":1,"subject":"old root","status":"pending"},{"id":2,"subject":"old dependent","status":"pending","blockedBy":[1]},{"id":3,"subject":"old tombstone","status":"deleted"}],"nextId":4}',
+		);
 		const original = JSON.stringify(state);
 		expect(applyTaskMutation(state, "list", {}).state).toBe(state);
 		expect(applyTaskMutation(state, "get", { id: 2 }).op).toMatchObject({ kind: "get", task: state.tasks[1] });
@@ -87,7 +97,12 @@ describe("hierarchy compatibility and API", () => {
 
 	test("omitting parent preserves it during updates", () => {
 		const state = snapshot(task(1), task(2, "pending", 1));
-		const updated = mutate(state, "update", { id: 2, subject: "renamed", status: "in_progress", activeForm: "working" });
+		const updated = mutate(state, "update", {
+			id: 2,
+			subject: "renamed",
+			status: "in_progress",
+			activeForm: "working",
+		});
 		expect(find(updated, 2)).toMatchObject({ parentId: 1, subject: "renamed", status: "in_progress" });
 	});
 
@@ -99,7 +114,19 @@ describe("hierarchy compatibility and API", () => {
 
 describe("hierarchy moves", () => {
 	test("moving a subtree preserves its descendants and other fields", () => {
-		const state = snapshot(task(1), task(2), { ...task(3, "in_progress", 1), description: "detail", activeForm: "working", owner: "agent", metadata: { key: "value" }, blockedBy: [2] }, task(4, "pending", 3));
+		const state = snapshot(
+			task(1),
+			task(2),
+			{
+				...task(3, "in_progress", 1),
+				description: "detail",
+				activeForm: "working",
+				owner: "agent",
+				metadata: { key: "value" },
+				blockedBy: [2],
+			},
+			task(4, "pending", 3),
+		);
 		const updated = mutate(state, "update", { id: 3, parentId: 2 });
 		expect(find(updated, 3)).toEqual({ ...find(state, 3), parentId: 2 });
 		expect(find(updated, 4)).toBe(find(state, 4));
@@ -116,7 +143,12 @@ describe("hierarchy moves", () => {
 	});
 
 	test("successful reparent and deletion never mutate frozen input", () => {
-		const state = snapshot(task(1), task(2), { ...task(3, "pending", 1), blockedBy: [1, 2] }, { ...task(4, "pending", 3), blockedBy: [2, 3] });
+		const state = snapshot(
+			task(1),
+			task(2),
+			{ ...task(3, "pending", 1), blockedBy: [1, 2] },
+			{ ...task(4, "pending", 3), blockedBy: [2, 3] },
+		);
 		for (const item of state.tasks) {
 			if (item.blockedBy) Object.freeze(item.blockedBy);
 			Object.freeze(item);
@@ -131,7 +163,12 @@ describe("hierarchy moves", () => {
 	});
 
 	test("a completed subtree can move under completed ancestors", () => {
-		const state = snapshot(task(1, "completed"), task(2, "completed", 1), task(3, "completed"), task(4, "completed", 3));
+		const state = snapshot(
+			task(1, "completed"),
+			task(2, "completed", 1),
+			task(3, "completed"),
+			task(4, "completed", 3),
+		);
 		const updated = mutate(state, "update", { id: 3, parentId: 2 });
 		expect(find(updated, 3).parentId).toBe(2);
 		expect(find(updated, 4).parentId).toBe(3);
@@ -145,7 +182,18 @@ describe("hierarchy moves", () => {
 });
 
 describe("hierarchy validation and atomic rejection", () => {
-	for (const parentId of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, "1", false, {}, []]) {
+	for (const parentId of [
+		0,
+		-1,
+		1.5,
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		Number.MAX_SAFE_INTEGER + 1,
+		"1",
+		false,
+		{},
+		[],
+	]) {
 		test(`invalid parent ${String(parentId)} is rejected on create and update`, () => {
 			const state = snapshot(task(1), task(2));
 			const params = { parentId } as TaskMutationParams;
@@ -198,8 +246,26 @@ describe("hierarchy validation and atomic rejection", () => {
 	});
 
 	test("rejected hierarchy updates leave status, fields, metadata and dependencies untouched", () => {
-		const state = snapshot(task(1), { ...task(2, "pending", 1), subject: "old", description: "old detail", metadata: { keep: 1 }, blockedBy: [1] }, task(3));
-		reject(state, "update", { id: 2, parentId: 2, subject: "new", description: "new detail", status: "in_progress", metadata: { keep: null, add: 2 }, removeBlockedBy: [1], addBlockedBy: [3] }, "itself");
+		const state = snapshot(
+			task(1),
+			{ ...task(2, "pending", 1), subject: "old", description: "old detail", metadata: { keep: 1 }, blockedBy: [1] },
+			task(3),
+		);
+		reject(
+			state,
+			"update",
+			{
+				id: 2,
+				parentId: 2,
+				subject: "new",
+				description: "new detail",
+				status: "in_progress",
+				metadata: { keep: null, add: 2 },
+				removeBlockedBy: [1],
+				addBlockedBy: [3],
+			},
+			"itself",
+		);
 	});
 
 	test("dependency rejection does not partially commit a valid reparent", () => {
@@ -216,7 +282,12 @@ describe("hierarchy validation and atomic rejection", () => {
 
 describe("explicit hierarchy statuses", () => {
 	test("parents cannot complete with pending or in-progress descendants", () => {
-		const state = snapshot(task(1, "in_progress"), task(2, "completed", 1), task(3, "pending", 2), task(4, "in_progress", 1));
+		const state = snapshot(
+			task(1, "in_progress"),
+			task(2, "completed", 1),
+			task(3, "pending", 2),
+			task(4, "in_progress", 1),
+		);
 		reject(state, "update", { id: 1, status: "completed", subject: "new", parentId: null }, "unfinished");
 		reject(state, "update", { id: 2, status: "completed" }, "unfinished");
 	});
@@ -252,12 +323,24 @@ describe("explicit hierarchy statuses", () => {
 
 describe("child promotion and tombstones", () => {
 	for (const action of ["delete", "update"] as const) {
-		const params = (id: number): TaskMutationParams => action === "delete" ? { id } : { id, status: "deleted" };
+		const params = (id: number): TaskMutationParams => (action === "delete" ? { id } : { id, status: "deleted" });
 
 		test(`${action} promotes live direct children, preserving statuses and grandchildren`, () => {
-			const state = snapshot(task(1), { ...task(2, "in_progress", 1), owner: "owner", metadata: { keep: true } }, task(3, "pending", 2), task(4, "completed", 2), task(5, "deleted", 2), task(6, "pending", 3));
+			const state = snapshot(
+				task(1),
+				{ ...task(2, "in_progress", 1), owner: "owner", metadata: { keep: true } },
+				task(3, "pending", 2),
+				task(4, "completed", 2),
+				task(5, "deleted", 2),
+				task(6, "pending", 3),
+			);
 			const updated = mutate(state, action, params(2));
-			expect(find(updated, 2)).toMatchObject({ status: "deleted", parentId: 1, owner: "owner", metadata: { keep: true } });
+			expect(find(updated, 2)).toMatchObject({
+				status: "deleted",
+				parentId: 1,
+				owner: "owner",
+				metadata: { keep: true },
+			});
 			expect(find(updated, 3)).toEqual({ ...find(state, 3), parentId: 1 });
 			expect(find(updated, 4)).toEqual({ ...find(state, 4), parentId: 1 });
 			expect(find(updated, 5)).toBe(find(state, 5));
@@ -277,7 +360,13 @@ describe("child promotion and tombstones", () => {
 		});
 
 		test(`${action} skips restored deleted ancestors to find the nearest live parent`, () => {
-			const state = snapshot(task(1), task(2, "deleted", 1), task(3, "deleted", 2), task(4, "pending", 3), task(5, "pending", 4));
+			const state = snapshot(
+				task(1),
+				task(2, "deleted", 1),
+				task(3, "deleted", 2),
+				task(4, "pending", 3),
+				task(5, "pending", 4),
+			);
 			const updated = mutate(state, action, params(4));
 			expect(find(updated, 5).parentId).toBe(1);
 			expect(find(updated, 4).parentId).toBe(3);
@@ -290,7 +379,13 @@ describe("child promotion and tombstones", () => {
 		});
 
 		test(`${action} preserves unrelated dependency edges and removes only deleted-id edges`, () => {
-			const state = snapshot(task(1), { ...task(2, "pending", 1), blockedBy: [1] }, { ...task(3, "pending", 2), blockedBy: [1, 2, 4] }, task(4), { ...task(5), blockedBy: [2, 4] });
+			const state = snapshot(
+				task(1),
+				{ ...task(2, "pending", 1), blockedBy: [1] },
+				{ ...task(3, "pending", 2), blockedBy: [1, 2, 4] },
+				task(4),
+				{ ...task(5), blockedBy: [2, 4] },
+			);
 			const updated = mutate(state, action, params(2));
 			expect(find(updated, 3).parentId).toBe(1);
 			expect(find(updated, 2).blockedBy).toEqual([1]);
@@ -352,8 +447,15 @@ describe("restored malformed hierarchy", () => {
 
 		test(`${action} uses root when deleted ancestor paths are malformed or missing`, () => {
 			for (const parentId of [99, "bad", null]) {
-				const state = snapshot({ ...task(1, "deleted"), parentId } as Task, task(2, "pending", 1), task(3, "pending", 2));
-				const updated = mutate(state, action, { id: 2, ...(action === "update" ? { status: "deleted" as const } : {}) });
+				const state = snapshot(
+					{ ...task(1, "deleted"), parentId } as Task,
+					task(2, "pending", 1),
+					task(3, "pending", 2),
+				);
+				const updated = mutate(state, action, {
+					id: 2,
+					...(action === "update" ? { status: "deleted" as const } : {}),
+				});
 				expect(find(updated, 3).parentId).toBeUndefined();
 			}
 		});
@@ -417,7 +519,10 @@ describe("deep iterative hierarchy", () => {
 			state.tasks[depth - 1] = task(depth, "pending", depth - 1);
 			state.tasks.push(task(depth + 1, "pending", depth));
 			state.nextId++;
-			const updated = mutate(state, action, { id: depth, ...(action === "update" ? { status: "deleted" as const } : {}) });
+			const updated = mutate(state, action, {
+				id: depth,
+				...(action === "update" ? { status: "deleted" as const } : {}),
+			});
 			expect(find(updated, depth + 1).parentId).toBe(1);
 			expect(find(updated, depth).parentId).toBe(depth - 1);
 		});

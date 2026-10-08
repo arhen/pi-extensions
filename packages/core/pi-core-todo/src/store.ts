@@ -8,7 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { type TaskState, EMPTY_STATE } from "./types.ts";
+import { EMPTY_STATE, type TaskState } from "./types.ts";
 
 const sessions = new Map<string, TaskState>();
 let activeRenderSession = "";
@@ -104,4 +104,3 @@ export function restoreSession(sessionId: string): boolean {
 export function hasSession(sessionId: string): boolean {
 	return sessions.has(sessionId);
 }
-
