@@ -26,8 +26,8 @@
  */
 import { existsSync, rmSync } from "node:fs";
 import { extname, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { VisionConfig } from "./src/core.ts";
+import type { ExtensionAPI, ExtensionToolContext } from "@earendil-works/pi-coding-agent";
+import type { VisionConfig, VisionUsage } from "./src/core.ts";
 import { createReadToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
@@ -98,7 +98,7 @@ export default function (pi: ExtensionAPI) {
       limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
     }),
 
-    async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionCommandContext) {
+    async execute(toolCallId, params, signal, onUpdate, ctx: ExtensionToolContext) {
       const raw = (params.path ?? "").replace(/^@/, ""); // docs: some models add @ prefix
       const absolutePath = resolve(ctx.cwd, raw);
 
@@ -117,7 +117,7 @@ export default function (pi: ExtensionAPI) {
         // Built-in returned no image (photon missing / BMP without processor / decode fail).
         // Text-only model: fall back to raw file describe when the path looks like an image.
         if (!cfgReady || !MIME[extname(absolutePath).toLowerCase()]) return result;
-        onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }] });
+        onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }], details: undefined });
         try {
           const { data, mimeType } = await readRawImage(absolutePath);
           const { text, usage } = cfg.provider
@@ -141,7 +141,7 @@ export default function (pi: ExtensionAPI) {
             "Run /pi-vision set baseUrl=... apiKey=... model=... or set PI_VISION_* env vars.",
         );
       }
-      onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }] });
+      onUpdate?.({ content: [{ type: "text", text: `Describing image via ${cfg.model}…` }], details: undefined });
       try {
         const { text, usage } = cfg.provider
           ? await describeViaRegistry(image.data, image.mimeType, cfg, ctx)
@@ -172,7 +172,7 @@ function visionFailureResult(err: Error) {
   return {
     content: [
       {
-        type: "text",
+        type: "text" as const,
         text: `[image: description unavailable — ${err.message.slice(0, 200)}. The image was not described; use OCR or ask the user if you need its content.]`,
       },
     ],
@@ -190,8 +190,8 @@ async function describeViaRegistry(
   data: string,
   mimeType: string,
   cfg: VisionConfig,
-  ctx: ExtensionCommandContext,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+  ctx: ExtensionToolContext,
+): Promise<{ text: string; usage?: VisionUsage }> {
   const registry = ctx.modelRegistry;
   const model = registry.find(cfg.provider ?? "", cfg.model);
   if (!model) {
@@ -238,6 +238,7 @@ async function describeViaRegistry(
           { type: "text", text: cfg.prompt },
           { type: "image", data, mimeType },
         ],
+        timestamp: Date.now(),
       },
     ],
   });

@@ -102,7 +102,7 @@ try {
       }),
       text: async () => "",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
 
   const out = await describeBase64("c2stZmFrZQ==", "image/jpeg", {
     baseUrl: "https://api.example.com/v1",
@@ -126,7 +126,7 @@ try {
       headers: new Headers({ "retry-after": "1" }),
       text: async () => "Requests per minute limit exceeded",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   let apiThrew = false;
   const t0 = Date.now();
   try {
@@ -156,8 +156,8 @@ try {
       headers: new Headers({ "retry-after": "5" }),
       text: async () => "Requests per minute limit exceeded",
     } as unknown as Response;
-  }) as typeof fetch;
-  let abortErr: Error | null = null;
+  }) as unknown as typeof fetch;
+  let abortErr = null as Error | null;
   const abortT0 = Date.now();
   const abortP = describeBase64("eA==", "image/png", {
     baseUrl: "https://api.example.com/v1",
@@ -193,7 +193,7 @@ try {
       json: async () => ({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } }),
       text: async () => "",
     } as unknown as Response;
-  }) as typeof fetch;
+  }) as unknown as typeof fetch;
   const chained = await describeBase64("eA==", "image/png", {
     baseUrl: "https://api.example.com/v1",
     apiKey: "k",
@@ -231,7 +231,7 @@ globalThis.fetch = (async () => {
     json: async () => ({ choices: [{ message: { content: "cached-now" } }], usage: { prompt_tokens: 9, completion_tokens: 3 } }),
     text: async () => "",
   } as unknown as Response;
-}) as typeof fetch;
+}) as unknown as typeof fetch;
 const first = await describeBase64("QUJERUZH", "image/png", cfgA);
 const second = await describeBase64("QUJERUZH", "image/png", cfgA);
 assert(first.text === "cached-now" && second.text === "cached-now", "both calls return description");

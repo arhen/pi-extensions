@@ -24,9 +24,7 @@ export function median(values: number[]): number {
 	if (values.length === 0) return 0;
 	const sorted = [...values].sort((a, b) => a - b);
 	const mid = Math.floor(sorted.length / 2);
-	return sorted.length % 2 === 1
-		? sorted[mid]
-		: (sorted[mid - 1] + sorted[mid]) / 2;
+	return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
 export function mean(values: number[]): number {
@@ -201,8 +199,8 @@ export default function (pi: ExtensionAPI) {
 				`Samples: ${n}`,
 				`Average: ${mean(tpsValues).toFixed(1)}`,
 				`Median:  ${median(tpsValues).toFixed(1)}`,
-				`Min:     ${sorted[0].toFixed(1)}`,
-				`Max:     ${sorted[n - 1].toFixed(1)}`,
+				`Min:     ${sorted[0]!.toFixed(1)}`,
+				`Max:     ${sorted[n - 1]!.toFixed(1)}`,
 			];
 			if (ttftValues.length > 0) {
 				lines.push(

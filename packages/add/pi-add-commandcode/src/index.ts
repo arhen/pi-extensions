@@ -138,7 +138,7 @@ function commandcodeKey(): string | undefined {
 }
 
 // `persist` stores whole Model objects, so each entry carries its own provider tag.
-type MappedModel = ProviderModelConfig & {
+type MappedModel = Extract<ProviderModelConfig, { type?: "chat" }> & {
   provider: string;
   baseUrl: string;
   api: "anthropic-messages" | "openai-completions";

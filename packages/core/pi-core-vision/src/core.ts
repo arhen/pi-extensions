@@ -25,6 +25,15 @@ const DEFAULT_PROMPT = `Describe this image as text for a text-only LLM that mus
 - Numbers, colors, icons, and anything that changes meaning if omitted
 Plain text with markdown structure, no preamble.`;
 
+export interface VisionUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cost: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+}
+
 export interface VisionConfig {
   /** Raw mode: any OpenAI-compatible endpoint (keep as-is). */
   baseUrl?: string;
@@ -143,7 +152,7 @@ export async function describeBase64(
   cfg: VisionConfig,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+): Promise<{ text: string; usage?: VisionUsage }> {
   const models = cfg.model.split(",").map((m) => m.trim()).filter(Boolean);
   if (models.length === 0) throw new Error("pi-vision: no model configured");
   let lastErr: Error | null = null;
@@ -163,7 +172,7 @@ async function describeOnce(
   cfg: VisionConfig,
   signal?: AbortSignal,
   extraHeaders?: Record<string, string>,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+): Promise<{ text: string; usage?: VisionUsage }> {
   // Cache hit → instant, zero tokens.
   const key = cacheKey(data, cfg);
   const cached = cacheGet(key);
@@ -186,7 +195,7 @@ async function describeOnce(
   const attempt = async (): Promise<Response> => {
     const timeoutSignal = AbortSignal.timeout(60_000);
     const combined = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
-    return fetch(`${cfg.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
+    return fetch(`${(cfg.baseUrl ?? "").replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
       signal: combined,
       headers: {
@@ -267,7 +276,7 @@ export async function describeRawFile(
   path: string,
   cfg: VisionConfig,
   signal?: AbortSignal,
-): Promise<{ text: string; usage?: { input: number; output: number } }> {
+): Promise<{ text: string; usage?: VisionUsage }> {
   const { data, mimeType } = await readRawImage(path);
   return describeBase64(data, mimeType, cfg, signal);
 }
@@ -284,7 +293,7 @@ function tokenize(args: string): string[] {
   let m: RegExpExecArray | null;
   while ((m = re.exec(args))) {
     if (m[1]) out.push(`${m[1]}=${m[2]}`);
-    else out.push(m[3] ?? m[4]);
+    else out.push(m[3] ?? m[4] ?? "");
   }
   return out;
 }
