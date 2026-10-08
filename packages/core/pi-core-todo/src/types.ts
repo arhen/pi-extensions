@@ -107,7 +107,8 @@ export const TaskOpSchema = Type.Object({
 	),
 	status: Type.Optional(
 		StringEnum(["pending", "in_progress", "completed", "deleted"] as const, {
-			description: "Set this task's status (update)",
+			description:
+				"Initial status on create: pending (default), in_progress, or completed. On update, sets the status, including deleted.",
 		}),
 	),
 	parentId: Type.Optional(
@@ -158,7 +159,7 @@ export const TodoParamsSchema = Type.Object({
 	status: Type.Optional(
 		StringEnum(["pending", "in_progress", "completed", "deleted"] as const, {
 			description:
-				"Set this task's status (update): one of pending, in_progress, completed, deleted. When action is list, filters returned tasks by this status.",
+				"Initial status on create: pending (default), in_progress, or completed. On update, sets the status, including deleted. On list, filters returned tasks by this status.",
 		}),
 	),
 	parentId: Type.Optional(

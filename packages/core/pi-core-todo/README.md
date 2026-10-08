@@ -83,7 +83,7 @@ Actions: `create`, `update`, `batch`, `list`, `get`, `delete`, `clear`.
 
 Fields: `subject`, `description`, `activeForm`, `status`, `parentId`, `id`, `blockedBy`, `addBlockedBy`, `removeBlockedBy`, `owner`, `metadata`, `includeDeleted`, plus `ops` for `batch`.
 
-Create produces a pending task; update sets its explicit status. `blockedBy` is the create-time seed — on update use `addBlockedBy` / `removeBlockedBy`. Dependency updates are additive, with self-block/cycle rejection. List hides deleted tasks unless `includeDeleted: true` and supports a status filter. Tombstoned tasks reject mutation (`task #N is deleted; tombstones are immutable`). `clear` wipes the list and restarts IDs at 1.
+Create defaults to `pending` and accepts an optional initial `status`: `pending`, `in_progress`, or `completed`, including in batch create ops. Use `activeForm` when creating an in-progress task. `deleted` is not an initial status; use delete or update to tombstone an existing task. Update sets the task's explicit status. `blockedBy` is the create-time seed — on update use `addBlockedBy` / `removeBlockedBy`. Dependency updates are additive, with self-block/cycle rejection. List hides deleted tasks unless `includeDeleted: true` and supports a status filter. Tombstoned tasks reject mutation (`task #N is deleted; tombstones are immutable`). `clear` wipes the list and restarts IDs at 1.
 
 Keep the list live while you work: the same tool adds the new step, splits a step into child subtasks via `parentId`, rewords or re-scopes an item, and cancels dropped work by deleting it. An `update` must change something — a status or another mutable field; an update without one is rejected.
 
@@ -104,11 +104,12 @@ Keep the list live while you work: the same tool adds the new step, splits a ste
 }
 ```
 
-- Each op accepts the same fields and validation as the matching single action; the top level carries only `ops`.
+- Each op accepts the same fields and validation as the matching single action, including initial `status` on create; the top level carries only `ops`.
 - Ops run in order on the accumulated list. The batch is **atomic**: the first failing op aborts it — nothing is applied and the error names the op, e.g. `batch op 2 (update): #99 not found; no changes applied`.
 - A create op may declare `ref` (letter-first alias). Later ops target it in `id`, `parentId`, `blockedBy`, `addBlockedBy`, or `removeBlockedBy`. Refs are unique per batch and only resolve backwards; numeric strings like `"7"` resolve as task ids.
 - `delete` accepts only `id`; tombstone immutability, parent completion, dependency cycles, and dedup rules are identical to single actions.
-- Results report one line per op (`created #1: Build feature`, `updated #1 (pending → in_progress)`), and the UI preview lists the affected tasks, bounded like `list`.
+- Results report one line per op (`created #1: Build feature`, `created #2: Investigate (in_progress)`, `updated #1 (pending → in_progress)`), and the UI preview lists the affected tasks, bounded like `list`.
+- Validation errors identify the rejected fields and are flagged as failed tool results, so the agent can correct its call.
 
 ## Persistence
 

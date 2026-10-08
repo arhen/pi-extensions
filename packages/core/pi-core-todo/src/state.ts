@@ -342,21 +342,25 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 		}
 
 		case "create": {
-			if (
-				params.status !== undefined ||
-				params.addBlockedBy !== undefined ||
-				params.removeBlockedBy !== undefined ||
-				params.includeDeleted !== undefined ||
-				params.id !== undefined
-			) {
+			const stray = ["addBlockedBy", "removeBlockedBy", "includeDeleted", "id"].filter(
+				(key) => params[key] !== undefined,
+			);
+			if (stray.length) {
 				return errorResult(
 					state,
-					"create accepts only: subject, description, activeForm, parentId, blockedBy, owner, metadata",
+					`create accepts only: subject, description, activeForm, status, parentId, blockedBy, owner, metadata (remove: ${stray.join(", ")})`,
+				);
+			}
+			const status = params.status === undefined ? "pending" : params.status;
+			if (status !== "pending" && status !== "in_progress" && status !== "completed") {
+				return errorResult(
+					state,
+					"create status must be pending, in_progress, or completed; use delete to tombstone an existing task",
 				);
 			}
 			if (!params.subject?.trim()) return errorResult(state, "subject required for create");
 			if (params.parentId !== undefined) {
-				const error = validateParent(state.tasks, state.nextId, params.parentId, true);
+				const error = validateParent(state.tasks, state.nextId, params.parentId, status !== "completed");
 				if (error) return errorResult(state, error);
 			}
 			if (params.blockedBy?.length) {
@@ -366,7 +370,7 @@ export function applyTaskMutation(state: TaskState, action: TaskAction, params: 
 					if (depTask.status === "deleted") return errorResult(state, `blockedBy: #${dep} is deleted`);
 				}
 			}
-			const newTask: Task = { id: state.nextId, subject: params.subject, status: "pending" };
+			const newTask: Task = { id: state.nextId, subject: params.subject, status };
 			if (params.parentId != null) newTask.parentId = params.parentId;
 			if (params.description) newTask.description = params.description;
 			if (params.activeForm) newTask.activeForm = params.activeForm;
@@ -578,7 +582,7 @@ export function formatContent(op: Op, state: TaskState): string {
 		case "create": {
 			const t = state.tasks.find((x) => x.id === op.taskId);
 			return t
-				? `Created ${formatReference(new TaskTree(state.tasks), t.id)}: ${sanitizeTerminalText(t.subject)} (pending)`
+				? `Created ${formatReference(new TaskTree(state.tasks), t.id)}: ${sanitizeTerminalText(t.subject)} (${t.status})`
 				: `Created #${op.taskId}`;
 		}
 		case "update": {
@@ -593,7 +597,10 @@ export function formatContent(op: Op, state: TaskState): string {
 			const tree = new TaskTree(state.tasks);
 			const lines = op.results.map((result) => {
 				const reference = formatReference(tree, result.id);
-				if (result.action === "create") return `created ${reference}: ${sanitizeTerminalText(result.subject)}`;
+				if (result.action === "create") {
+					const status = result.toStatus && result.toStatus !== "pending" ? ` (${result.toStatus})` : "";
+					return `created ${reference}: ${sanitizeTerminalText(result.subject)}${status}`;
+				}
 				if (result.action === "delete") return `deleted ${reference}: ${sanitizeTerminalText(result.subject)}`;
 				if (!result.changed)
 					return `no change: ${reference} already matches the requested values (status: ${result.toStatus})`;
@@ -627,7 +634,7 @@ export function buildToolResult(
 	params: TaskMutationParams,
 	state: TaskState,
 	op: Op,
-): { content: Array<{ type: "text"; text: string }>; details: TaskDetails } {
+): { content: Array<{ type: "text"; text: string }>; details: TaskDetails; isError?: boolean } {
 	const details: TaskDetails = {
 		action,
 		params: params as Record<string, unknown>,
@@ -636,5 +643,9 @@ export function buildToolResult(
 		...(op.kind === "error" ? { error: op.message } : {}),
 		...(op.kind === "batch" ? { batchResults: op.results } : {}),
 	};
-	return { content: [{ type: "text", text: formatContent(op, state) }], details };
+	return {
+		content: [{ type: "text", text: formatContent(op, state) }],
+		details,
+		...(op.kind === "error" ? { isError: true } : {}),
+	};
 }
