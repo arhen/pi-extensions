@@ -125,11 +125,12 @@ function mapModel(
 		thinkingLevelMap: THINKING_MAP,
 		input: ["text"],
 		cost: {
+			// pi rates are USD per 1M tokens, same unit as the catalog.
 			// cache billed at input price (docs: OpenClaw integration config)
-			input: (p?.usd_per_1m_input ?? 0) / 1_000_000,
-			output: (p?.usd_per_1m_output ?? 0) / 1_000_000,
-			cacheRead: (p?.usd_per_1m_input ?? 0) / 1_000_000,
-			cacheWrite: (p?.usd_per_1m_input ?? 0) / 1_000_000,
+			input: p?.usd_per_1m_input ?? 0,
+			output: p?.usd_per_1m_output ?? 0,
+			cacheRead: p?.usd_per_1m_input ?? 0,
+			cacheWrite: p?.usd_per_1m_input ?? 0,
 		},
 		contextWindow: m.context_window ?? p?.context_window ?? 1_048_576,
 		maxTokens: MAX_OUTPUT,
@@ -267,7 +268,7 @@ export default async function (pi: ExtensionAPI) {
 		modelRegistry: {
 			refresh(opts: { providers: string[]; force?: boolean }): Promise<unknown>;
 		};
-		ui: { notify(msg: string, kind?: string): void };
+		ui: { notify(msg: string, kind?: string): void; setStatus(k: string, v: string | undefined): void };
 		model?: { provider?: string };
 	};
 	const toggleZdr = async (
