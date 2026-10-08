@@ -39,6 +39,8 @@ immediately. The outbox is released at a delivery boundary (leader context and a
 which lets a later event prove a held notice redundant before it is ever submitted:
 
 - a terminal await that returns the task's outcome drops the matching held notice;
+- a `subagent_result` call that shows a finished task's full output drops it the same way (reading
+  the result is consumption; tasks cut off by the output cap stay uncovered);
 - a confirmed report suppresses its redundant task/run completion prompts;
 - a covered outcome from any terminal state (completed, failed, aborted) suppresses a duplicate
   aggregate entry for the same outcome.
@@ -46,6 +48,12 @@ which lets a later event prove a held notice redundant before it is ever submitt
 Failures keep interrupting the leader: a failed task or run notice is submitted as a steering
 message immediately, because the leader must decide (resume, swap model, respawn) before continuing.
 Aborts, completions, and informational updates are held, then delivered as follow-ups.
+
+Everything releasable at one boundary leaves as **one** leader message:
+`N subagent notices since your last turn:` followed by each notice body verbatim (a single notice is
+sent as-is). Each notice would otherwise cost its own leader turn — a full model call over the
+whole context — and Pi would run the prompts one behind the other. Receipts are still per notice:
+each body confirms on its own inside the batch.
 
 ## Receipts
 
@@ -80,10 +88,20 @@ Aggregates list only tasks not already covered by a report, a per-task notice, o
 ## Loss, retry, and fallback
 
 A receipt that is submitted but never appears in the canonical context is treated as **lost** when
-either a later agent run has started since its submission, or it has stayed unconfirmed for twice
-the 3-second grace period. The first condition keeps loss detection from racing Pi's deferred
-settle-queue turns and slow input/auth hooks (the session can report idle before the message is
-appended); the second catches a report that was stripped when no later turn ever runs.
+the leader is idle and either:
+
+- Pi **accepted** it (the subagent extension's `input` handler saw the body, so it left Pi's prompt
+  queue) and it is still missing from the canonical context 3 seconds later — it was dropped or
+  rewritten; or
+- Pi **never accepted** it and the leader has stayed idle for 30 seconds — its prompt threw before
+  the input stage (for example during compaction).
+
+"Another agent run started" is **not** evidence of loss. Prompts submitted during `agent_settled`
+are deferred and run one after another, and the leader looks idle between them, so a notice can sit
+in Pi's queue behind other prompts (goal continuations, user input, earlier notices) for as long as
+those runs take. Earlier versions treated a later run plus 3 s as loss, which resubmitted every
+queued notice and flooded the leader with repeats. Receipts are recorded before `sendUserMessage`,
+because an idle leader runs the input stage synchronously inside that call.
 
 - A lost notice is re-queued automatically for up to `MAX_DELIVERY_ATTEMPTS` (3) total submits, then
   the receipt is declared lost: a final report releases its per-task hold or a direct full fallback,
@@ -94,8 +112,8 @@ appended); the second catches a report that was stripped when no later turn ever
   one second apart). Pi reports asynchronous `sendUserMessage` rejections through its own error
   channel, so those surface as lost notices rather than as a retry loop here.
 
-Await coverage is per task: `markAwaitCoverage` receives the IDs the rendered summary actually
-covered, and only terminal notices or final reports whose text matches the awaited result are
+Await coverage is per task: `markAwaitCoverage` receives the IDs the rendered summary (or
+`subagent_result` output) actually covered, and only terminal notices or final reports whose text matches the awaited result are
 dropped. Updates and reports cut off by the 24-KiB summary cap are still delivered.
 
 ## State and limits
@@ -120,8 +138,13 @@ this work makes no new token, latency, or monetary-savings claim.
 Tests were added and reproduced failures before the corresponding implementation changes.
 `test/notification-dedup.test.ts` covers shared keys, held delivery, canonical receipts, wrapped and
 redacted bodies, the loss grace period and retry backoff, severity/phase/task boundaries, new
-results/work/artifacts, await coverage, aggregate coverage across terminal states, oversized-report
-fingerprints, and receipt-history cleanup.
+results/work/artifacts, await and `subagent_result` coverage, aggregate coverage across terminal
+states, oversized-report fingerprints, batching, queued-vs-accepted loss, and receipt-history cleanup.
+
+`test/presentation/notification-flood.test.ts` reproduces the live flood with real Pi sessions: three
+final reports held while the leader is busy, each leader turn taking 3.5 s, must arrive once each in
+one message (before the fix: 6 notice messages and 8 leader turns), and reports the leader already
+read with `subagent_result` must not arrive at all.
 
 `test/presentation/runtime-child.test.ts` uses real Pi sessions and a faux provider: busy-parent
 queues with either `notifyPerTask` mode, shared progress deduplication, a stripped report with an

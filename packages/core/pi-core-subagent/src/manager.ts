@@ -172,9 +172,13 @@ export class SubagentManager {
 		this.widget.clear(ctx);
 	}
 
-	/** An agent run started; a receipt can only be declared lost after one full later run. */
-	noteAgentStart(): void {
-		this.delivery.noteAgentStart();
+	/** Leader run started, ended or settled. */
+	noteLeaderActivity(): void {
+		this.delivery.noteLeaderActivity();
+	}
+	/** Pi's input stage saw a leader prompt; submitted notices it carries are no longer queued. */
+	noteLeaderInput(text: string, source: string): void {
+		this.delivery.noteLeaderInput(text, source);
 	}
 	markAwaitCoverage(run: RunSnapshot, coveredTaskIds?: ReadonlySet<string>): void {
 		this.delivery.markAwaitCoverage(run, coveredTaskIds);

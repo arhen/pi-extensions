@@ -14,12 +14,13 @@ import {
 } from "./types.ts";
 
 const FINAL_OUTPUT_CAP = 24 * 1024;
+const TRUNCATION_NOTE = "\n\n[Output truncated. Full child session is available in the session file.]";
 
 export function truncateText(text: string, max = FINAL_OUTPUT_CAP): string {
 	if (Buffer.byteLength(text, "utf8") <= max) return text;
 	let out = text.slice(0, max);
 	while (Buffer.byteLength(out, "utf8") > max) out = out.slice(0, -1);
-	return `${out}\n\n[Output truncated. Full child session is available in the session file.]`;
+	return `${out}${TRUNCATION_NOTE}`;
 }
 export function getFirstText(message: AssistantMessage): string {
 	for (const part of message?.content ?? []) {
@@ -238,6 +239,35 @@ export function makeSummaryWithCoverage(run: RunSnapshot): { text: string; cover
 	while (prefix < fullText.length && prefix < text.length && fullText[prefix] === text[prefix]) prefix++;
 	return { text, coveredTaskIds: new Set([...taskEnds].filter(([, end]) => end <= prefix).map(([id]) => id)) };
 }
+/**
+ * `subagent_result` text plus the terminal tasks whose full output it actually shows (not cut by the
+ * output cap). Reading a result is consumption: those tasks' held notices are redundant afterwards.
+ */
+export function makeResultWithCoverage(
+	run: RunSnapshot,
+	taskId?: string,
+): { text: string; coveredTaskIds: Set<string> } {
+	const tasks = taskId ? run.tasks.filter((t) => t.id === taskId) : run.tasks;
+	const parts = [`Run ${run.id} — ${run.status}`];
+	const taskEnds = new Map<string, number>();
+	for (const t of tasks) {
+		const wt = t.branch
+			? `\nBranch: ${t.branch}\n${t.diffStat || "(no diff available)"}\nMerge after review: \`git merge --no-ff ${t.branch}\``
+			: t.isolation === "in-place"
+				? `\nApplied IN PLACE (no branch) — ${t.isolationReason ?? "worktree unavailable"}. The changes are already in your working tree.`
+				: "";
+		const wtErr = t.worktreeError ? `\nWorktree: ${t.worktreeError}` : "";
+		const modelNote = t.modelNote ? `\nModel: ${t.modelNote}` : "";
+		parts.push(
+			`\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}${wtErr}${modelNote}\n${formatUsage(t.usage)}`,
+		);
+		if (TERMINAL.includes(t.status)) taskEnds.set(t.id, parts.join("\n").length);
+	}
+	const fullText = parts.join("\n");
+	const text = truncateText(fullText);
+	const shown = text === fullText ? fullText.length : text.length - TRUNCATION_NOTE.length;
+	return { text, coveredTaskIds: new Set([...taskEnds].filter(([, end]) => end <= shown).map(([id]) => id)) };
+}
 export function isStartupFailure(task: TaskSnapshot, kind: string): boolean {
 	return kind === "failed" && !task.finalText?.trim();
 }
@@ -260,6 +290,11 @@ export function makeTaskNotice(run: RunSnapshot, task: TaskSnapshot, kind: strin
 				? `Use subagent_result({ runId: "${run.id}", taskId: "${task.id}" }) for full output.`
 				: `Session file kept — resume_subagent({ runId: "${run.id}", taskId: "${task.id}", model?: ... }) revives it with full context. subagent_result for what it produced so far.`,
 	].join("\n");
+}
+/** Several held notices released together, as one leader message; each body stays verbatim. */
+export function makeNoticeBatch(bodies: string[]): string {
+	if (bodies.length === 1) return bodies[0]!;
+	return [`${bodies.length} subagent notices since your last turn:`, ...bodies].join("\n\n");
 }
 export function makeTaskArtifactNotice(run: RunSnapshot, task: TaskSnapshot): string {
 	return `Task ${task.agent} (${task.id}) completed in run ${run.id}; result already delivered.${worktreeLine(task, run.tasks)}\nUse subagent_result({ runId: "${run.id}", taskId: "${task.id}" }) for artifacts.`;

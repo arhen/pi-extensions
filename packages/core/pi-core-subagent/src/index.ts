@@ -4,6 +4,7 @@ import type { TSchema } from "typebox";
 import {
 	compactLines,
 	formatUsage,
+	makeResultWithCoverage,
 	makeSummaryWithCoverage,
 	renderModelCatalog,
 	statusIcon,
@@ -144,8 +145,11 @@ export default function (pi: ExtensionAPI) {
 
 	pi.registerShortcut("ctrl+shift+a", { description: "Peek at running subagents", handler: openPeek });
 
+	pi.on("input", (event) => {
+		manager.noteLeaderInput(event.text, event.source);
+	});
 	pi.on("agent_start", (_event, ctx) => {
-		manager.noteAgentStart();
+		manager.noteLeaderActivity();
 		if (!manager.turnActivity && !manager.hasActiveRun()) manager.clearWidget(ctx);
 		manager.turnActivity = false;
 	});
@@ -154,12 +158,14 @@ export default function (pi: ExtensionAPI) {
 		manager.confirmLeaderMessages(ctx);
 	});
 	pi.on("agent_end", (_event, ctx) => {
+		manager.noteLeaderActivity();
 		manager.confirmLeaderMessages(ctx);
 		manager.scheduleNotificationFlush(ctx);
 	});
 	// Settlement is the last automatic boundary: anything still held (a busy flush stopped earlier)
 	// must be released here, and receipts confirmed against the finalized projection.
 	pi.on("agent_settled", (_event, ctx) => {
+		manager.noteLeaderActivity();
 		manager.confirmLeaderMessages(ctx);
 		manager.flushPendingNotifications(ctx);
 	});
@@ -388,21 +394,10 @@ export default function (pi: ExtensionAPI) {
 			const { runId, taskId } = params as { runId: string; taskId?: string };
 			const run = manager.getRun(runId);
 			if (!run) return { content: [{ type: "text", text: `Unknown runId: ${runId}` }], isError: true, details: {} };
-			const tasks = taskId ? run.tasks.filter((t) => t.id === taskId) : run.tasks;
-			const text = [
-				`Run ${run.id} — ${run.status}`,
-				...tasks.map((t) => {
-					const wt = t.branch
-						? `\nBranch: ${t.branch}\n${t.diffStat || "(no diff available)"}\nMerge after review: \`git merge --no-ff ${t.branch}\``
-						: t.isolation === "in-place"
-							? `\nApplied IN PLACE (no branch) — ${t.isolationReason ?? "worktree unavailable"}. The changes are already in your working tree.`
-							: "";
-					const wtErr = t.worktreeError ? `\nWorktree: ${t.worktreeError}` : "";
-					const modelNote = t.modelNote ? `\nModel: ${t.modelNote}` : "";
-					return `\n## ${t.agent} ${statusIcon(t.status)}\nGoal: ${truncateText(t.task, 300)}\n${t.error ? `Error: ${t.error}` : t.finalText || "(no output yet)"}${wt}${wtErr}${modelNote}\n${formatUsage(t.usage)}`;
-				}),
-			].join("\n");
-			return { content: [{ type: "text", text: truncateText(text) }], details: { run: cloneRun(run) } };
+			const result = makeResultWithCoverage(run, taskId);
+			// Reading a finished task's full output is consumption, same as a terminal await.
+			manager.markAwaitCoverage(run, result.coveredTaskIds);
+			return { content: [{ type: "text", text: result.text }], details: { run: cloneRun(run) } };
 		},
 	});
 

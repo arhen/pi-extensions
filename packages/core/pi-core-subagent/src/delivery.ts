@@ -1,10 +1,16 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { makeAskNotice, makeNotice, makeTaskArtifactNotice, makeTaskNotice } from "./format.ts";
+import { makeAskNotice, makeNotice, makeNoticeBatch, makeTaskArtifactNotice, makeTaskNotice } from "./format.ts";
 import { artifactFingerprint, outcomeFingerprint, textFingerprint } from "./notification-state.ts";
 import { type ParkedMsg, type RunSnapshot, type TaskSnapshot, TERMINAL } from "./types.ts";
 
-/** A submitted notice missing from the canonical context this long is treated as lost. */
+/** A notice Pi accepted but that is missing from the canonical context this long after, while idle, is lost. */
 const RECEIPT_GRACE_MS = 3_000;
+/**
+ * A notice Pi never accepted (its prompt threw before the input stage, e.g. during compaction) is lost
+ * once the leader has been idle this long. Pi runs prompts submitted during settlement one after
+ * another, so an unaccepted notice is only proven gone after the leader stays idle past that queue.
+ */
+const UNACCEPTED_IDLE_MS = 30_000;
 /** Minimum wait before retrying a failed submission, so one flush cannot burn every attempt. */
 const RETRY_BACKOFF_MS = 1_000;
 /** Total submission attempts before a notice is declared lost. */
@@ -20,8 +26,8 @@ interface LeaderMessageReceipt {
 	lost: boolean;
 	submittedAt: number;
 	attempts: number;
-	/** Agent runs started when this receipt was submitted; a later run is needed to prove loss. */
-	submittedRunCount: number;
+	/** When Pi's prompt pipeline (the `input` event) saw this body; unset while it waits in Pi's queue. */
+	acceptedAt?: number;
 }
 
 interface OutboxEntry {
@@ -60,7 +66,7 @@ export class LeaderDelivery {
 	private leaderMessages = new Map<string, LeaderMessageReceipt>();
 	private outbox = new Map<string, OutboxEntry>();
 	private parkedBodies = new Map<string, Set<string>>();
-	private agentRunCount = 0;
+	private lastLeaderActivityAt = Date.now();
 	private terminalNotices = new Map<string, TerminalNotice>();
 	private awaitedTaskNotices = new Map<string, string>();
 	private pendingTaskNotices = new Map<string, { run: RunSnapshot; task: TaskSnapshot }>();
@@ -163,9 +169,36 @@ export class LeaderDelivery {
 		}
 	}
 
-	/** An agent run started; a receipt can only be declared lost after one full later run. */
-	noteAgentStart(): void {
-		this.agentRunCount += 1;
+	/** Leader run lifecycle (start/end/settle): an unaccepted notice is only lost after a long idle stretch. */
+	noteLeaderActivity(): void {
+		this.lastLeaderActivityAt = Date.now();
+	}
+
+	/**
+	 * Pi's `input` stage saw a prompt. A submitted notice whose body it carries has left Pi's queue: from
+	 * here a missing transcript entry means it was dropped or rewritten, not that it is still waiting.
+	 */
+	noteLeaderInput(text: string, source: string): void {
+		if (source !== "extension") return;
+		const now = Date.now();
+		for (const [body, receipt] of this.leaderMessages) {
+			if (receipt.acceptedAt === undefined && !receipt.delivered && !receipt.lost && text.includes(body))
+				receipt.acceptedAt = now;
+		}
+	}
+
+	private recordSubmission(body: string, entry: OutboxEntry, attempts: number): void {
+		this.leaderMessages.set(body, {
+			runId: entry.runId,
+			taskIds: entry.taskIds,
+			kind: entry.kind,
+			deliverAs: entry.deliverAs,
+			delivered: false,
+			submitted: true,
+			lost: false,
+			submittedAt: Date.now(),
+			attempts,
+		});
 	}
 
 	/** True when a terminal await already rendered this task's outcome. */
@@ -340,9 +373,11 @@ export class LeaderDelivery {
 	}
 
 	/**
-	 * A submitted receipt that never appears in the canonical context after a grace period is lost.
-	 * The grace period keeps the check from racing Pi's input/auth/start hooks, which run before the
-	 * message is appended to the session and can be slow while the session still reports idle.
+	 * Called only while the leader is idle. A notice Pi accepted (its `input` stage saw the body) has had
+	 * its turn: missing from the canonical context after the grace period, it was dropped or rewritten.
+	 * A notice Pi never accepted may still wait in Pi's settle queue — prompts submitted during
+	 * `agent_settled` run one after another, and the leader looks idle between them — so another run
+	 * starting proves nothing; only a long idle stretch does.
 	 */
 	private markLostReceipts(ctx: ExtensionContext, existing: ReadonlySet<string>): void {
 		const now = Date.now();
@@ -351,14 +386,11 @@ export class LeaderDelivery {
 		for (const [body, receipt] of [...this.leaderMessages]) {
 			if (receipt.delivered || receipt.lost || !existing.has(body)) continue;
 			if (this.outbox.has(body)) continue;
-			if (now - receipt.submittedAt < RECEIPT_GRACE_MS) continue;
-			// A later agent run proves the submitted prompt had its turn; a message that never runs
-			// at all is caught by the longer bound. While a prompt is still queued or in preflight
-			// (deferred settle, slow input/auth hooks) the session can report idle without the
-			// message being appended yet, so the short window alone must not declare loss.
-			const laterRun = this.agentRunCount > receipt.submittedRunCount;
-			const longWait = now - receipt.submittedAt >= RECEIPT_GRACE_MS * 2;
-			if (!laterRun && !longWait) continue;
+			const gone =
+				receipt.acceptedAt !== undefined
+					? now - receipt.acceptedAt >= RECEIPT_GRACE_MS
+					: now - receipt.submittedAt >= UNACCEPTED_IDLE_MS && now - this.lastLeaderActivityAt >= UNACCEPTED_IDLE_MS;
+			if (!gone) continue;
 			if (projection.includes(body)) continue;
 			if (receipt.attempts < MAX_DELIVERY_ATTEMPTS) {
 				this.leaderMessages.delete(body);
@@ -399,45 +431,37 @@ export class LeaderDelivery {
 		}
 	}
 
+	/**
+	 * Submit every releasable held notice as ONE leader message. Each notice is its own leader turn
+	 * otherwise — a full model call over the whole context — and Pi would queue them one behind the
+	 * other. Bodies stay verbatim inside the batch, so each receipt still confirms on its own.
+	 */
 	private flushOutbox(): void {
+		const now = Date.now();
+		const batch: [string, OutboxEntry][] = [];
 		for (const [body, entry] of [...this.outbox]) {
 			if (this.outboxCovered(entry)) {
 				this.dropOutbox(body, entry, "awaited");
 				continue;
 			}
-			if (entry.attemptedAt && Date.now() - entry.attemptedAt < RETRY_BACKOFF_MS) continue;
+			if (entry.attemptedAt && now - entry.attemptedAt < RETRY_BACKOFF_MS) continue;
+			batch.push([body, entry]);
+		}
+		if (batch.length === 0) return;
+		const deliverAs = batch.some(([, entry]) => entry.deliverAs === "steer") ? "steer" : "followUp";
+		// Receipts exist before the send: Pi runs the input stage synchronously when the leader is idle.
+		for (const [body, entry] of batch) {
 			this.outbox.delete(body);
-			try {
-				this.host.pi.sendUserMessage(body, { deliverAs: entry.deliverAs });
-				this.leaderMessages.set(body, {
-					runId: entry.runId,
-					taskIds: entry.taskIds,
-					kind: entry.kind,
-					deliverAs: entry.deliverAs,
-					delivered: false,
-					submitted: true,
-					lost: false,
-					submittedAt: Date.now(),
-					attempts: (entry.attempts ?? 0) + 1,
-					submittedRunCount: this.agentRunCount,
-				});
-				if (entry.kind === "terminal") {
-					for (const taskId of entry.taskIds) {
-						const notice = this.terminalNotices.get(`${entry.runId}:${taskId}`);
-						if (notice?.body === body) notice.delivery = "pending";
-					}
-				}
-				this.host.emit("subagent:notification", {
-					runId: entry.runId,
-					taskId: entry.taskIds[0],
-					kind: "completed",
-					body,
-					delivery: "submitted",
-				});
-			} catch {
+			this.recordSubmission(body, entry, (entry.attempts ?? 0) + 1);
+		}
+		try {
+			this.host.pi.sendUserMessage(makeNoticeBatch(batch.map(([body]) => body)), { deliverAs });
+		} catch {
+			for (const [body, entry] of batch) {
+				this.leaderMessages.delete(body);
 				const attempts = (entry.attempts ?? 0) + 1;
 				if (attempts < MAX_DELIVERY_ATTEMPTS) {
-					this.outbox.set(body, { ...entry, attempts, attemptedAt: Date.now() });
+					this.outbox.set(body, { ...entry, attempts, attemptedAt: now });
 					continue;
 				}
 				this.host.emit("subagent:notification", {
@@ -448,6 +472,22 @@ export class LeaderDelivery {
 					delivery: "failed",
 				});
 			}
+			return;
+		}
+		for (const [body, entry] of batch) {
+			if (entry.kind === "terminal") {
+				for (const taskId of entry.taskIds) {
+					const notice = this.terminalNotices.get(`${entry.runId}:${taskId}`);
+					if (notice?.body === body) notice.delivery = "pending";
+				}
+			}
+			this.host.emit("subagent:notification", {
+				runId: entry.runId,
+				taskId: entry.taskIds[0],
+				kind: "completed",
+				body,
+				delivery: "submitted",
+			});
 		}
 	}
 
@@ -467,7 +507,7 @@ export class LeaderDelivery {
 		if (!this.pendingTaskNotices.size && !this.pendingRunNotices.size && !this.outbox.size && !outstandingReceipts())
 			return;
 		if (idle) {
-			this.flushOutbox();
+			// Resolve held task/run notices first so everything releasable leaves in the single flush below.
 			for (const [key, pending] of [...this.pendingTaskNotices]) {
 				const report = pending.task.finalParentReport;
 				if (report?.delivery === "lost") {
@@ -594,23 +634,13 @@ export class LeaderDelivery {
 		}
 		if (kind === "failed") {
 			this.noteTerminal(run.id, task.id, body, outcome);
+			this.recordSubmission(body, { runId: run.id, taskIds: [task.id], kind: "terminal", deliverAs: "steer" }, 0);
 			try {
 				this.host.pi.sendUserMessage(body, { deliverAs: "steer" });
-				this.leaderMessages.set(body, {
-					runId: run.id,
-					taskIds: [task.id],
-					kind: "terminal",
-					deliverAs: "steer",
-					delivered: false,
-					submitted: true,
-					lost: false,
-					submittedAt: Date.now(),
-					attempts: 0,
-					submittedRunCount: this.agentRunCount,
-				});
 				this.host.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body, delivery: "submitted" });
 				if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext, RECEIPT_GRACE_MS);
 			} catch {
+				this.leaderMessages.delete(body);
 				this.terminalNotices.get(key)!.delivery = "lost";
 				this.host.emit("subagent:notification", { runId: run.id, taskId: task.id, kind, body, delivery: "failed" });
 			}
@@ -695,22 +725,12 @@ export class LeaderDelivery {
 		const deliverAs = kind === "failed" ? "steer" : "followUp";
 		for (const task of tasks) this.noteTerminal(run.id, task.id, body, outcomeFingerprint(task));
 		if (deliverAs === "steer") {
+			this.recordSubmission(body, { runId: run.id, taskIds: tasks.map((t) => t.id), kind: "terminal", deliverAs }, 0);
 			try {
 				this.host.pi.sendUserMessage(body, { deliverAs });
-				this.leaderMessages.set(body, {
-					runId: run.id,
-					taskIds: tasks.map((t) => t.id),
-					kind: "terminal",
-					deliverAs,
-					delivered: false,
-					submitted: true,
-					lost: false,
-					submittedAt: Date.now(),
-					attempts: 0,
-					submittedRunCount: this.agentRunCount,
-				});
 				if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext, RECEIPT_GRACE_MS);
 			} catch {
+				this.leaderMessages.delete(body);
 				for (const task of tasks) {
 					const notice = this.terminalNotices.get(`${run.id}:${task.id}`);
 					if (notice?.body === body) notice.delivery = "lost";

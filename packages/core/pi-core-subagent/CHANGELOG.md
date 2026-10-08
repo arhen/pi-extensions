@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.68
+
+- **Held notices no longer flood the leader with repeats.** Live sessions showed one report reaching the leader 2–7 times ("this is the same report again"). Cause: notices released at one boundary were submitted as separate prompts; Pi runs prompts submitted during `agent_settled` one after another, and loss detection treated "another agent run started" plus 3 s as proof of loss, so every notice still waiting in Pi's queue was declared lost and resubmitted, cascading up to the retry limit and the task fallback. Loss is now judged from Pi's `input` stage: a notice is lost only if Pi accepted it and it is still missing from the canonical context 3 s later while the leader is idle, or if Pi never accepted it and the leader has stayed idle for 30 s.
+- **One leader message per boundary.** All releasable held notices leave as a single follow-up (`N subagent notices since your last turn:` followed by each verbatim body) instead of one prompt — and one full leader turn — per notice. Receipts still confirm per notice. Reproduction: three final reports with a 3.5 s leader turn went from 6 notice messages / 8 leader turns to 1 / 3.
+- **`subagent_result` counts as consumption.** Reading a finished task's full output marks it covered, the same as a terminal `await_subagent`, so its held completion notice and final report are dropped instead of arriving after the leader has already used the result. Tasks cut off by the output cap stay uncovered.
+
 ## 1.3.66
 
 - **The exposure mode is stored globally and survives every session.** `/subagents mode auto|direct|codemode` now writes `~/.pi/agent/subagents-config.json`, and every session — new, reloaded, resumed, forked or tree-navigated — starts from that stored mode instead of a per-branch transcript entry. The global `mode` outranks a branch entry when both exist; the transcript mirror is kept only so a session that chose a mode before the file existed is not reset, and it is read only while the file stores no usable `mode`. An unusable config file (missing, malformed, unknown `mode`) degrades to the branch entry and then to the built-in `direct`, never to an error. `mode` and `auto-limit` share the file through one serialized read-modify-write, so a mode change can no longer drop the ceiling setting and vice versa.

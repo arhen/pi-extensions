@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { makeResultWithCoverage } from "../src/format.ts";
 import { SubagentManager } from "../src/manager.ts";
 import { textFingerprint } from "../src/notification-state.ts";
 import type { RunSnapshot, TaskSnapshot } from "../src/types.ts";
@@ -12,7 +13,11 @@ type Handlers = {
 type PrivateDelivery = {
 	notifyTask(run: RunSnapshot, task: TaskSnapshot, kind: Kind): void;
 	notifyParent(run: RunSnapshot, kind: Kind): void;
-	leaderMessages: Map<string, { submittedAt: number; lost: boolean; delivered: boolean; attempts: number }>;
+	leaderMessages: Map<
+		string,
+		{ submittedAt: number; acceptedAt?: number; lost: boolean; delivered: boolean; attempts: number }
+	>;
+	lastLeaderActivityAt: number;
 	outbox: Map<string, unknown>;
 	terminalNotices: Map<string, { body: string; delivery: string }>;
 	pendingRunNotices: Map<string, unknown>;
@@ -89,17 +94,22 @@ function fixture(count = 1, notifyPerTask = true) {
 		queued = false;
 		manager.flushPendingNotifications(ctx);
 	};
-	/** Simulate a transport loss: every outstanding receipt is old enough to fail the grace check. */
+	/** Simulate a transport loss: every outstanding receipt (and its acceptance) is `ms` old. */
 	const ageReceipts = (ms = 60_000) => {
-		for (const receipt of internals.leaderMessages.values()) receipt.submittedAt = Date.now() - ms;
+		for (const receipt of internals.leaderMessages.values()) {
+			receipt.submittedAt = Date.now() - ms;
+			if (receipt.acceptedAt !== undefined) receipt.acceptedAt = Date.now() - ms;
+		}
 	};
 	const loseReceipts = () => ageReceipts(60_000);
 	/** Simulate the retry backoff expiring on every held notification. */
 	const expireBackoff = () => {
 		for (const [body, entry] of internals.outbox) internals.outbox.set(body, { ...(entry as object), attemptedAt: 0 });
 	};
-	/** One leader agent run started; a receipt may only be declared lost after a later run. */
-	const runTurn = () => manager.noteAgentStart();
+	/** Pi's input stage saw every submitted message, i.e. it left Pi's prompt queue. */
+	const accept = () => {
+		for (const message of sent) manager.noteLeaderInput(message.body, "extension");
+	};
 	return {
 		manager,
 		internals,
@@ -114,7 +124,12 @@ function fixture(count = 1, notifyPerTask = true) {
 		loseReceipts,
 		ageReceipts,
 		expireBackoff,
-		runTurn,
+		accept,
+		/** Individual notice bodies submitted so far (a batched message carries several). */
+		submitted: () =>
+			events
+				.filter((e) => e.type === "subagent:notification" && e.payload.delivery === "submitted")
+				.map((e) => String(e.payload.body)),
 		failNext: () => {
 			fail = true;
 		},
@@ -132,8 +147,34 @@ describe("leader notification deduplication", () => {
 		for (const body of h.sent.map((m) => m.body)) h.receive(body);
 		h.internals.notifyParent(h.run, "completed");
 		h.flush();
-		expect(h.sent).toHaveLength(2);
-		expect(h.sent.every((m) => m.body.includes("RESULT_OK"))).toBe(true);
+		expect(h.sent).toHaveLength(1);
+		expect(h.sent[0]!.body.match(/Final result: RESULT_OK/g)).toHaveLength(2);
+	});
+
+	test("notices released at one boundary reach the leader as one message", () => {
+		const h = fixture(3);
+		for (const [i, task] of h.run.tasks.entries()) {
+			h.handlers(i).onNotifyParent(task.id, `RESULT_${i}`, "info", true);
+			h.end(i, `RESULT_${i}`);
+		}
+		h.flush();
+		expect(h.sent).toHaveLength(1);
+		expect(h.sent[0]!.body.startsWith("3 subagent notices since your last turn:")).toBe(true);
+		for (const i of [0, 1, 2]) expect(h.sent[0]!.body).toContain(`Final result: RESULT_${i}`);
+		h.receive();
+		expect([...h.internals.leaderMessages.values()].every((r) => r.delivered)).toBe(true);
+	});
+
+	test("reading a finished task with subagent_result drops its held notices", () => {
+		const h = fixture(2);
+		h.handlers(0).onNotifyParent("task_1", "RESULT_0", "info", true);
+		h.end(0, "RESULT_0");
+		h.end(1, "RESULT_1");
+		h.manager.markAwaitCoverage(h.run, makeResultWithCoverage(h.run, "task_1").coveredTaskIds);
+		h.flush();
+		expect(h.sent).toHaveLength(1);
+		expect(h.sent[0]!.body).toContain("RESULT_1");
+		expect(h.sent[0]!.body).not.toContain("RESULT_0");
 	});
 
 	test("an intact report inside an input wrapper still counts as received", () => {
@@ -154,8 +195,8 @@ describe("leader notification deduplication", () => {
 		h.flush();
 		expect(h.sent).toHaveLength(1);
 		for (let round = 0; round < 8; round++) {
+			h.accept();
 			h.loseReceipts();
-			h.runTurn();
 			h.expireBackoff();
 			h.flush();
 		}
@@ -176,8 +217,8 @@ describe("leader notification deduplication", () => {
 		h.handlers().onNotifyParent("task_1", "PROGRESS_1", "warning");
 		h.flush();
 		expect(h.sent).toHaveLength(1);
+		h.accept();
 		h.loseReceipts();
-		h.runTurn();
 		h.flush();
 		h.expireBackoff();
 		h.flush();
@@ -185,7 +226,7 @@ describe("leader notification deduplication", () => {
 		expect(h.sent[1]?.body).toContain("PROGRESS_1");
 	});
 
-	test("a report is not declared lost while no later agent run has started", () => {
+	test("a report is not declared lost while Pi has not accepted it", () => {
 		const h = fixture();
 		h.handlers().onNotifyParent("task_1", "RESULT_OK", "info", true);
 		h.end();
@@ -212,7 +253,8 @@ describe("leader notification deduplication", () => {
 		h.handlers().onNotifyParent("task_1", "finding", "info", true);
 		h.handlers(1).onNotifyParent("task_2", "finding", "info");
 		h.flush();
-		expect(h.sent).toHaveLength(5);
+		expect(h.sent).toHaveLength(1);
+		expect(h.submitted()).toHaveLength(5);
 	});
 
 	test("a terminal await suppresses a held completion echo", async () => {
@@ -312,8 +354,9 @@ describe("leader notification deduplication", () => {
 		h.end(1, "RESULT_1");
 		h.internals.notifyParent(h.run, "completed");
 		h.flush();
-		expect(h.sent).toHaveLength(2);
-		const aggregate = h.sent[1]!.body;
+		expect(h.sent).toHaveLength(1);
+		expect(h.submitted()).toHaveLength(2);
+		const aggregate = h.submitted().find((body) => body.startsWith("Background subagent run"))!;
 		expect(aggregate).toContain("worker-1");
 		expect(aggregate).not.toContain("worker-0");
 	});
@@ -334,16 +377,48 @@ describe("leader notification deduplication", () => {
 });
 
 describe("review regressions", () => {
-	test("R1: a delivered notice is not marked lost while its prompt is still queued", () => {
-		const h = fixture(2);
-		for (const task of h.run.tasks) h.handlers().onNotifyParent(task.id, "RESULT_OK", "info", true);
-		for (const task of h.run.tasks) h.end(h.run.tasks.indexOf(task));
+	test("R1: a notice still in Pi's prompt queue is not declared lost, however many runs start", () => {
+		const h = fixture();
+		h.handlers().onNotifyParent("task_1", "RESULT_OK", "info", true);
+		h.end();
+		h.flush();
+		expect(h.sent).toHaveLength(1);
+		// Pi has not accepted it yet: it waits behind other prompts queued at the same settle.
+		h.ageReceipts(60_000);
+		for (let run = 0; run < 3; run++) {
+			h.manager.noteLeaderActivity();
+			h.flush();
+		}
+		expect(h.sent).toHaveLength(1);
+	});
+
+	test("R1b: a notice Pi never accepted is retried after a long idle stretch", () => {
+		const h = fixture();
+		h.handlers().onNotifyParent("task_1", "RESULT_OK", "info", true);
+		h.end();
+		h.flush();
+		h.ageReceipts(60_000);
+		h.internals.lastLeaderActivityAt = Date.now() - 60_000;
+		h.flush();
+		h.expireBackoff();
 		h.flush();
 		expect(h.sent).toHaveLength(2);
-		h.receive(h.sent[0]!.body);
-		h.ageReceipts(4_000);
+		expect(h.sent[1]?.body).toContain("RESULT_OK");
+	});
+
+	test("R1c: an accepted notice found in context is never resent", () => {
+		const h = fixture();
+		h.handlers().onNotifyParent("task_1", "RESULT_OK", "info", true);
+		h.end();
 		h.flush();
-		expect(h.sent).toHaveLength(2);
+		h.accept();
+		h.receive();
+		h.ageReceipts(60_000);
+		h.internals.lastLeaderActivityAt = Date.now() - 60_000;
+		h.flush();
+		h.expireBackoff();
+		h.flush();
+		expect(h.sent).toHaveLength(1);
 	});
 
 	test("R2: a lost final report falls back with its result, not a bare status line", () => {
@@ -352,8 +427,8 @@ describe("review regressions", () => {
 		h.end();
 		h.flush();
 		for (let attempt = 0; attempt < 3; attempt++) {
+			h.accept();
 			h.loseReceipts();
-			h.runTurn();
 			h.flush();
 			h.expireBackoff();
 		}
@@ -368,8 +443,8 @@ describe("review regressions", () => {
 		h.internals.notifyParent(h.run, "completed");
 		h.flush();
 		for (let attempt = 0; attempt < 3; attempt++) {
+			h.accept();
 			h.loseReceipts();
-			h.runTurn();
 			h.flush();
 			h.expireBackoff();
 		}
@@ -383,8 +458,8 @@ describe("review regressions", () => {
 		h.internals.notifyParent(h.run, "aborted");
 		h.flush();
 		const first = h.sent.length;
+		h.accept();
 		h.loseReceipts();
-		h.runTurn();
 		h.flush();
 		h.expireBackoff();
 		h.flush();

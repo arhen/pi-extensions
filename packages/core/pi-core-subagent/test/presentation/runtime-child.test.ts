@@ -150,9 +150,11 @@ describe("native notification deduplication", () => {
 			const notices = (h.session.messages as AnyMessage[]).filter(
 				(m) => m.role === "user" && /Subagent|Task worker|Background subagent/.test(messageText(m)),
 			);
-			expect(notices).toHaveLength(2);
-			expect(notices.filter((m) => messageText(m).includes("RESULT_1"))).toHaveLength(1);
-			expect(notices.filter((m) => messageText(m).includes("RESULT_2"))).toHaveLength(1);
+			// Both held reports leave together in one leader message, each exactly once.
+			expect(notices).toHaveLength(1);
+			const text = messageText(notices[0]!);
+			expect(text.match(/RESULT_1/g)).toHaveLength(1);
+			expect(text.match(/RESULT_2/g)).toHaveLength(1);
 		},
 		60_000,
 	);
@@ -193,9 +195,10 @@ describe("native notification deduplication", () => {
 		const notices = (h.session.messages as AnyMessage[]).filter(
 			(m) => m.role === "user" && /Subagent|Task reporter|Background subagent/.test(messageText(m)),
 		);
-		expect(notices).toHaveLength(2);
-		expect(notices.filter((m) => messageText(m).includes("PROGRESS_QZX"))).toHaveLength(1);
-		expect(notices.filter((m) => messageText(m).includes("COMPLETED_QZX"))).toHaveLength(1);
+		expect(notices).toHaveLength(1);
+		const text = messageText(notices[0]!);
+		expect(text.match(/PROGRESS_QZX/g)).toHaveLength(1);
+		expect(text.match(/COMPLETED_QZX/g)).toHaveLength(1);
 	}, 60_000);
 
 	test("a report stripped from the leader transcript falls back exactly once", async () => {
@@ -423,7 +426,16 @@ describe("intercom on a live child", () => {
 
 describe("cancellation and recovery on a real child", () => {
 	test("subagent_cancel aborts a parked run and the terminal state is observable", async () => {
-		const h = await harness({ codemode: false });
+		let settled = false;
+		const h = await harness({
+			codemode: false,
+			extensions: [
+				(pi) =>
+					pi.events.on("subagent:run-completed", () => {
+						settled = true;
+					}),
+			],
+		});
 		await prime(h, 16, (context) => {
 			if (isChildRequest(context)) return fauxAssistantMessage([fauxToolCall("ask_parent", { question: "waiting" })]);
 			const messages = contextMessages(context);
@@ -445,13 +457,14 @@ describe("cancellation and recovery on a real child", () => {
 		const result = lastToolResult(h.session.messages as AnyMessage[], "subagent_result") ?? "";
 		expect(result).toContain("aborted");
 
-		// The abort notice is sent after the background run's completion emit; waiting for it keeps
-		// the harness alive until the run has fully settled.
-		await waitFor(() =>
-			(h.session.messages as AnyMessage[]).some(
+		// subagent_result already showed the aborted task, so no separate abort notice follows.
+		await waitFor(() => settled);
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(
+			(h.session.messages as AnyMessage[]).filter(
 				(message) => message.role === "user" && messageText(message).includes("aborted"),
 			),
-		);
+		).toEqual([]);
 	}, 60_000);
 
 	test("a failed task keeps its session file and resume revives it to completion", async () => {
