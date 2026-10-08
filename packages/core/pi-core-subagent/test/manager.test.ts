@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { clearAgentFileCache } from "../src/agentfile.ts";
 import { SubagentManager } from "../src/manager.ts";
+import { RunWidget } from "../src/run-widget.ts";
 
 const stubPi = { events: { emit() {} }, sendUserMessage() {} } as unknown as ExtensionAPI;
 const stubCtx = { cwd: "/tmp", hasUI: false } as unknown as ExtensionContext;
@@ -355,45 +356,60 @@ describe("resumeTask", () => {
 });
 
 describe("widget auto-prune", () => {
-	interface WidgetInternals {
-		widgetRuns: { id: string }[];
-		upsertWidgetRun(run: unknown): void;
-		flushWidget(run: unknown, ctx?: unknown, onUpdate?: (partial: unknown) => void): void;
-	}
-	const internals = (m: SubagentManager): WidgetInternals => m as unknown as WidgetInternals;
-
 	test("a settled run leaves the widget as soon as it settles", () => {
-		const m = makeManager();
-		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
-		internals(m).upsertWidgetRun(run);
-		expect(internals(m).widgetRuns).toHaveLength(1);
+		const widget = new RunWidget();
+		const { run } = makeManager().createRun({ agent: "a", task: "t" }, stubCtx);
+		widget.upsert(run);
+		expect(widget.runs).toHaveLength(1);
 
 		run.status = "failed";
 		run.tasks[0]!.status = "failed";
-		internals(m).flushWidget(run, stubCtx);
-		expect(internals(m).widgetRuns).toHaveLength(0);
+		widget.flush(run, stubCtx);
+		expect(widget.runs).toHaveLength(0);
 	});
 
 	test("a terminal run never enters the widget (restored or cancelled history)", () => {
-		const m = makeManager();
-		const { run } = m.createRun({ agent: "a", task: "t" }, stubCtx);
+		const widget = new RunWidget();
+		const { run } = makeManager().createRun({ agent: "a", task: "t" }, stubCtx);
 		run.status = "aborted";
 		run.tasks[0]!.status = "aborted";
-		internals(m).upsertWidgetRun(run);
-		expect(internals(m).widgetRuns).toHaveLength(0);
+		widget.upsert(run);
+		expect(widget.runs).toHaveLength(0);
 	});
 
 	test("settling one run keeps a live sibling in the widget", () => {
+		const widget = new RunWidget();
 		const m = makeManager();
 		const settled = m.createRun({ agent: "a", task: "t" }, stubCtx).run;
 		const live = m.createRun({ agent: "b", task: "t2" }, stubCtx).run;
-		internals(m).upsertWidgetRun(settled);
-		internals(m).upsertWidgetRun(live);
+		widget.upsert(settled);
+		widget.upsert(live);
 
 		settled.status = "completed";
 		settled.tasks[0]!.status = "completed";
-		internals(m).flushWidget(settled, stubCtx);
-		expect(internals(m).widgetRuns.map((r) => r.id)).toEqual([live.id]);
+		widget.flush(settled, stubCtx);
+		expect(widget.runs.map((r) => r.id)).toEqual([live.id]);
+	});
+
+	test("flush reports run progress; dispose drops pending redraws", () => {
+		const widget = new RunWidget();
+		const { run } = makeManager().createRun(
+			{
+				tasks: [
+					{ agent: "a", task: "t" },
+					{ agent: "b", task: "u" },
+				],
+			},
+			stubCtx,
+		);
+		run.tasks[0]!.status = "completed";
+		const updates: unknown[] = [];
+		widget.flush(run, stubCtx, (partial) => updates.push(partial));
+		expect(updates).toEqual([{ content: [{ type: "text", text: `1/2 done · ${run.status}` }] }]);
+
+		widget.schedule(run, stubCtx);
+		widget.dispose();
+		expect(widget.runs).toEqual([]);
 	});
 });
 

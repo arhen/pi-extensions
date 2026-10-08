@@ -2,13 +2,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync 
 import { rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
-import {
-	type Api,
-	type AssistantMessage,
-	clampThinkingLevel,
-	getSupportedThinkingLevels,
-	type Model,
-} from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
 import {
 	type AgentSessionEvent,
 	createAgentSession,
@@ -16,11 +10,9 @@ import {
 	type ExtensionAPI,
 	type ExtensionContext,
 	getAgentDir,
-	ModelRuntime,
 	SessionManager,
 	type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { TUI } from "@earendil-works/pi-tui";
 import { resolveAgentFile } from "./agentfile.ts";
 import { CHILD_TALK_TOOLS, type ChildHandlers, createChildTools } from "./child.ts";
 import { readSubagentConfig, writeSubagentConfig } from "./config.ts";
@@ -28,18 +20,33 @@ import {
 	activitySnippet,
 	describeCall,
 	getFirstText,
-	isTalking,
 	makeAskNotice,
 	makeNotice,
 	makeTaskArtifactNotice,
 	makeTaskNotice,
-	SubagentsWidget,
 	truncateText,
 } from "./format.ts";
 import { applyUpstream, resolveNeeds, runWaveScheduler } from "./graph.ts";
 import { createMailbox, type Mailbox } from "./mailbox.ts";
 import { chooseModel, resolveChildModel } from "./models.ts";
 import { artifactFingerprint, outcomeFingerprint, textFingerprint } from "./notification-state.ts";
+import {
+	aggregateUsage,
+	classifyFailure,
+	cloneRun,
+	emptyUsage,
+	failureError,
+	lastAssistantFailure,
+	updateUsageFromMessage,
+} from "./outcome.ts";
+import { RunWidget } from "./run-widget.ts";
+import {
+	clampResumeThinking,
+	codemodeFactories,
+	createChildModelRuntime,
+	ensureUsableModel,
+	validateThinking,
+} from "./runtime.ts";
 import type { SubagentParamsShape, TaskInput } from "./schemas.ts";
 import {
 	MAX_TASKS,
@@ -51,7 +58,6 @@ import {
 	type TaskSnapshot,
 	type TaskStatus,
 	TERMINAL,
-	type UsageStats,
 } from "./types.ts";
 import {
 	attachWorktree,
@@ -65,8 +71,8 @@ import {
 	type Worktree,
 } from "./worktree.ts";
 
-/** Legacy callers import the resolver from here; its owner is `models.ts`. */
-export { resolveChildModel };
+/** Legacy callers import these from here; their owners are `models.ts`, `outcome.ts`, `runtime.ts`. */
+export { clampResumeThinking, classifyFailure, cloneRun, ensureUsableModel, resolveChildModel, validateThinking };
 
 export const DEFAULT_CONCURRENCY = 3;
 export const MAX_CONCURRENCY = 8;
@@ -78,7 +84,6 @@ const READONLY_TOOLS = ["read", "grep", "find", "ls", "codemode"];
 const WRITE_TOOLS = ["read", "grep", "find", "ls", "bash", "edit", "write", "codemode"];
 const WRITE_CAPABLE = ["bash", "edit", "write"];
 const SAFE_TASK_ID = /^[A-Za-z0-9_-]{1,64}$/;
-const WIDGET_THROTTLE_MS = 150;
 /** A submitted notice missing from the canonical context this long is treated as lost. */
 const RECEIPT_GRACE_MS = 3_000;
 /** Minimum wait before retrying a failed submission, so one flush cannot burn every attempt. */
@@ -90,39 +95,6 @@ function newId(prefix: string): string {
 	return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-type ChildExtensionFactories = ConstructorParameters<typeof DefaultResourceLoader>[0]["extensionFactories"];
-
-/**
- * Children run with `noExtensions`, so they get none of the configured extensions — codemode is the
- * one exception, because it is how a child batches tool calls. `createCodemodeExtension()` is the
- * supported factory (pi >= 1.0); hosts that do not export it simply give children no codemode.
- */
-async function codemodeFactories(): Promise<ChildExtensionFactories> {
-	try {
-		const host = (await import("@earendil-works/pi-coding-agent")) as unknown as {
-			createCodemodeExtension?: () => unknown;
-		};
-		const factory = host.createCodemodeExtension?.();
-		return factory ? ([factory] as ChildExtensionFactories) : [];
-	} catch {
-		return [];
-	}
-}
-function emptyUsage(): UsageStats {
-	return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0 };
-}
-function aggregateUsage(tasks: TaskSnapshot[]): UsageStats {
-	const total = emptyUsage();
-	for (const task of tasks) {
-		total.input += task.usage.input;
-		total.output += task.usage.output;
-		total.cacheRead += task.usage.cacheRead;
-		total.cacheWrite += task.usage.cacheWrite;
-		total.cost += task.usage.cost;
-		total.turns += task.usage.turns;
-	}
-	return total;
-}
 function safeRealPath(path: string): string {
 	try {
 		return realpathSync(path);
@@ -135,150 +107,6 @@ function getParentSessionFile(ctx: ExtensionContext): string | undefined {
 		return ctx.sessionManager.getSessionFile?.();
 	} catch {
 		return undefined;
-	}
-}
-export function classifyFailure(
-	stopReason: string | undefined,
-	errorMessage?: string,
-): { status: "failed" | "aborted"; message: string } | undefined {
-	if (!stopReason || stopReason === "stop" || stopReason === "end") return undefined;
-	if (stopReason === "aborted") return { status: "aborted", message: errorMessage || "Subagent was aborted." };
-	return { status: "failed", message: errorMessage || `Subagent ended with stopReason "${stopReason}".` };
-}
-function lastAssistantFailure(
-	messages: AssistantMessage[] | undefined,
-): { status: "failed" | "aborted"; message: string } | undefined {
-	for (const message of [...(messages ?? [])].reverse()) {
-		if (message?.role !== "assistant") continue;
-		return classifyFailure(message.stopReason, message.errorMessage);
-	}
-	return undefined;
-}
-function failureError(failure: { status: "failed" | "aborted"; message: string }): Error {
-	const error = new Error(failure.message);
-	(error as Error & { subagentStatus?: string }).subagentStatus = failure.status;
-	return error;
-}
-function updateUsageFromMessage(task: TaskSnapshot, message: AssistantMessage): void {
-	if (message?.role !== "assistant") return;
-	task.usage.turns += 1;
-	const usage = message.usage;
-	if (!usage) return;
-	task.usage.input += usage.input ?? 0;
-	task.usage.output += usage.output ?? 0;
-	task.usage.cacheRead += usage.cacheRead ?? 0;
-	task.usage.cacheWrite += usage.cacheWrite ?? 0;
-	task.usage.cost += usage.cost?.total ?? 0;
-	if (message.model && !task.model) task.model = message.model;
-}
-export function cloneRun(run: RunSnapshot): RunSnapshot {
-	return JSON.parse(JSON.stringify(run)) as RunSnapshot;
-}
-/**
- * A resumed task keeps its stored thinking level, clamped to what the target model accepts — a
- * resume that swaps model must not fail on an effort the new model does not define.
- */
-export function clampResumeThinking(
-	model: Model<Api> | undefined,
-	thinking: ThinkingLevel | undefined,
-): ThinkingLevel | undefined {
-	if (!thinking || !model) return thinking;
-	return clampThinkingLevel(model, thinking) as ThinkingLevel;
-}
-
-const PROBE_THINKING_LEVELS: ThinkingLevel[] = ["low", "minimal", "medium", "high", "xhigh", "max"];
-
-/**
- * Thinking level for the usability probe: exactly what the child session will send — the clamped
- * requested level, or the cheapest the model accepts when none was requested. Probing without a
- * level makes adaptive-thinking providers reject the request (9router claude models answer
- * "thinking.type.disabled is not supported"), which used to make every preflight fail and fall
- * back to the session model.
- */
-function probeThinking(model: Model<Api>, thinking?: string): ThinkingLevel | undefined {
-	if (!model.reasoning) return undefined;
-	const supported = getSupportedThinkingLevels(model);
-	if (thinking && thinking !== "off") return clampThinkingLevel(model, thinking as ThinkingLevel);
-	// the child clamps an unsupported "off" up to its cheapest level, so probe that instead
-	if (thinking === "off") return supported.includes("off") ? undefined : supported[0];
-	return PROBE_THINKING_LEVELS.find((level) => supported.includes(level));
-}
-
-async function probeModel(
-	ctx: ExtensionContext,
-	model: Model<Api>,
-	signal: AbortSignal | undefined,
-	thinking?: string,
-): Promise<string | undefined> {
-	try {
-		const reasoningEffort = probeThinking(model, thinking);
-		const reply = await ctx.modelRegistry.complete(
-			model,
-			{ messages: [{ role: "user", content: "ping", timestamp: Date.now() }] },
-			{ maxTokens: 16, signal, ...(reasoningEffort ? { reasoningEffort } : {}) },
-		);
-		return reply.stopReason === "error" ? (reply.errorMessage ?? "provider returned an error") : undefined;
-	} catch (err) {
-		return err instanceof Error ? err.message : String(err);
-	}
-}
-
-export async function ensureUsableModel(
-	ctx: ExtensionContext,
-	model: Model<Api> | undefined,
-	signal: AbortSignal | undefined,
-	thinking?: string,
-): Promise<{ model: Model<Api> | undefined; note?: string }> {
-	const session = ctx.model;
-	if (!model || !ctx.modelRegistry) return { model };
-	if (session && model.provider === session.provider && model.id === session.id) return { model };
-	const error = await probeModel(ctx, model, signal, thinking);
-	if (!error) return { model };
-	if (model.provider === "opencode-go" && /MissingSessionID|x-opencode-session/i.test(error)) {
-		// ponytail: opencode-go rejects stateless probes but accepts AgentSession requests, which add the session header.
-		// Upgrade path: remove this exception when modelRegistry.complete can carry AgentSession request transforms.
-		return { model, note: `preflight unavailable (${error}); child session will validate the model` };
-	}
-	if (!session) throw new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`);
-	return {
-		model: session,
-		note: `${model.provider}/${model.id} failed preflight (${error}); using session model ${session.provider}/${session.id}`,
-	};
-}
-
-async function createChildModelRuntime(ctx: ExtensionContext) {
-	const ids = ctx.modelRegistry.getRegisteredProviderIds?.() ?? [];
-	if (ids.length === 0) return undefined;
-	const agentDir = getAgentDir();
-	const runtime = await ModelRuntime.create({
-		authPath: join(agentDir, "auth.json"),
-		modelsPath: join(agentDir, "models.json"),
-	});
-	for (const id of ids) {
-		const native = ctx.modelRegistry.getRegisteredNativeProvider?.(id);
-		if (native) {
-			runtime.registerNativeProvider(native);
-			continue;
-		}
-		const config = ctx.modelRegistry.getRegisteredProviderConfig?.(id);
-		if (config) runtime.registerProvider(id, config);
-	}
-	await runtime.refresh({ allowNetwork: false });
-	return runtime;
-}
-
-export function validateThinking(model: Model<Api> | undefined, level: string | undefined): void {
-	if (!level || level === "off") return;
-	if (!model) return;
-	const map = model.thinkingLevelMap;
-	if (map && level in map && map[level as keyof typeof map] === null) {
-		const supported = Object.keys(map).filter((k) => map[k as keyof typeof map] !== null);
-		throw new Error(
-			`Thinking level "${level}" is not supported by ${model.provider}/${model.id}. Supported: ${supported.length ? supported.join(" | ") : 'none — use thinking: "off"'}.`,
-		);
-	}
-	if (!model.reasoning) {
-		throw new Error(`Model ${model.provider}/${model.id} does not support thinking. Use thinking: "off".`);
 	}
 }
 
@@ -343,8 +171,7 @@ export class SubagentManager {
 	private mailboxes: Mailbox = createMailbox();
 	private liveWorktrees = new Map<string, Worktree>();
 	private runControllers = new Map<string, AbortController>();
-	private widgetTimers = new Map<string, ReturnType<typeof setTimeout>>();
-	private widgetRuns: RunSnapshot[] = [];
+	private readonly widget = new RunWidget();
 	private eventSeq = 0;
 	private persistSeq = 0;
 	private persistedSeq = 0;
@@ -392,13 +219,7 @@ export class SubagentManager {
 	}
 
 	clearWidget(ctx?: ExtensionContext): void {
-		this.widgetRuns = [];
-		this.widgetTui = null;
-		if (ctx?.hasUI) {
-			try {
-				ctx.ui.setWidget("subagents", undefined);
-			} catch {}
-		}
+		this.widget.clear(ctx);
 	}
 
 	listRuns(): RunSnapshot[] {
@@ -451,14 +272,7 @@ export class SubagentManager {
 		this.runControllers.clear();
 		this.cleared = true;
 		this.mailboxes = createMailbox();
-		this.widgetTui = null;
-		if (this.pulseTimer) {
-			clearTimeout(this.pulseTimer);
-			this.pulseTimer = null;
-		}
-		for (const t of this.widgetTimers.values()) clearTimeout(t);
-		this.widgetTimers.clear();
-		this.widgetRuns = [];
+		this.widget.dispose();
 	}
 
 	async restoreFromSidecar(ctx: ExtensionContext): Promise<void> {
@@ -510,7 +324,7 @@ export class SubagentManager {
 		}
 		if (added > 0) {
 			this.emit("subagent:runs-restored", { count: added });
-			this.scheduleWidget(this.listRuns()[0], ctx);
+			this.widget.schedule(this.listRuns()[0], ctx);
 		}
 	}
 	private persist(ctx: ExtensionContext): void {
@@ -1152,87 +966,6 @@ export class SubagentManager {
 		if (this.notificationContext) this.scheduleNotificationFlush(this.notificationContext);
 	}
 
-	private widgetTui: TUI | null = null;
-
-	/** Settled runs are history (subagent_status/result still reach them) — the widget shows live work only. */
-	private pruneSettledWidget(): void {
-		this.widgetRuns = this.widgetRuns.filter((r) => !TERMINAL.includes(r.status));
-	}
-	private upsertWidgetRun(run: RunSnapshot | undefined): void {
-		this.pruneSettledWidget();
-		if (!run || TERMINAL.includes(run.status)) return;
-		const idx = this.widgetRuns.findIndex((r) => r.id === run.id);
-		if (idx >= 0) this.widgetRuns[idx] = run;
-		else this.widgetRuns.push(run);
-	}
-	private scheduleWidget(run: RunSnapshot | undefined, ctx?: ExtensionContext): void {
-		this.upsertWidgetRun(run);
-		if (!run || this.widgetTimers.has(run.id)) return;
-		this.widgetTimers.set(
-			run.id,
-			setTimeout(() => {
-				this.widgetTimers.delete(run.id);
-				if (ctx?.hasUI) {
-					this.ensureWidget(ctx);
-					this.widgetTui?.requestRender();
-				}
-				this.maybePulse(ctx);
-			}, WIDGET_THROTTLE_MS),
-		);
-	}
-
-	private pulseTimer: ReturnType<typeof setTimeout> | null = null;
-	private maybePulse(ctx?: ExtensionContext): void {
-		if (this.pulseTimer || !this.widgetTui) return;
-		const talking = this.widgetRuns.some((r) => r.tasks.some(isTalking));
-		if (!talking) return;
-		this.pulseTimer = setTimeout(() => {
-			this.pulseTimer = null;
-			this.widgetTui?.requestRender();
-			this.maybePulse(ctx);
-		}, 700);
-	}
-	private flushWidget(run: RunSnapshot | undefined, ctx?: ExtensionContext, onUpdate?: (partial: any) => void): void {
-		if (run) {
-			const t = this.widgetTimers.get(run.id);
-			if (t) {
-				clearTimeout(t);
-				this.widgetTimers.delete(run.id);
-			}
-		}
-		this.pruneSettledWidget();
-		if (this.widgetRuns.length === 0) {
-			if (this.widgetTui) this.clearWidget(ctx);
-		} else {
-			if (ctx?.hasUI) {
-				this.ensureWidget(ctx);
-				this.widgetTui?.requestRender();
-			}
-			this.maybePulse(ctx);
-		}
-		if (!run) return;
-
-		onUpdate?.({
-			content: [
-				{
-					type: "text",
-					text: `${run.tasks.filter((t) => TERMINAL.includes(t.status)).length}/${run.tasks.length} done · ${run.status}`,
-				},
-			],
-		});
-	}
-	private ensureWidget(ctx: ExtensionContext): void {
-		if (this.widgetTui !== null || !ctx.hasUI) return;
-		ctx.ui.setWidget(
-			"subagents",
-			(tui, theme) => {
-				this.widgetTui = tui;
-				return new SubagentsWidget(() => [...this.widgetRuns], theme);
-			},
-			{ placement: "aboveEditor" },
-		);
-	}
-
 	private updateRun(run: RunSnapshot, ctx?: ExtensionContext, _onUpdate?: (partial: any) => void): void {
 		run.aggregateUsage = aggregateUsage(run.tasks);
 		this.runs.set(run.id, run);
@@ -1241,7 +974,7 @@ export class SubagentManager {
 			status: run.status,
 			live: run.tasks.filter((t) => !TERMINAL.includes(t.status)).length,
 		});
-		this.scheduleWidget(run, ctx);
+		this.widget.schedule(run, ctx);
 	}
 	private updateTask(
 		run: RunSnapshot,
@@ -1349,7 +1082,7 @@ export class SubagentManager {
 				onUpdate,
 			);
 		} else if (event.type === "tool_execution_end") {
-			this.scheduleWidget(run, ctx);
+			this.widget.schedule(run, ctx);
 		} else if (event.type === "message_end") {
 			const message = event.message as AssistantMessage;
 			if (message?.role === "assistant") {
@@ -1945,10 +1678,10 @@ export class SubagentManager {
 		const aborted = run.tasks.some((t) => t.status === "aborted") || Boolean(signal?.aborted);
 		run.status = aborted ? "aborted" : failed ? "failed" : "completed";
 		run.endedAt = Date.now();
-		this.flushWidget(run, ctx, onUpdate);
+		this.widget.flush(run, ctx, onUpdate);
 
 		const live = this.listRuns().find((r) => !TERMINAL.includes(r.status));
-		if (live) this.scheduleWidget(live, ctx);
+		if (live) this.widget.schedule(live, ctx);
 
 		if (this.settlers.has(run.id)) {
 			this.emit("subagent:run-completed", {
@@ -2146,7 +1879,7 @@ export class SubagentManager {
 		const aborted = run.tasks.some((t) => t.status === "aborted");
 		run.status = aborted ? "aborted" : failed ? "failed" : "completed";
 		run.endedAt = Date.now();
-		this.flushWidget(run, ctx);
+		this.widget.flush(run, ctx);
 		this.emit("subagent:run-completed", {
 			runId: run.id,
 			status: run.status,
@@ -2181,7 +1914,7 @@ export class SubagentManager {
 		this.pendingReplies.delete(`${runId}:${taskId}`);
 		this.liveChildren.get(`${runId}:${taskId}`)?.abort();
 		this.mailboxes.close(`${runId}:${taskId}`);
-		if (ctx) this.flushWidget(run, ctx);
+		if (ctx) this.widget.flush(run, ctx);
 		this.emit("subagent:task-aborted", { runId, taskId });
 		return true;
 	}
