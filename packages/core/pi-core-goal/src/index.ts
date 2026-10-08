@@ -4,9 +4,12 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { isUsageLimitError, nextUsageRetry, normalizeUsageRetry, type UsageRetry } from "./usage-retry.ts";
+
 const STATE_TYPE = "goal";
 const UI_MESSAGE_TYPE = "goal-ui";
 const CONTINUATION_MESSAGE_TYPE = "goal-continuation";
+const CONTINUATION_DELIVERY_RETRY_MS = 60_000;
 const MAX_OBJECTIVE_CHARS = 4_000;
 
 type GoalStatus = "active" | "paused" | "blocked" | "usageLimited" | "budgetLimited" | "complete";
@@ -20,6 +23,7 @@ interface Goal {
 	timeUsedSeconds: number;
 	createdAt: number;
 	updatedAt: number;
+	usageRetry?: UsageRetry;
 }
 
 interface PersistedGoalState {
@@ -123,6 +127,7 @@ function normalizeGoal(value: unknown): Goal | null {
 		timeUsedSeconds: normalizeNonNegativeInteger(raw.timeUsedSeconds),
 		createdAt: normalizeNonNegativeInteger(raw.createdAt, ts),
 		updatedAt: normalizeNonNegativeInteger(raw.updatedAt, ts),
+		usageRetry: normalizeUsageRetry(raw.usageRetry),
 	};
 }
 
@@ -201,6 +206,7 @@ function goalResponse(goal: Goal | null, sessionId: string, includeCompletionRep
 				timeUsedSeconds: goal.timeUsedSeconds,
 				createdAt: goal.createdAt,
 				updatedAt: goal.updatedAt,
+				usageRetry: goal.status === "usageLimited" ? (goal.usageRetry ?? null) : null,
 			}
 		: null;
 	const remainingTokens = goal?.tokenBudget === undefined ? null : Math.max(0, goal.tokenBudget - goal.tokensUsed);
@@ -235,14 +241,18 @@ function goalSummary(goal: Goal): string {
 	if (goal.tokenBudget !== undefined) {
 		lines.push(`Token budget: ${formatTokensCompact(goal.tokenBudget)}`);
 	}
+	if (goal.status === "usageLimited" && goal.usageRetry) {
+		lines.push(`Automatic retry #${goal.usageRetry.attempt}: ${new Date(goal.usageRetry.retryAt).toISOString()}`);
+	}
 	const commandHint = (() => {
 		switch (goal.status) {
 			case "active":
 				return "Commands: /goal edit, /goal pause, /goal clear";
 			case "paused":
 			case "blocked":
-			case "usageLimited":
 				return "Commands: /goal edit, /goal resume, /goal clear";
+			case "usageLimited":
+				return "Commands: /goal pause, /goal resume (retry now), /goal edit, /goal clear";
 			case "budgetLimited":
 			case "complete":
 				return "Commands: /goal edit, /goal clear";
@@ -358,7 +368,7 @@ function wasLastAssistantAborted(messages: Array<{ role?: string; stopReason?: s
 
 function goalStopStatusForAssistantError(message: { errorMessage?: string } | undefined): GoalStatus {
 	const errorMessage = message?.errorMessage ?? "";
-	return /\b(usage|rate|quota|limit)\b/i.test(errorMessage) ? "usageLimited" : "blocked";
+	return isUsageLimitError(errorMessage) ? "usageLimited" : "blocked";
 }
 
 export default function goalExtension(pi: ExtensionAPI) {
@@ -367,6 +377,90 @@ export default function goalExtension(pi: ExtensionAPI) {
 	let activeGoalIdAtAgentStart: string | null = null;
 	let continuationQueued = false;
 	let abortedAtAgentEnd = false;
+	let pendingAssistantError: { goalId: string; errorMessage: string } | null = null;
+	let agentSettled = true;
+	let settleBoundarySeen = true;
+	let usageRetryTimer: ReturnType<typeof setTimeout> | null = null;
+	let usageRetryGeneration = 0;
+	let pendingContinuation: { id: string; goalId: string; sessionId: string } | null = null;
+	let continuationDeliveryTimer: ReturnType<typeof setTimeout> | null = null;
+
+	function cancelContinuationDelivery(): void {
+		if (continuationDeliveryTimer !== null) clearTimeout(continuationDeliveryTimer);
+		continuationDeliveryTimer = null;
+		pendingContinuation = null;
+		continuationQueued = false;
+	}
+
+	function watchContinuationDelivery(ctx: ExtensionContext, pending: NonNullable<typeof pendingContinuation>): void {
+		if (continuationDeliveryTimer !== null) clearTimeout(continuationDeliveryTimer);
+		continuationDeliveryTimer = setTimeout(() => {
+			if (pendingContinuation !== pending) return;
+			continuationDeliveryTimer = null;
+			if (
+				goal?.id !== pending.goalId ||
+				goal.status !== "active" ||
+				ctx.sessionManager.getSessionId() !== pending.sessionId
+			) {
+				cancelContinuationDelivery();
+				return;
+			}
+			if (!ctx.isIdle() || ctx.hasPendingMessages()) {
+				watchContinuationDelivery(ctx, pending);
+				return;
+			}
+			cancelContinuationDelivery();
+			queueContinuation(ctx);
+		}, CONTINUATION_DELIVERY_RETRY_MS);
+		continuationDeliveryTimer.unref();
+	}
+
+	function cancelUsageRetryTimer(): void {
+		usageRetryGeneration++;
+		if (usageRetryTimer !== null) clearTimeout(usageRetryTimer);
+		usageRetryTimer = null;
+	}
+
+	function scheduleUsageRetry(ctx: ExtensionContext, deferMs = 0): void {
+		cancelUsageRetryTimer();
+		if (goal?.status !== "usageLimited" || !goal.usageRetry) return;
+		const goalId = goal.id;
+		const sessionId = ctx.sessionManager.getSessionId();
+		const generation = usageRetryGeneration;
+		const delay = Math.min(2_147_483_647, Math.max(1, deferMs, goal.usageRetry.retryAt - Date.now()));
+		usageRetryTimer = setTimeout(() => {
+			if (
+				generation !== usageRetryGeneration ||
+				goal?.id !== goalId ||
+				goal.status !== "usageLimited" ||
+				ctx.sessionManager.getSessionId() !== sessionId
+			) {
+				return;
+			}
+			usageRetryTimer = null;
+			if (!agentSettled || !ctx.isIdle() || ctx.hasPendingMessages() || goal.usageRetry!.retryAt > Date.now()) {
+				scheduleUsageRetry(ctx, 30_000);
+				return;
+			}
+			setGoalStatus("active", true);
+			if (maybeApplyBudgetLimit()) {
+				persist("status");
+				showGoalMessage(budgetLimitMessage(goal));
+				updateStatus(ctx);
+				return;
+			}
+			persist("status");
+			updateStatus(ctx);
+			if (!queueContinuation(ctx)) {
+				setGoalStatus("usageLimited");
+				goal.usageRetry = { ...goal.usageRetry!, retryAt: Date.now() + 60_000 };
+				persist("status");
+				updateStatus(ctx);
+				scheduleUsageRetry(ctx);
+			}
+		}, delay);
+		usageRetryTimer.unref();
+	}
 
 	function currentGoalSnapshot(): Goal | null {
 		if (!goal) return null;
@@ -418,9 +512,13 @@ export default function goalExtension(pi: ExtensionAPI) {
 			case "blocked":
 				ctx.ui.setStatus("goal", theme.fg("warning", "Goal blocked (/goal resume)"));
 				break;
-			case "usageLimited":
-				ctx.ui.setStatus("goal", theme.fg("warning", "Goal hit usage limits (/goal resume)"));
+			case "usageLimited": {
+				const retry = goal.usageRetry
+					? ` (auto-retry at ${new Date(goal.usageRetry.retryAt).toLocaleString()})`
+					: " (auto-retry pending)";
+				ctx.ui.setStatus("goal", theme.fg("warning", `Goal hit usage limits${retry}`));
 				break;
+			}
 			case "budgetLimited":
 				ctx.ui.setStatus("goal", theme.fg("warning", "Goal budget reached"));
 				break;
@@ -444,6 +542,8 @@ export default function goalExtension(pi: ExtensionAPI) {
 	function setGoal(objectiveInput: string, tokenBudgetInput?: number): Goal {
 		const objective = validateObjective(objectiveInput);
 		const tokenBudget = validateTokenBudget(tokenBudgetInput);
+		cancelUsageRetryTimer();
+		cancelContinuationDelivery();
 		const ts = nowSeconds();
 		goal = {
 			id: randomUUID(),
@@ -477,10 +577,13 @@ export default function goalExtension(pi: ExtensionAPI) {
 		return goal;
 	}
 
-	function setGoalStatus(status: GoalStatus): Goal {
+	function setGoalStatus(status: GoalStatus, preserveUsageRetry = false): Goal {
 		if (!goal) {
 			throw new Error("cannot update goal because no goal exists");
 		}
+		cancelUsageRetryTimer();
+		cancelContinuationDelivery();
+		if (status !== "usageLimited" && !preserveUsageRetry) delete goal.usageRetry;
 		if (goal.status === "active" && status !== "active") {
 			accountElapsed();
 			activeSinceMs = null;
@@ -498,6 +601,8 @@ export default function goalExtension(pi: ExtensionAPI) {
 	}
 
 	function clearGoal(): boolean {
+		cancelUsageRetryTimer();
+		cancelContinuationDelivery();
 		if (!goal) return false;
 		if (goal.status === "active") accountElapsed();
 		goal = null;
@@ -505,31 +610,32 @@ export default function goalExtension(pi: ExtensionAPI) {
 		activeGoalIdAtAgentStart = null;
 		continuationQueued = false;
 		abortedAtAgentEnd = false;
+		pendingAssistantError = null;
 		return true;
 	}
 
 	function maybeApplyBudgetLimit(): boolean {
 		if (goal?.status !== "active" || goal.tokenBudget === undefined) return false;
 		if (goal.tokensUsed < goal.tokenBudget) return false;
-		accountElapsed();
-		goal.status = "budgetLimited";
-		goal.updatedAt = nowSeconds();
-		activeSinceMs = null;
-		continuationQueued = false;
+		setGoalStatus("budgetLimited");
 		return true;
 	}
 
-	function queueContinuation(ctx: ExtensionContext): void {
+	function queueContinuation(ctx: ExtensionContext): boolean {
 		const snapshot = currentGoalSnapshot();
-		if (snapshot?.status !== "active") return;
-		if (continuationQueued || ctx.hasPendingMessages()) return;
+		if (snapshot?.status !== "active") return false;
+		if (continuationQueued) return true;
+		if (ctx.hasPendingMessages()) return false;
 
 		continuationQueued = true;
+		const pending = { id: randomUUID(), goalId: snapshot.id, sessionId: ctx.sessionManager.getSessionId() };
+		pendingContinuation = pending;
+		watchContinuationDelivery(ctx, pending);
 		const message = {
 			customType: CONTINUATION_MESSAGE_TYPE,
 			content: continuationPrompt(snapshot),
 			display: false,
-			details: { goalId: snapshot.id },
+			details: { goalId: snapshot.id, continuationId: pending.id },
 		};
 		try {
 			if (ctx.isIdle()) {
@@ -537,18 +643,24 @@ export default function goalExtension(pi: ExtensionAPI) {
 			} else {
 				pi.sendMessage(message, { triggerTurn: true, deliverAs: "followUp" });
 			}
+			return true;
 		} catch (err) {
-			continuationQueued = false;
 			ctx.ui.notify(`Failed to queue goal continuation: ${err instanceof Error ? err.message : String(err)}`, "error");
+			return false;
 		}
 	}
 
 	function reconstructState(ctx: ExtensionContext): void {
+		cancelUsageRetryTimer();
+		cancelContinuationDelivery();
+		agentSettled = ctx.isIdle();
+		settleBoundarySeen = true;
 		goal = null;
 		activeSinceMs = null;
 		activeGoalIdAtAgentStart = null;
 		continuationQueued = false;
 		abortedAtAgentEnd = false;
+		pendingAssistantError = null;
 
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type !== "custom" || entry.customType !== STATE_TYPE) continue;
@@ -557,14 +669,31 @@ export default function goalExtension(pi: ExtensionAPI) {
 		}
 		if (goal?.status === "active") {
 			activeSinceMs = Date.now();
+			if (goal.usageRetry) setGoalStatus("usageLimited");
+		}
+		if (goal?.status === "usageLimited") {
+			if (!goal.usageRetry) {
+				goal.usageRetry = nextUsageRetry("");
+				persist("status");
+			}
+			scheduleUsageRetry(ctx);
 		}
 		updateStatus(ctx);
 	}
 
 	pi.on("session_start", async (_event, ctx) => reconstructState(ctx));
 	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
+	pi.on("session_shutdown", async () => {
+		cancelUsageRetryTimer();
+		cancelContinuationDelivery();
+	});
 
-	pi.on("before_agent_start", async (event) => {
+	pi.on("before_agent_start", async (event, ctx) => {
+		if (goal?.status === "usageLimited") {
+			setGoalStatus("active", true);
+			persist("status");
+			updateStatus(ctx);
+		}
 		if (goal?.status !== "active") return;
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${activeGoalSystemPrompt(goal)}`,
@@ -572,8 +701,17 @@ export default function goalExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_start", async (_event, _ctx) => {
-		continuationQueued = false;
+		agentSettled = false;
+		settleBoundarySeen = false;
+		pendingAssistantError = null;
+		continuationQueued = pendingContinuation !== null;
 		activeGoalIdAtAgentStart = goal?.status === "active" ? goal.id : null;
+	});
+
+	pi.on("message_start", async (event) => {
+		if (event.message.role !== "custom" || event.message.customType !== CONTINUATION_MESSAGE_TYPE) return;
+		const details = event.message.details as { continuationId?: string } | undefined;
+		if (pendingContinuation && details?.continuationId === pendingContinuation.id) cancelContinuationDelivery();
 	});
 
 	pi.on("agent_end", async (event, ctx) => {
@@ -603,14 +741,13 @@ export default function goalExtension(pi: ExtensionAPI) {
 
 		const lastAssistant = lastAssistantMessage(event.messages);
 		if (lastAssistant?.stopReason === "error") {
-			const status = goalStopStatusForAssistantError(lastAssistant);
-			setGoalStatus(status);
-			persist("status");
-			showGoalMessage(
-				`Goal ${statusLabel(status)}\n\nThe last goal turn ended with an error, so automatic continuation was stopped.\n\n${goalSummary(goal)}`,
-			);
-			updateStatus(ctx);
+			pendingAssistantError = { goalId: goal.id, errorMessage: lastAssistant.errorMessage ?? "" };
 			return;
+		}
+
+		if (lastAssistant && lastAssistant.stopReason !== "aborted" && goal.usageRetry) {
+			delete goal.usageRetry;
+			persist("status");
 		}
 
 		if (wasLastAssistantAborted(event.messages)) {
@@ -624,19 +761,25 @@ export default function goalExtension(pi: ExtensionAPI) {
 		}
 	});
 
+	pi.on("agent_before_settle", async (event) => {
+		settleBoundarySeen = true;
+		if (event.outcome === "aborted") abortedAtAgentEnd = true;
+	});
+
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (goal?.status !== "active") {
+		agentSettled = true;
+		const error = pendingAssistantError;
+		pendingAssistantError = null;
+		if (goal?.status === "active" && (abortedAtAgentEnd || (!settleBoundarySeen && error?.goalId === goal.id))) {
 			abortedAtAgentEnd = false;
-			return;
-		}
-		if (abortedAtAgentEnd) {
-			abortedAtAgentEnd = false;
+			const goalId = goal.id;
 			const pause = ctx.hasUI
 				? await ctx.ui.confirm(
 						"Pause active goal?",
 						"Operation aborted. Pause this goal instead of automatically continuing?",
 					)
 				: true;
+			if (goal?.id !== goalId || goal.status !== "active") return;
 			if (pause) {
 				setGoalStatus("paused");
 				persist("status");
@@ -644,6 +787,26 @@ export default function goalExtension(pi: ExtensionAPI) {
 				updateStatus(ctx);
 				return;
 			}
+		}
+		if (goal?.status === "active" && error?.goalId === goal.id) {
+			const status = goalStopStatusForAssistantError(error);
+			const attempt = goal.usageRetry?.attempt ?? 0;
+			setGoalStatus(status);
+			if (status === "usageLimited") {
+				goal.usageRetry = nextUsageRetry(error.errorMessage, attempt);
+			}
+			persist("status");
+			const explanation =
+				status === "usageLimited"
+					? "Provider usage limits reached. A background retry is queued; repeated limits will be requeued automatically. Use /goal pause to stop retries."
+					: "The last goal turn ended with an error, so automatic continuation was stopped.";
+			showGoalMessage(`Goal ${statusLabel(status)}\n\n${explanation}\n\n${goalSummary(goal)}`);
+			updateStatus(ctx);
+		}
+		if (goal?.status === "usageLimited") scheduleUsageRetry(ctx);
+		if (goal?.status !== "active") {
+			abortedAtAgentEnd = false;
+			return;
 		}
 		queueContinuation(ctx);
 	});
