@@ -76,7 +76,7 @@ export function saveConfig(partial: Partial<VisionConfig>): VisionConfig {
 		delete merged.apiKey;
 	}
 	mkdirSync(dirname(configPath), { recursive: true });
-	writeFileSync(configPath, JSON.stringify(merged, null, 2) + "\n", { mode: 0o600 });
+	writeFileSync(configPath, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
 	try {
 		chmodSync(configPath, 0o600);
 	} catch {
@@ -293,9 +293,7 @@ export function maskKey(key: string): string {
 /** Tokenize args, respecting double quotes (key="a b c" = one token). */
 function tokenize(args: string): string[] {
 	const out: string[] = [];
-	const re = /([^\s=]+)="([^"]*)"|"([^"]*)"|(\S+)/g;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(args))) {
+	for (const m of args.matchAll(/([^\s=]+)="([^"]*)"|"([^"]*)"|(\S+)/g)) {
 		if (m[1]) out.push(`${m[1]}=${m[2]}`);
 		else out.push(m[3] ?? m[4] ?? "");
 	}

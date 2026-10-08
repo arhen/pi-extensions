@@ -43,7 +43,6 @@ await factory({
 	},
 	registerCommand: () => {},
 	on: () => {},
-	// biome-ignore lint/suspicious/noExplicitAny: stub of the ExtensionAPI surface used here
 } as any);
 
 const models = cfg?.models ?? [];

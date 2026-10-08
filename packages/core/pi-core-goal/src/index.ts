@@ -378,7 +378,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 	}
 
 	function accountElapsed(): boolean {
-		if (!goal || goal.status !== "active" || activeSinceMs === null) return false;
+		if (goal?.status !== "active" || activeSinceMs === null) return false;
 		const seconds = Math.max(0, Math.floor((Date.now() - activeSinceMs) / 1000));
 		if (seconds <= 0) return false;
 		goal.timeUsedSeconds += seconds;
@@ -509,7 +509,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 	}
 
 	function maybeApplyBudgetLimit(): boolean {
-		if (!goal || goal.status !== "active" || goal.tokenBudget === undefined) return false;
+		if (goal?.status !== "active" || goal.tokenBudget === undefined) return false;
 		if (goal.tokensUsed < goal.tokenBudget) return false;
 		accountElapsed();
 		goal.status = "budgetLimited";
@@ -521,7 +521,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 
 	function queueContinuation(ctx: ExtensionContext): void {
 		const snapshot = currentGoalSnapshot();
-		if (!snapshot || snapshot.status !== "active") return;
+		if (snapshot?.status !== "active") return;
 		if (continuationQueued || ctx.hasPendingMessages()) return;
 
 		continuationQueued = true;
@@ -565,7 +565,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 	pi.on("session_tree", async (_event, ctx) => reconstructState(ctx));
 
 	pi.on("before_agent_start", async (event) => {
-		if (!goal || goal.status !== "active") return;
+		if (goal?.status !== "active") return;
 		return {
 			systemPrompt: `${event.systemPrompt}\n\n${activeGoalSystemPrompt(goal)}`,
 		};
@@ -625,7 +625,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 	});
 
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (!goal || goal.status !== "active") {
+		if (goal?.status !== "active") {
 			abortedAtAgentEnd = false;
 			return;
 		}

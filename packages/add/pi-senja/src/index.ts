@@ -85,7 +85,7 @@ function alignRight(left: string, right: string, width: number, theme: Theme): s
 	}
 	const availableForLeft = Math.max(0, width - rightW2 - 1);
 	const truncatedLeft = availableForLeft > 0 ? truncateToWidth(left, availableForLeft, theme.fg("dim", "…")) : "";
-	return truncatedLeft ? truncatedLeft + " " + right : right;
+	return truncatedLeft ? `${truncatedLeft} ${right}` : right;
 }
 
 /** Theme color for a provider name. */
@@ -223,7 +223,7 @@ function renderHeader(theme: Theme, width: number): string[] {
 	};
 
 	// --- Identity line: bold accent "pi", muted version, no leading spacing ---
-	lines.push(theme.bold(theme.fg("accent", "pi")) + " " + theme.fg("muted", `v${VERSION}`));
+	lines.push(`${theme.bold(theme.fg("accent", "pi"))} ${theme.fg("muted", `v${VERSION}`)}`);
 	lines.push("");
 
 	// --- Key map, grouped by intent ---
@@ -391,8 +391,6 @@ export default function (pi: ExtensionAPI) {
 					// ── Aggregate usage across every assistant message ───────────────
 					let totalInput = 0;
 					let totalOutput = 0;
-					let totalCacheRead = 0;
-					let totalCacheWrite = 0;
 					let totalCost = 0;
 					let latestCacheHitRate: number | undefined;
 
@@ -401,8 +399,6 @@ export default function (pi: ExtensionAPI) {
 							const m = entry.message as AssistantMessage;
 							totalInput += m.usage.input;
 							totalOutput += m.usage.output;
-							totalCacheRead += m.usage.cacheRead;
-							totalCacheWrite += m.usage.cacheWrite;
 							totalCost += m.usage.cost.total;
 
 							const promptTokens = m.usage.input + m.usage.cacheRead + m.usage.cacheWrite;

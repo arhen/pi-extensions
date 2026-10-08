@@ -14,6 +14,8 @@
 //    whitespace split (which would hand npm a literal "&&" arg). Plain single-command
 //    checks still run argv-direct. ponytail-lazy: no shell always; bash only on demand.
 const SHELL_OP = /[&|;><`()]/; // substring-only `$` (env, ${file}) is NOT an operator
+// biome-ignore lint/suspicious/noTemplateCurlyInString: literal placeholder users write in fileCheck
+const FILE_TOKEN = "${file}";
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -40,7 +42,7 @@ export function sanitize(root: string): string {
 	return root.replace(/[/\\:]/g, "_");
 }
 export function configPath(root: string): string {
-	return path.join(REPO_DIR, sanitize(root) + ".json");
+	return path.join(REPO_DIR, `${sanitize(root)}.json`);
 }
 export function readConfig(root: string): CheckConfig | null {
 	try {
@@ -92,9 +94,9 @@ export function splitCmd(s: string): [string, string[]] {
 /** Substitute after the split so a path with spaces stays one argv entry. */
 export function splitFileCmd(template: string, file: string): [string, string[]] {
 	const t = template.trim();
-	if (SHELL_OP.test(t)) return ["bash", ["-lc", t.replaceAll("${file}", file)]];
+	if (SHELL_OP.test(t)) return ["bash", ["-lc", t.replaceAll(FILE_TOKEN, file)]];
 	const [cmd, args] = splitCmd(t);
-	return [cmd.replaceAll("${file}", file), args.map((a) => a.replaceAll("${file}", file))];
+	return [cmd.replaceAll(FILE_TOKEN, file), args.map((a) => a.replaceAll(FILE_TOKEN, file))];
 }
 /** write tool accepts file_path or path; edit uses path. */
 export function editedPath(input: Record<string, unknown> | undefined): string {
@@ -210,7 +212,7 @@ export default function (pi: ExtensionAPI) {
 			timeoutReported = false;
 			return "";
 		}
-		const diagnostics = (res.stdout + "\n" + res.stderr).trim();
+		const diagnostics = `${res.stdout}\n${res.stderr}`.trim();
 		if (!isBrokenRun(res)) {
 			badRuns = 0; // real diagnostics: the command works, it just found errors
 			return diagnostics;
@@ -260,7 +262,7 @@ export default function (pi: ExtensionAPI) {
 					fileErrors.delete(file); // fixed since the last edit — don't report the stale error
 					return;
 				}
-				fileErrors.set(file, (res.stdout + "\n" + res.stderr).trim());
+				fileErrors.set(file, `${res.stdout}\n${res.stderr}`.trim());
 			})
 			.catch(() => {}) // fail-open: a broken fileCheck never blocks
 			.finally(() => inFlight.delete(run));
@@ -283,9 +285,9 @@ export default function (pi: ExtensionAPI) {
 						content: [
 							`This repo (${probe}) has no code-diagnostic config yet.`,
 							`Discover it once: inspect the repo (package.json scripts, tsconfig.json, Cargo.toml, go.mod, CMakeLists.txt...),`,
-							"propose a `check` command (and optional `fileCheck` with ${file} placeholder for per-file linting).",
+							`propose a \`check\` command (and optional \`fileCheck\` with ${FILE_TOKEN} placeholder for per-file linting).`,
 							"Self-test the proposed command once via your bash tool, then ask the user (ask_user_question, single select):",
-							"keep → write config JSON {check, fileCheck?, enabled: true} to " + configPath(probe),
+							`keep → write config JSON {check, fileCheck?, enabled: true} to ${configPath(probe)}`,
 							"rescan → propose a different command (max 2 attempts)",
 							"off → write {check, enabled: false}",
 							"If nothing in this repo fits any checker, write {check: '<repo build/check command>', enabled: true} or off.",

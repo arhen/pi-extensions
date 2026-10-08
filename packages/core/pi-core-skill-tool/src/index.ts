@@ -57,7 +57,7 @@ interface StructuredPromptOptions {
 
 function truncateDescription(desc: string): string {
 	if (desc.length <= CATALOG_DESC_MAX) return desc;
-	return desc.slice(0, CATALOG_DESC_MAX).trimEnd() + "…";
+	return `${desc.slice(0, CATALOG_DESC_MAX).trimEnd()}…`;
 }
 
 function readSkillBody(filePath: string): string {

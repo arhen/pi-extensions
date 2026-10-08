@@ -168,7 +168,7 @@ describe("tool heading identifiers", () => {
 	test("long subjects and labels stay single-line", () => {
 		const tool = registeredTool();
 		const ctx = context();
-		ctx.state.label = "#1." + "a.".repeat(100);
+		ctx.state.label = `#1.${"a.".repeat(100)}`;
 		const call = tool.renderCall!({ action: "create", subject: "中文🌳\n".repeat(100) }, theme, ctx);
 		for (const width of [1, 8, 20, 80]) {
 			const lines = call.render(width);

@@ -268,11 +268,11 @@ export class QuestionnaireComponent implements Component {
 		const contentWidth = boxWidth - 4;
 		const pad = (line: string): string => line + " ".repeat(Math.max(0, width - visibleWidth(line)));
 		const dim = (s: string): string => this.theme.fg("dim", s);
-		const bar = (): string => dim("├" + "─".repeat(boxWidth - 2) + "┤");
+		const bar = (): string => dim(`├${"─".repeat(boxWidth - 2)}┤`);
 		const row = (content: string): string =>
-			dim("│") + " " + content + " ".repeat(Math.max(0, boxWidth - visibleWidth(content) - 3)) + dim("│");
+			`${dim("│")} ${content}${" ".repeat(Math.max(0, boxWidth - visibleWidth(content) - 3))}${dim("│")}`;
 
-		lines.push(pad(dim("╭" + "─".repeat(boxWidth - 2) + "╮")));
+		lines.push(pad(dim(`╭${"─".repeat(boxWidth - 2)}╮`)));
 		lines.push(
 			pad(
 				row(
@@ -349,7 +349,7 @@ export class QuestionnaireComponent implements Component {
 		const multi = q.multiSelect ? "Enter toggle · Ctrl+S done · " : "Enter next · ";
 		const controls = dim(`${multi}←/→ prev/next · ↑↓ select · Type something. = custom · Esc cancel`);
 		lines.push(pad(row(truncateToWidth(controls, contentWidth))));
-		lines.push(pad(dim("╰" + "─".repeat(boxWidth - 2) + "╯")));
+		lines.push(pad(dim(`╰${"─".repeat(boxWidth - 2)}╯`)));
 		return lines;
 	}
 }

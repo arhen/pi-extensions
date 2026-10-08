@@ -3,7 +3,7 @@
  * Imports only core.ts + photon — no pi packages, so plain bun resolves it.
  */
 
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	cacheGet,
@@ -177,7 +177,7 @@ try {
 	setTimeout(() => ac.abort(), 150);
 	await abortP;
 	assert(
-		abortErr !== null && abortErr.message.includes("aborted during retry"),
+		abortErr?.message.includes("aborted during retry") === true,
 		"abort during retry must reject with a clear message",
 	);
 	assert(abortedAttempts === 1, "abort during retry must not trigger a second attempt");
@@ -190,7 +190,7 @@ try {
 
 	// model chain: m1 502s, m2 succeeds
 	const calls: string[] = [];
-	globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+	globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
 		const model = JSON.parse(String(init?.body)).model;
 		calls.push(model);
 		if (model === "m1") {
