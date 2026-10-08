@@ -1,7 +1,7 @@
 # @arhen/pi-core-subagent
 
 [![npm version](https://img.shields.io/npm/v/%40arhen%2Fpi-core-subagent?color=cb3837&logo=npm)](https://www.npmjs.com/package/@arhen/pi-core-subagent)
-[![CI](https://img.shields.io/github/actions/workflow/status/arhen/pi-extensions/pi-core-subagent.yml?branch=main&logo=github&label=CI)](https://github.com/arhen/pi-extensions/actions/workflows/pi-core-subagent.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/arhen/pi-extensions/ci.yml?branch=main&logo=github&label=CI)](https://github.com/arhen/pi-extensions/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://github.com/earendil-works/pi)
 

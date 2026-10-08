@@ -100,21 +100,29 @@ pi-toolset list      # list the family (toolset itself excluded)
 
 ## 🛠 Development
 
+npm owns installs and the only lockfile (`package-lock.json`); Bun is the test runner.
+
 ```bash
 npm install                 # hoist all workspaces
-npm run check               # typecheck every workspace that declares one
+npm run check               # typecheck + biome + tests, every package
+npm run format              # biome format + safe fixes
 ```
 
-Bump + publish a package from its workspace dir (published to the `@arhen` scope), then pull it
-into the local pi install:
+Every package exposes the same scripts: `typecheck`, `lint`, `test`, `check`. TypeScript settings
+come from `tsconfig.base.json`, lint/format from the root `biome.json`. Shared test fakes for the pi
+extension API live in `test-support/fake-pi.ts`. Tests run offline; network checks are opt-in
+(`npm run test:live --workspace @arhen/pi-add-commandcode`).
+
+Release = check, bump, publish, commit + tag, push, then `pi update` (`scripts/release.sh`):
 
 ```bash
-cd packages/pi-core-subagent && npm version patch && npm publish
-pi update npm:@arhen/pi-core-subagent
+npm run release -- pi-core-subagent              # patch
+npm run release -- --minor pi-add-mode pi-senja  # several at once
+npm run release -- --dry-run pi-core-goal        # check + npm publish --dry-run only
 ```
 
-Family rule: bumping any `pi-core-*` also bumps `pi-toolset` (patch, same cycle) so the installed
-core packages and the toolset never disagree.
+Packages version independently. `pi-toolset` discovers the family from npm at runtime, so it is
+released only when its own script changes.
 
 To release a new extension: add the package under `packages/core/` or `packages/add/` and list it in the
 layout tree and the relevant table above.
