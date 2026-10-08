@@ -1,12 +1,12 @@
-// Run: npx tsx src/index.test.ts   (hits the live public /models endpoint)
+// Run: npm run test:live   (hits the live public /models endpoint; not part of `npm test`)
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { getModels } from "@earendil-works/pi-ai/compat";
-import factory from "./index.ts";
+import factory from "../src/index.ts";
 
 const builtin = new Set(getModels("anthropic").map((m) => m.id));
-const src = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
-const priced = [...src.matchAll(/^ {2}"([^"]+)": \[/gmu)].map((m) => m[1]);
+const src = readFileSync(new URL("../src/index.ts", import.meta.url), "utf8");
+const priced = [...src.matchAll(/^[\t ]+"([^"]+)": \[/gmu)].map((m) => m[1]!);
 assert.equal(new Set(priced).size, priced.length, "duplicate id in CATALOG");
 
 const res = await fetch("https://api.commandcode.ai/provider/v1/models");

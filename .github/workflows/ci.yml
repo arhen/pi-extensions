@@ -1,12 +1,12 @@
-name: Extension CI
+name: CI
 
 on:
   push:
     branches: [main]
-    paths: ["packages/**", "package.json", "package-lock.json", "bun.lock", ".github/workflows/pi-core-subagent.yml"]
+    paths: ["packages/**", "test-support/**", "scripts/**", "*.json", ".github/workflows/ci.yml"]
   pull_request:
     branches: [main]
-    paths: ["packages/**", "package.json", "package-lock.json", "bun.lock", ".github/workflows/pi-core-subagent.yml"]
+    paths: ["packages/**", "test-support/**", "scripts/**", "*.json", ".github/workflows/ci.yml"]
 
 jobs:
   check:
@@ -16,10 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
+      # Bun is the test runner only; npm owns installs and the lockfile.
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: "1.4.0"
       - run: npm ci --ignore-scripts --no-audit --no-fund
-      - run: bun install --frozen-lockfile --ignore-scripts
       - run: npm run check
       - run: npm audit --audit-level=moderate

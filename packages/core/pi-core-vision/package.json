@@ -43,8 +43,11 @@
     ]
   },
   "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
     "test": "bun src/self-check.ts",
-    "prepublishOnly": "npm run test"
+    "prepublishOnly": "npm run test",
+    "check": "npm run typecheck && npm run lint && npm test"
   },
   "publishConfig": {
     "access": "public",

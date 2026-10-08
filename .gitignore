@@ -4,3 +4,6 @@ dist/
 .DS_Store
 .env
 .pi/
+# npm owns the lockfile (package-lock.json); bun is only the test runner.
+bun.lock
+bun.lockb

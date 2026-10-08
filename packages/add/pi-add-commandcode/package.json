@@ -7,6 +7,7 @@
   "main": "./src/index.ts",
   "files": [
     "src",
+    "!src/**/*.test.ts",
     "README.md",
     "LICENSE"
   ],
@@ -35,5 +36,12 @@
     "type": "git",
     "url": "https://github.com/arhen/pi-extensions",
     "directory": "packages/add/pi-add-commandcode"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "test": "bun test",
+    "test:live": "bun test/live-models.ts",
+    "check": "npm run typecheck && npm run lint && npm test"
   }
 }
