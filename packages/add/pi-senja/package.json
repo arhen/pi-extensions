@@ -1,74 +1,73 @@
 {
-  "name": "@arhen/pi-senja",
-  "version": "1.0.5",
-  "description": "Senja Gruvbox Material theme with Haiku's structured header, footer, and live timer for Pi.",
-  "license": "MIT",
-  "author": "arhen",
-  "contributors": [
-    "nocte <nocte19@gmail.com>"
-  ],
-  "type": "module",
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "!src/**/*.test.ts",
-    "themes",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi-package",
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "pi-theme",
-    "gruvbox-material",
-    "senja",
-    "footer",
-    "header",
-    "tui"
-  ],
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "test": "bun test test",
-    "check": "npm run typecheck && npm run lint && npm test"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ],
-    "themes": [
-      "./themes/senja.json"
-    ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
-  },
-  "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": {
-      "optional": true
-    },
-    "@earendil-works/pi-coding-agent": {
-      "optional": true
-    },
-    "@earendil-works/pi-tui": {
-      "optional": true
-    }
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/add/pi-senja"
-  },
-  "homepage": "https://github.com/arhen/pi-extensions/tree/main/packages/add/pi-senja#readme",
-  "bugs": {
-    "url": "https://github.com/arhen/pi-extensions/issues"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+	"name": "@arhen/pi-senja",
+	"version": "1.0.5",
+	"description": "Senja Gruvbox Material theme with Haiku's structured header, footer, and live timer for Pi.",
+	"license": "MIT",
+	"author": "arhen",
+	"contributors": [
+		"nocte <nocte19@gmail.com>"
+	],
+	"type": "module",
+	"main": "./src/index.ts",
+	"files": [
+		"src",
+		"themes",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"pi-theme",
+		"gruvbox-material",
+		"senja",
+		"footer",
+		"header",
+		"tui"
+	],
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "bun test test",
+		"check": "npm run typecheck && npm run lint && npm test"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		],
+		"themes": [
+			"./themes/senja.json"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	},
+	"peerDependenciesMeta": {
+		"@earendil-works/pi-ai": {
+			"optional": true
+		},
+		"@earendil-works/pi-coding-agent": {
+			"optional": true
+		},
+		"@earendil-works/pi-tui": {
+			"optional": true
+		}
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/add/pi-senja"
+	},
+	"homepage": "https://github.com/arhen/pi-extensions/tree/main/packages/add/pi-senja#readme",
+	"bugs": {
+		"url": "https://github.com/arhen/pi-extensions/issues"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	}
 }

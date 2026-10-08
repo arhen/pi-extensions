@@ -1,43 +1,42 @@
 {
-  "name": "@arhen/pi-core-skill-tool",
-  "version": "1.0.11",
-  "description": "Pi extension — opencode2-style skills: strips the built-in skill catalog from the system prompt and exposes skills via a single lazy `skill` tool. Agent auto-invokes, no user input, saves ~4.5K tokens/session.",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "skills",
-    "agent-skills"
-  ],
-  "license": "MIT",
-  "author": "arhen <arhen@users.noreply.github.com>",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/core/pi-core-skill-tool"
-  },
-  "type": "module",
-  "main": "./src/index.ts",
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "test": "bun test test",
-    "check": "npm run typecheck && npm run lint && npm test"
-  },
-  "files": [
-    "src",
-    "!src/**/*.test.ts"
-  ],
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+	"name": "@arhen/pi-core-skill-tool",
+	"version": "1.0.11",
+	"description": "Pi extension — opencode2-style skills: strips the built-in skill catalog from the system prompt and exposes skills via a single lazy `skill` tool. Agent auto-invokes, no user input, saves ~4.5K tokens/session.",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"skills",
+		"agent-skills"
+	],
+	"license": "MIT",
+	"author": "arhen <arhen@users.noreply.github.com>",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/core/pi-core-skill-tool"
+	},
+	"type": "module",
+	"main": "./src/index.ts",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "bun test test",
+		"check": "npm run typecheck && npm run lint && npm test"
+	},
+	"files": [
+		"src"
+	],
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	}
 }

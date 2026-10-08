@@ -1,45 +1,45 @@
 {
-  "name": "@arhen/pi-add-9router",
-  "version": "1.0.1",
-  "description": "Pi Coding Agent extension for 9router — provider registration and model discovery only, no web tools",
-  "keywords": [
-    "pi-package",
-    "pi-extension",
-    "9router",
-    "ai-router",
-    "openai-proxy"
-  ],
-  "license": "MIT",
-  "author": "arhen <arhen@users.noreply.github.com>",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/add/pi-add-9router"
-  },
-  "type": "module",
-  "main": "./src/index.ts",
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "files": [
-    "src",
-    "!src/**/*.test.ts",
-    "README.md",
-    "LICENSE"
-  ],
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "test": "bun test",
-    "check": "npm run typecheck && npm run lint && npm test"
-  }
+	"name": "@arhen/pi-add-9router",
+	"version": "1.0.1",
+	"description": "Pi Coding Agent extension for 9router — provider registration and model discovery only, no web tools",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"9router",
+		"ai-router",
+		"openai-proxy"
+	],
+	"license": "MIT",
+	"author": "arhen <arhen@users.noreply.github.com>",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/add/pi-add-9router"
+	},
+	"type": "module",
+	"main": "./src/index.ts",
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"files": [
+		"src",
+		"!src/**/*.test.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "bun test",
+		"check": "npm run typecheck && npm run lint && npm test"
+	}
 }

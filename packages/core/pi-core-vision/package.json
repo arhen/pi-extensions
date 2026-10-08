@@ -1,56 +1,56 @@
 {
-  "name": "@arhen/pi-core-vision",
-  "version": "1.0.8",
-  "description": "Transparent vision fallback for text-only pi models — overrides read so image files are described by a vision model when the active model cannot see images. Supports any OpenAI-compatible endpoint.",
-  "license": "MIT",
-  "author": "arhen",
-  "type": "module",
-  "engines": {
-    "node": ">=20"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/core/pi-core-vision"
-  },
-  "homepage": "https://github.com/arhen/pi-core-vision#readme",
-  "bugs": {
-    "url": "https://github.com/arhen/pi-core-vision/issues"
-  },
-  "keywords": [
-    "pi-package",
-    "pi",
-    "pi-extension",
-    "vision",
-    "multimodal",
-    "image",
-    "fallback",
-    "read"
-  ],
-  "files": [
-    "index.ts",
-    "src/",
-    "README.md",
-    "LICENSE"
-  ],
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "typebox": "*"
-  },
-  "pi": {
-    "extensions": [
-      "./index.ts"
-    ]
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "test": "bun src/self-check.ts",
-    "prepublishOnly": "npm run test",
-    "check": "npm run typecheck && npm run lint && npm test"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  }
+	"name": "@arhen/pi-core-vision",
+	"version": "1.0.8",
+	"description": "Transparent vision fallback for text-only pi models — overrides read so image files are described by a vision model when the active model cannot see images. Supports any OpenAI-compatible endpoint.",
+	"license": "MIT",
+	"author": "arhen",
+	"type": "module",
+	"engines": {
+		"node": ">=20"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/core/pi-core-vision"
+	},
+	"homepage": "https://github.com/arhen/pi-core-vision#readme",
+	"bugs": {
+		"url": "https://github.com/arhen/pi-core-vision/issues"
+	},
+	"keywords": [
+		"pi-package",
+		"pi",
+		"pi-extension",
+		"vision",
+		"multimodal",
+		"image",
+		"fallback",
+		"read"
+	],
+	"files": [
+		"index.ts",
+		"src/",
+		"README.md",
+		"LICENSE"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"pi": {
+		"extensions": [
+			"./index.ts"
+		]
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "bun src/self-check.ts",
+		"prepublishOnly": "npm run test",
+		"check": "npm run typecheck && npm run lint && npm test"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	}
 }

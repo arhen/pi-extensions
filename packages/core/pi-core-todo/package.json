@@ -1,48 +1,47 @@
 {
-  "name": "@arhen/pi-core-todo",
-  "version": "1.0.11",
-  "type": "module",
-  "description": "Flat or arbitrarily nested Pi todos with explicit statuses, direct-child progress, dependencies, a compact widget, and a scrollable tree browser.",
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "test": "bun test",
-    "check": "npm run typecheck && npm run lint && npm test"
-  },
-  "license": "MIT",
-  "author": "arhen",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/core/pi-core-todo"
-  },
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "!src/**/*.test.ts",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "pi-package",
-    "todo"
-  ],
-  "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  }
+	"name": "@arhen/pi-core-todo",
+	"version": "1.0.11",
+	"type": "module",
+	"description": "Flat or arbitrarily nested Pi todos with explicit statuses, direct-child progress, dependencies, a compact widget, and a scrollable tree browser.",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "bun test",
+		"check": "npm run typecheck && npm run lint && npm test"
+	},
+	"license": "MIT",
+	"author": "arhen",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/core/pi-core-todo"
+	},
+	"main": "./src/index.ts",
+	"files": [
+		"src",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"pi-package",
+		"todo"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	}
 }

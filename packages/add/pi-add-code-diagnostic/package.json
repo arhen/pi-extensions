@@ -1,46 +1,46 @@
 {
-  "name": "@arhen/pi-add-code-diagnostic",
-  "version": "1.0.3",
-  "type": "module",
-  "description": "pi extension: repo-scoped typecheck/lint diagnostics for coding agents (LSP-equivalent, no servers).",
-  "license": "MIT",
-  "main": "./src/index.ts",
-  "files": [
-    "src",
-    "!src/**/*.test.ts",
-    "README.md",
-    "LICENSE"
-  ],
-  "keywords": [
-    "pi",
-    "pi-coding-agent",
-    "pi-extension",
-    "pi-package",
-    "diagnostics",
-    "lsp",
-    "lint"
-  ],
-  "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
-  },
-  "pi": {
-    "extensions": [
-      "./src/index.ts"
-    ]
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/arhen/pi-extensions",
-    "directory": "packages/add/pi-add-code-diagnostic"
-  },
-  "scripts": {
-    "typecheck": "tsc --noEmit",
-    "lint": "biome check .",
-    "test": "bun test",
-    "check": "npm run typecheck && npm run lint && npm test"
-  }
+	"name": "@arhen/pi-add-code-diagnostic",
+	"version": "1.0.3",
+	"type": "module",
+	"description": "pi extension: repo-scoped typecheck/lint diagnostics for coding agents (LSP-equivalent, no servers).",
+	"license": "MIT",
+	"main": "./src/index.ts",
+	"files": [
+		"src",
+		"!src/**/*.test.ts",
+		"README.md",
+		"LICENSE"
+	],
+	"keywords": [
+		"pi",
+		"pi-coding-agent",
+		"pi-extension",
+		"pi-package",
+		"diagnostics",
+		"lsp",
+		"lint"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	},
+	"publishConfig": {
+		"access": "public",
+		"registry": "https://registry.npmjs.org/"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/arhen/pi-extensions",
+		"directory": "packages/add/pi-add-code-diagnostic"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"lint": "biome check .",
+		"test": "bun test",
+		"check": "npm run typecheck && npm run lint && npm test"
+	}
 }
