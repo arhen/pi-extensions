@@ -1,6 +1,6 @@
 {
 	"name": "@arhen/pi-core-goal",
-	"version": "0.0.2",
+	"version": "0.0.3",
 	"type": "module",
 	"description": "Session-log-backed long-running /goal mode for pi: automatic continuation after agent_settled, token budget, strict completion/blocked audits, cache-stable system prefix.",
 	"license": "MIT",
