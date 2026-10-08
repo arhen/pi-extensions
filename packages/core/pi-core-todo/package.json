@@ -1,6 +1,6 @@
 {
 	"name": "@arhen/pi-core-todo",
-	"version": "1.0.11",
+	"version": "1.0.12",
 	"type": "module",
 	"description": "Flat or arbitrarily nested Pi todos with explicit statuses, direct-child progress, dependencies, a compact widget, and a scrollable tree browser.",
 	"scripts": {
