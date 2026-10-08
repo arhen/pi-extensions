@@ -1,19 +1,19 @@
-# pi-9router
+# @arhen/pi-add-9router
 
-[![npm version](https://img.shields.io/npm/v/@arhen/pi-9router)](https://www.npmjs.com/package/@arhen/pi-9router)
-[![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-9router)](https://www.npmjs.com/package/@arhen/pi-9router)
+[![npm version](https://img.shields.io/npm/v/@arhen/pi-add-9router)](https://www.npmjs.com/package/@arhen/pi-add-9router)
+[![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-add-9router)](https://www.npmjs.com/package/@arhen/pi-add-9router)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-9router)](https://github.com/arhen/pi-9router)
+[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-extensions)](https://github.com/arhen/pi-extensions)
 
 ## Install
 
 Requires the [pi coding agent](https://github.com/earendil-works/pi) — install it first: `npm install -g @earendil-works/pi-coding-agent`.
 
 ```sh
-pi install npm:@arhen/pi-9router
+pi install npm:@arhen/pi-add-9router
 ```
 
-Pi Coding Agent extension for [9router](https://9router.example.com) — AI routing proxy.
+Pi Coding Agent extension for 9router — AI routing proxy (default `http://localhost:20128`).
 
 Registers 9router as a Pi provider with dynamic model discovery. **Provider only, no web tools** — use [pi-web-access](https://github.com/nicobailon/pi-web-access) for web search/fetch.
 

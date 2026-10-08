@@ -13,6 +13,11 @@ pi install npm:@arhen/pi-core-tps-stats
 
 Live token-per-second stats for active model. Status bar shows median effective t/s + median TTFT; `/tps-stats` shows full stats (samples, avg/median/min/max, TTFT). Stats reset on model change.
 
+- Status-bar speed is colour-banded: `≤40` red, `≤80` warning, `<100` default text, `≥100` success
+- The ring buffer keeps the last 200 samples, and the bars report over that window
+- A model change flashes `t/s reset <provider>/<id>` for 2 s
+- Before any sample exists: `t/s Stats: no data yet. Send a prompt first.`
+
 **One rate, deliberately.** Effective t/s is all output tokens (thinking + text + tool-call arguments) divided by assistant-response time from turn start to message end. Queue, prefill, and TTFT are included; tool execution is excluded. It reads lower than provider marketing numbers because it is rate you actually wait for.
 
 There is no separate "streaming t/s", because SSE arrival times measure the gateway's flush schedule rather than the model. Measured against `vantis/deepseek-v4-flash-0731-fast` (median inter-chunk gap: 0.01ms — chunks land in instant batches separated by long pauses):

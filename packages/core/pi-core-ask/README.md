@@ -20,12 +20,12 @@ Minimalist pi questionnaire: `ask_user_question` tool with up to 4 structured qu
 
 - `questions` (1–4): `question`, `header` (≤16 chars), `options` (2–4 of `label` ≤60 chars / `description` / optional `preview`), `multiSelect` (default false)
 - Reserved labels rejected: `Other`, `Type something.`, `Next` — the runtime appends its own free-text row
-- Validation: duplicate questions/labels, too few options, too many questions — all rejected with the same error strings
+- Validation: duplicate questions/labels, too few options, too many questions — each class rejected with its own error string
 - Envelope: `User has answered your questions: "Q"="A". selected preview: …` / `User declined to answer questions` on Esc
 
 ## UI
 
-Boxed dialog, one question at a time: progress dots, header chip, option list (pi-tui SelectList), preview pane for focused options, "Type something." → inline input, `Enter` next / `Ctrl+S` done (multiSelect) / `Esc` cancel.
+Boxed dialog, one question at a time: progress dots, header chip, option list (pi-tui SelectList), preview pane for focused options, "Type something." → inline input, `Enter` next (toggle on multiSelect) / `Ctrl+S` done (multiSelect) / `Esc` cancel.
 
 ![ask_user_question example](assets/ask-example.png)
 
@@ -47,7 +47,8 @@ Enter next ↵ select → Type something. = custom ⇫ Esc cancel
 ## Design
 
 - One tool, one boxed dialog, stateless — no lifecycle events, no config, no RPC fallback, no i18n
-- Multi-question questionnaire: progress dots, `←/→` navigation (answers preserved per question), `Enter` next, `Ctrl+S` commits multiSelect, `Esc` cancels
+- Requires an interactive terminal: outside TUI mode the tool returns the `ERROR_NO_UI` error instead of a dialog; calls run sequentially (`executionMode: "sequential"`)
+- Multi-question questionnaire: progress dots, `←/→` navigation (answers preserved per question), `Enter` next (toggle while `multiSelect`), `Ctrl+S` commits multiSelect, `Esc` cancels
 - Options via pi-tui SelectList; focused option's full description + optional preview render in a pane below
 - "Type something." free-text row on every question; blank submit returns to options
 - Validation: reserved labels rejected (trimmed), previews only on single-select, 2-4 options, unique questions/labels

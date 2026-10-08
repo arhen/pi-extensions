@@ -23,17 +23,17 @@ LSP-equivalent diagnostics for coding agents — no language servers, no JSON-RP
 
 ## Config
 
-Per repo root at `~/.pi/repos/<root-sanitized>.json`:
+Per repo root at `~/.pi/repos/<root-sanitized>.json` — the nearest config wins, and a nested repo with no config inherits its parent's (up to 3 roots up):
 
 ```json
 { "check": "tsc --noEmit", "fileCheck": "eslint ${file}", "enabled": true }
 ```
 
-Commands are split on whitespace (no shell pipes/`&&`) and run with a 120s timeout from the repo root.
+Commands with no shell operators are split on whitespace; anything with `&&`, a pipe, or a redirect runs through `bash -lc`. Both run from the repo root — 120s for `check`, 30s per file for `fileCheck`.
 
 ## Commands
 
-- `/diagnostic` — status: root, check cmd, fileCheck, enabled, testedAt, lastExit
+- `/diagnostic` — status: root, check cmd, fileCheck, enabled, testedAt, lastExit (`status` is the explicit form)
 - `/diagnostic run` — run the global check now
 - `/diagnostic clear` — delete the repo config; discovery re-runs
 

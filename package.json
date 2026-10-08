@@ -10,7 +10,7 @@
 		"packages/pi-toolset"
 	],
 	"scripts": {
-		"install:core": "node packages/pi-toolset/pi-toolset install",
+		"install:core": "bash packages/pi-toolset/pi-toolset install",
 		"typecheck": "npm run typecheck --workspaces --if-present",
 		"lint": "npm run lint --workspaces --if-present",
 		"test": "npm run test --workspaces --if-present",

@@ -62,7 +62,7 @@ Stored at `${getAgentDir()}/deliberate.json` (usually `~/.pi/agent/deliberate.js
 
 | Tool | Purpose |
 | --- | --- |
-| `deliberate_mode` | `prepare` (validate config/subagent/model/connectivity) or `configure` (picker UI, save config; non-UI returns `configure-requires-ui`) |
+| `deliberate_mode` | `prepare` (validate config/subagent/model/connectivity) or `configure` (picker UI, save config; non-UI returns `configure-requires-ui`, a cancelled picker returns `cancelled`) |
 | `deliberate_save_plan` | Save final Markdown to the configured path, atomically, and record it in the session; rejects empty content |
 
 ## Saved plan state

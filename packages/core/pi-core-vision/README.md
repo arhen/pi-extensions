@@ -3,20 +3,20 @@
 [![npm version](https://img.shields.io/npm/v/@arhen%2Fpi-core-vision?color=cb3837&logo=npm&label=npm)](https://www.npmjs.com/package/@arhen/pi-core-vision)
 [![npm downloads](https://img.shields.io/npm/dm/@arhen%2Fpi-core-vision)](https://www.npmjs.com/package/@arhen/pi-core-vision)
 [![pi extension](https://img.shields.io/badge/pi-extension-blueviolet)](https://github.com/earendil-works/pi-coding-agent)
-[![license](https://img.shields.io/github/license/arhen/pi-core-vision)](LICENSE)
+[![license](https://img.shields.io/github/license/arhen/pi-extensions)](LICENSE)
 
 ## Install
 
 Requires the [pi coding agent](https://github.com/earendil-works/pi) — install it first: `npm install -g @earendil-works/pi-coding-agent`.
 
 ```sh
-pi install git:github.com/arhen/pi-core-vision
+pi install npm:@arhen/pi-core-vision
 ```
 
 or try without installing:
 
 ```sh
-pi -e git:github.com/arhen/pi-core-vision
+pi -e npm:@arhen/pi-core-vision
 ```
 
 Transparent vision fallback for text-only models in [pi](https://pi.dev).
@@ -31,15 +31,17 @@ The model sees one result either way — no double reading, no new tool to learn
 
 ## Configure
 
-Two modes — **raw** (any OpenAI-compatible endpoint) or **registry** (models from pi's own registry, auth via `auth.json`/`/login`/env).
+Two modes — **raw** (any OpenAI-compatible endpoint) or **registry** (models from pi's own registry, auth via `auth.json`/`/login`/env). The two are mutually exclusive: setting `baseUrl`/`apiKey` clears `provider`, and vice versa.
 
 Set the vision model via `/pi-vision` command, env vars, or `~/.pi/pi-vision.json` (JSON wins over env).
 
 ```bash
 /pi-vision set baseUrl=https://api.openai.com/v1 apiKey=sk-... model=gpt-4o-mini
-/pi-vision show          # current config (apiKey masked)
+/pi-vision show          # current config (apiKey masked); `status` is an alias
 /pi-vision reset         # clear config file
 ```
+
+`model` may be a comma-separated chain — each entry is tried in order until one answers.
 
 Env vars:
 
@@ -47,9 +49,10 @@ Env vars:
 export PI_VISION_BASE_URL="https://api.openai.com/v1"
 export PI_VISION_API_KEY="sk-..."
 export PI_VISION_MODEL="gpt-4o-mini"
+export PI_VISION_PROVIDER="anthropic"   # registry mode instead of a raw endpoint
 ```
 
-`~/.pi/pi-vision.json` (extra options: `prompt`, `maxTokens`):
+`~/.pi/pi-vision.json` (extra options: `provider`, `prompt`, `maxTokens` — accepted by the file and by `set`):
 
 ```json
 {
@@ -86,6 +89,8 @@ Any OpenAI-compatible endpoint works: OpenAI `/v1`, Google Gemini `/v1beta/opena
 - Delegates every read to pi's own `createReadToolDefinition` — byte-identical built-in behavior (Photon resize to 2000px / 4.5MB, magic-byte mime detection, truncation).
 - Checks `ctx.model.input.includes("image")` at call time. Vision-capable model → built-in result untouched. Text-only model + image → vision model describes pi's already-resized base64.
 - Nested vision usage is reported back, so pi session stats stay accurate.
+- Requests time out after 60 s; 408/429/5xx retry once, honouring `Retry-After` up to 30 s.
+- Descriptions are content-addressed in `~/.pi/pi-vision-cache.json` (200 entries).
 - Raw-file fallback (with 20MB guard) covers the case where pi's image processing is unavailable (e.g. BMP).
 
 ## Benchmark

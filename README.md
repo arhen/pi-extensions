@@ -14,30 +14,34 @@ standalone repos are archived and point here.
 
 ```
 packages/
-├── core/        → essential extensions (installed by the toolset)
+├── core/        → essential family extensions
 │   ├── pi-core-ask/
+│   ├── pi-core-goal/
 │   ├── pi-core-skill-tool/
 │   ├── pi-core-subagent/
 │   ├── pi-core-todo/
 │   ├── pi-core-tps-stats/
 │   └── pi-core-vision/
-├── add/         → optional/extra extensions (opt in)
+├── add/         → optional family extensions
 │   ├── pi-add-9router/
 │   ├── pi-add-code-diagnostic/
 │   ├── pi-add-commandcode/
+│   ├── pi-add-deliberate/
+│   ├── pi-add-mode/
 │   ├── pi-add-vantis/
 │   ├── pi-add-wafer/
 │   └── pi-senja/
-└── pi-toolset/  → installer: manage the installed set
+└── pi-toolset/  → installer for the whole family
 ```
 
 ## 🚀 Install
 
-The easiest way to get the whole **core set** at once is the toolset:
+The toolset installs the whole family at once — it discovers every published `@arhen/pi-*` package
+from the npm registry at runtime (the toolset itself excluded), so new packages need no update here:
 
 ```bash
 npm i -g @arhen/pi-toolset
-pi-toolset install          # installs all @arhen/pi-core-* packages
+pi-toolset install          # whole family: core + add-ons
 ```
 
 Or install individual extensions permanently:
@@ -61,6 +65,7 @@ pi -e npm:@arhen/pi-core-vision
 | Package | Use it for |
 | --- | --- |
 | [`@arhen/pi-core-ask`](packages/core/pi-core-ask) | Structured up-to-4-question questionnaire tool |
+| [`@arhen/pi-core-goal`](packages/core/pi-core-goal) | `/goal` long-running objective: session-log state, token budget, auto-continuation |
 | [`@arhen/pi-core-skill-tool`](packages/core/pi-core-skill-tool) | Skills catalog, lazy `skill` tool |
 | [`@arhen/pi-core-subagent`](packages/core/pi-core-subagent) | Fast in-process subagents, dependency scheduler |
 | [`@arhen/pi-core-todo`](packages/core/pi-core-todo) | Flat/nested todos, direct-child progress, bounded tree UI + blockedBy |
@@ -69,42 +74,50 @@ pi -e npm:@arhen/pi-core-vision
 
 ## 🧩 Add-on extensions
 
-| Package | Purpose for |
+| Package | Use it for |
 | --- | --- |
 | [`@arhen/pi-add-9router`](packages/add/pi-add-9router) | 9router provider registration + model discovery |
 | [`@arhen/pi-add-code-diagnostic`](packages/add/pi-add-code-diagnostic) | Repo-scoped typecheck/lint diagnostics |
 | [`@arhen/pi-add-commandcode`](packages/add/pi-add-commandcode) | Command Code Provider API: 58 models, dual-endpoint routing, ZDR |
-| [`@arhen/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + subagent model, `/mode` and `ctrl+tab` |
+| [`@arhen/pi-add-deliberate`](packages/add/pi-add-deliberate) | Read-only `/advise` second opinions and research-first `/plan`, saved to a path |
+| [`@arhen/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + effort + subagent model, `/mode` and `alt+m` |
 | [`@arhen/pi-add-vantis`](packages/add/pi-add-vantis) | Vantis integration |
 | [`@arhen/pi-add-wafer`](packages/add/pi-add-wafer) | Wafer integration |
-| [`@arhen/pi-senja`](packages/add/pi-senja) | Haiku-style header/footer with the Gruvbox Material Senja palette |
+| [`@arhen/pi-senja`](packages/add/pi-senja) | Gruvbox Material Senja theme, Haiku-style header/footer, state-tinted tool panels |
 
 ## 🔧 Manage the set
 
-The [toolset](packages/pi-toolset) manages the installed extension set.
+The [toolset](packages/pi-toolset) manages the family. It reads the package list from npm at
+runtime — there is no static list to keep in sync, and no per-package `add` subcommand: install
+an extra alone with `pi install npm:@arhen/<pkg>`.
 
 ```bash
-pi-toolset install   # install core set
-pi-toolset add <pkg> # add an extra extension
-pi-toolset update    # update installed
-pi-toolset remove    # remove an extension
+pi-toolset install   # install the whole family (core + add-ons)
+pi-toolset update    # update the installed ones
+pi-toolset remove    # remove the installed ones
+pi-toolset list      # list the family (toolset itself excluded)
 ```
 
 ## 🛠 Development
 
 ```bash
 npm install                 # hoist all workspaces
-npm run check               # typecheck every package
+npm run check               # typecheck every workspace that declares one
 ```
 
-Bump + publish a package from its workspace dir (published to the `@arhen` scope):
+Bump + publish a package from its workspace dir (published to the `@arhen` scope), then pull it
+into the local pi install:
 
 ```bash
 cd packages/pi-core-subagent && npm version patch && npm publish
+pi update npm:@arhen/pi-core-subagent
 ```
 
+Family rule: bumping any `pi-core-*` also bumps `pi-toolset` (patch, same cycle) so the installed
+core packages and the toolset never disagree.
+
 To release a new extension: add the package under `packages/core/` or `packages/add/` and list it in the
-relevant table above.
+layout tree and the relevant table above.
 
 ## License
 

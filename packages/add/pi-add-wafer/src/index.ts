@@ -16,7 +16,7 @@
  *                         refetches catalog; non-ZDR models hidden while on)
  *   /wafer refresh    force-refetch model catalog
  *   /wafer models     list models with configs (widget below editor)
- *   /wafer usage      account usage 7d + cache hit rate 24h
+ *   /wafer usage      account usage 24h + cache hit rate 24h
  *   /wafer hide       clear the models widget
  */
 import type { ExtensionAPI, ProviderConfig, ProviderModelConfig } from "@earendil-works/pi-coding-agent";

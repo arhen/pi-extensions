@@ -1,9 +1,9 @@
-# pi-skill-tool
+# @arhen/pi-core-skill-tool
 
 [![npm version](https://img.shields.io/npm/v/@arhen/pi-core-skill-tool)](https://www.npmjs.com/package/@arhen/pi-core-skill-tool)
 [![npm downloads](https://img.shields.io/npm/dm/@arhen/pi-core-skill-tool)](https://www.npmjs.com/package/@arhen/pi-core-skill-tool)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-core-skill-tool)](https://github.com/arhen/pi-core-skill-tool)
+[![GitHub stars](https://img.shields.io/github/stars/arhen/pi-extensions)](https://github.com/arhen/pi-extensions)
 
 ## Install
 
@@ -24,7 +24,7 @@ This extension does the same for pi.
 ## How it works
 
 1. `before_agent_start` → reads the skill catalog from `event.systemPromptOptions.skills` (pi's own discovery — project, user, settings, CLI, and npm package skills) and strips the built-in `<available_skills>...</available_skills>` block from the system prompt
-2. Registers one lazy `skill` tool; its description carries a compact catalog (name + truncated description, 100 chars/skill)
+2. Registers one lazy `skill` tool on the first `before_agent_start`; its description snapshots that catalog (name + truncated description, 100 chars/skill). If pi's prompt format ever changes and the strip fails, the catalog is left in the prompt and a console warning is logged
 3. Agent matches a task → calls `skill("name")` → the tool reads that skill's SKILL.md body on demand and returns it → agent follows instructions
 
 No filesystem discovery: the catalog comes entirely from pi via `systemPromptOptions` on `before_agent_start`, so it always matches what pi itself loads — no re-scanning, no divergence. SKILL.md bodies are read lazily only when the tool is called, saving ~4.5K tokens/session.
@@ -118,6 +118,7 @@ What the extension changes:
 
 - **Truncated descriptions** (100 chars) — the agent matches on keywords rather than full text. Skill bodies are complete when loaded; only the catalog summary is shortened
 - **Catalog still costs ~2.9K** — the tool description must carry skill names for the agent to discover them. Removing it entirely (Ext OFF+flag) is cheaper but kills agent invocation
+- **`disable-model-invocation` skills go with it** — they are dropped from the tool catalog and refuse to load, exactly as in pi's own catalog: user-only, `/skill:name`
 
 ## License
 

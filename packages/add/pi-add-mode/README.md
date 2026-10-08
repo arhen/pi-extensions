@@ -23,7 +23,7 @@ pi install npm:@arhen/pi-add-mode
 | `alt+m` | Cycle forward over **enabled** modes (default first) |
 | `ctrl+tab` / `ctrl+shift+tab` | Aliases, only where the terminal does not consume them |
 
-Enable ≠ activate: `space` in the panel toggles whether a mode is in the `ctrl+tab` rotation; `enter` (or
+Enable ≠ activate: `space` in the panel toggles whether a mode is in the `alt+m` rotation; `enter` (or
 `/mode <name>`) activates it. Disabled modes can still be activated by name.
 
 `pi --start-mode review` starts a session with a mode already active.
@@ -39,9 +39,9 @@ With `@arhen/pi-senja`, the live timer keeps the mode label and colour: `<mode> 
 The extension publishes its styled working label (or `undefined` for default) on `pi.events` channel
 `pi-mode:working-message` whenever mode visuals change.
 
-While a coloured mode is active, pi's own border cues are replaced by the mode colour: the thinking-level colour and
-the bash-mode colour while the input starts with `!`. The tint needs this extension's editor; if another editor
-extension owns the editor, only the `<mode> standby` widget line is shown.
+While a coloured mode is active, the thinking-level border colour is replaced by the mode colour. Bash mode still wins:
+prefix the input with `!` and pi's own border colour comes back, with the mode label hidden. The tint needs this
+extension's editor; if another editor extension owns the editor, only the `<mode> standby` widget line is shown.
 
 ### Terminal notes
 
@@ -56,7 +56,7 @@ binds both to tab switching — so they usually do nothing.
 
 | Field | Values |
 | --- | --- |
-| `enabled` | in the `ctrl+tab` rotation |
+| `enabled` | in the `alt+m` rotation |
 | `color` | theme token (`accent`, `warning`, `success`, `error`) or hex (`#ff9f43`) |
 | `description` | free text, shown only in the panel |
 | `instructions` | extra system-prompt section while the mode is active |
