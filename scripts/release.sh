@@ -93,9 +93,22 @@ if [ "$push" = 1 ]; then
 fi
 
 if [ "$update" = 1 ] && command -v pi >/dev/null 2>&1; then
+	pi_npm="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/npm"
 	for spec in "${released[@]}"; do
 		pkg="${spec%@*}"
+		version="${spec##*@}"
+		# npm now processes a publish for a while before the version resolves; updating earlier is a no-op.
+		for _ in $(seq 1 40); do
+			[ "$(npm view "$pkg@$version" version --prefer-online 2>/dev/null)" = "$version" ] && break
+			sleep 15
+		done
 		pi update "npm:$pkg" || echo "release: pi update npm:$pkg failed (not installed?)" >&2
+		installed="$pi_npm/node_modules/$pkg/package.json"
+		# pi's npm can still serve cached metadata (up to 5 min); fetch the exact release directly.
+		if [ -f "$installed" ] && [ "$(node -p "require('$installed').version")" != "$version" ]; then
+			npm --prefix "$pi_npm" install "$pkg@^$version" --prefer-online --no-audit --no-fund --silent ||
+				echo "release: $pkg $version not installed in pi; run: pi update npm:$pkg" >&2
+		fi
 	done
 fi
 
