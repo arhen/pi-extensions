@@ -5,18 +5,17 @@ import { type BenchOptions, resolveOptions } from "../bench/lib/args.ts";
 import { controlledArguments } from "../bench/lib/contract.ts";
 import { addUsage, emptyUsage, Probe, type UsageCounts, usageFromUnknown } from "../bench/lib/probe.ts";
 import {
-	buildRepeatSummary,
 	computeIntegrity,
 	dedupeNotifications,
 	fullInputOf,
-	makeSyntheticRepeatDriver,
 	promptEmbedsControlledArguments,
 	recordRepeatEvent,
 	repeatPrompt,
 	runRepeatedDelegations,
 	runRepeatSession,
-	type SyntheticIteration,
 } from "../bench/lib/repeat.ts";
+import { buildRepeatSummary } from "../bench/lib/repeat-summary.ts";
+import { makeSyntheticRepeatDriver, type SyntheticIteration } from "../bench/lib/repeat-synthetic.ts";
 
 function baseOpts(extra: string[] = []): BenchOptions {
 	const opts = resolveOptions(["--dry-run", ...extra]);

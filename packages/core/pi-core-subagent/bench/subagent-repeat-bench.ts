@@ -4,19 +4,21 @@ import { fileURLToPath } from "node:url";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { type BenchOptions, resolveOptions, UsageError } from "./lib/args.ts";
 import {
-	buildRepeatSummary,
 	DEFAULT_QUIESCE_MS,
 	promptEmbedsControlledArguments,
 	REPEAT_HARNESS_VERSION,
 	REPEAT_SCHEMA,
-	type RepeatEpochStat,
-	type RepeatMetricSummary,
 	type RepeatReport,
 	type RepeatSessionReport,
-	type RepeatSummary,
-	runRepeatSelfTest,
 	runRepeatSession,
 } from "./lib/repeat.ts";
+import {
+	buildRepeatSummary,
+	type RepeatEpochStat,
+	type RepeatMetricSummary,
+	type RepeatSummary,
+} from "./lib/repeat-summary.ts";
+import { runRepeatSelfTest } from "./lib/repeat-synthetic.ts";
 import {
 	buildParentSession,
 	commandRegistered,
