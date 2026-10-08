@@ -60,13 +60,17 @@ for dir in "${dirs[@]}"; do
 		npm run check --workspace "$pkg"
 	fi
 
-	if [ "$dry_run" = 1 ]; then
-		npm publish --workspace "$pkg" --dry-run
-		continue
-	fi
-
 	npm version "$bump" --workspace "$pkg" --no-git-tag-version >/dev/null
 	version=$(node -p "require('./$dir/package.json').version")
+	if [ "$dry_run" = 1 ]; then
+		# npm rejects a dry run of an already-published version, so preview the bumped one.
+		status=0
+		npm publish --workspace "$pkg" --dry-run || status=$?
+		git checkout -- "$dir/package.json" package-lock.json
+		[ "$status" = 0 ] || exit "$status"
+		released+=("$pkg@$version")
+		continue
+	fi
 	if ! npm publish --workspace "$pkg"; then
 		git checkout -- "$dir/package.json" package-lock.json
 		echo "release: publish failed for $pkg; version bump reverted" >&2
@@ -79,7 +83,7 @@ for dir in "${dirs[@]}"; do
 done
 
 [ "$dry_run" = 1 ] && {
-	echo "dry run: nothing bumped, published, or committed"
+	printf 'dry run, would release: %s\n' "${released[@]}"
 	exit 0
 }
 
