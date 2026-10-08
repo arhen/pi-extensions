@@ -34,7 +34,7 @@ Registers 9router as a Pi provider with dynamic model discovery. **Provider only
 | `NINE_ROUTER_API_KEY` | — | API key if 9router requires auth |
 | `NINE_ROUTER_ENABLE_REASONING` | — | `1`/`true` to expose thinking levels |
 
-Config persists to `~/.pi/agent/9router-config.json` (shared across Pi instances).
+Config persists to `~/.pi/agent/9router-config.json` (or `$PI_CODING_AGENT_DIR/9router-config.json`), shared across Pi instances.
 
 ## Commands
 

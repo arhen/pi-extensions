@@ -9,7 +9,7 @@
  *   NINE_ROUTER_API_KEY          - API key if 9router requires auth
  *   NINE_ROUTER_ENABLE_REASONING - expose thinking levels + reasoning_effort
  *
- * Config file: ~/.pi/agent/9router-config.json
+ * Config file: <pi agent dir>/9router-config.json (default ~/.pi/agent)
  */
 
 import { createHash } from "node:crypto";
@@ -22,10 +22,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type {
-	ExtensionAPI,
-	ExtensionContext,
-} from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 
 // =============================================================================
 // Types
@@ -94,7 +91,7 @@ const DEFAULT_BASE_URL = "http://localhost:20128";
 const ENV_BASE_URL = process.env.NINE_ROUTER_BASE_URL;
 const ENV_API_KEY = process.env.NINE_ROUTER_API_KEY;
 const ENV_ENABLE_REASONING = process.env.NINE_ROUTER_ENABLE_REASONING;
-const CONFIG_PATH = join(homedir(), ".pi", "agent", "9router-config.json");
+const CONFIG_PATH = join(getAgentDir(), "9router-config.json");
 const CACHE_DIR = join(
 	process.env.XDG_CACHE_HOME || join(homedir(), ".cache"),
 	"pi",
@@ -125,14 +122,14 @@ function normalizeBaseUrl(url: string): string {
 	return url.replace(/\/$/, "");
 }
 
-function maskApiKey(key: string): string {
+export function maskApiKey(key: string): string {
 	if (key.length <= 8) return "●".repeat(key.length);
 	return (
 		key.slice(0, 4) + "●".repeat(Math.max(0, key.length - 8)) + key.slice(-4)
 	);
 }
 
-function parseBooleanFlag(value: string | undefined): boolean | undefined {
+export function parseBooleanFlag(value: string | undefined): boolean | undefined {
 	if (!value) return undefined;
 	const normalized = value.trim().toLowerCase();
 	if (["1", "true", "yes", "on", "enabled"].includes(normalized)) return true;
@@ -206,7 +203,7 @@ function loadConfigFromSession(ctx: ExtensionContext): NineRouterConfig | null {
 	const entries = ctx.sessionManager.getEntries();
 	for (let i = entries.length - 1; i >= 0; i -= 1) {
 		const entry = entries[i];
-		if (entry.type === "custom" && entry.customType === CUSTOM_TYPE_CONFIG) {
+		if (entry?.type === "custom" && entry.customType === CUSTOM_TYPE_CONFIG) {
 			const data = entry.data as Partial<NineRouterConfig> | undefined;
 			if (data?.baseUrl) {
 				return applyEnvOverrides({
@@ -482,7 +479,7 @@ function addMetadataIndexEntry(
 	if (!index.has(normalized)) index.set(normalized, model);
 }
 
-function buildModelMetadataIndex(api: ModelMetadataApi): ModelMetadataIndex {
+export function buildModelMetadataIndex(api: ModelMetadataApi): ModelMetadataIndex {
 	const index: ModelMetadataIndex = new Map();
 	for (const provider of Object.values(api)) {
 		if (!provider?.models) continue;
@@ -505,7 +502,7 @@ function buildModelMetadataIndex(api: ModelMetadataApi): ModelMetadataIndex {
 	return index;
 }
 
-function lookupModelMetadata(
+export function lookupModelMetadata(
 	id: string,
 	index: ModelMetadataIndex,
 ): ModelMetadata | undefined {
@@ -651,7 +648,7 @@ async function testConnection(
 // Model Mapping
 // =============================================================================
 
-function parseTokenCount(value: unknown): number | undefined {
+export function parseTokenCount(value: unknown): number | undefined {
 	if (typeof value === "number" && Number.isFinite(value) && value > 0) {
 		return Math.floor(value);
 	}
@@ -890,7 +887,7 @@ function formatTokenCount(tokens: number): string {
 		: String(tokens);
 }
 
-function modelLimitSummary(
+export function modelLimitSummary(
 	model: NineRouterModel,
 	metadata?: ModelMetadata,
 ): string {
@@ -899,7 +896,7 @@ function modelLimitSummary(
 	return `${formatTokenCount(context.value)} ctx / ${formatTokenCount(output.value)} out (${context.source}/${output.source})`;
 }
 
-function mapNineRouterModel(
+export function mapNineRouterModel(
 	model: NineRouterModel,
 	enableReasoning: boolean,
 	metadata?: ModelMetadata,
