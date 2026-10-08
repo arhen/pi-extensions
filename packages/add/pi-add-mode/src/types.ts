@@ -18,6 +18,11 @@ export interface Mode {
 	thinking?: ModeThinking;
 	subagentModel?: string;
 	subagentThinking?: ModeThinking;
+	/**
+	 * true: the subagent model/thinking are defaults the leader may override per task.
+	 * false (default): they are always applied, replacing whatever the leader passes.
+	 */
+	leaderOverride: boolean;
 }
 
 export interface ModeFileEntry {
@@ -30,6 +35,7 @@ export interface ModeFileEntry {
 	thinking?: unknown;
 	subagentModel?: unknown;
 	subagentThinking?: unknown;
+	leaderOverride?: unknown;
 }
 
 export const THINKING_LEVELS: readonly ModeThinking[] = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];

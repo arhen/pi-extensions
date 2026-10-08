@@ -9,6 +9,7 @@ import type { TUI } from "@earendil-works/pi-tui";
 import { colorize } from "./colors.ts";
 import type { ModeEditor } from "./editor.ts";
 import {
+	applyResumeOverrides,
 	applySubagentModel,
 	applySubagentThinking,
 	formatStandby,
@@ -173,19 +174,30 @@ export class ModeEngine {
 		].filter((text): text is string => Boolean(text));
 		if (enforced.length > 0) {
 			sections.push(
-				`Subagent tasks default to ${enforced.join(" with ")} unless you pass your own model or thinking level. Treat them as preferred: override only on purpose.`,
+				mode.leaderOverride
+					? `Subagent tasks default to ${enforced.join(" with ")} unless you pass your own model or thinking level. Treat them as preferred: override only on purpose.`
+					: `Subagent tasks always run on ${enforced.join(" with ")}, set by the user for this mode. Do not pass \`model\` or \`thinking\` to subagent or resume_subagent: any value you pass is replaced.`,
 			);
 		}
 		if (sections.length === 0) return;
 		event.systemPromptOptions.sections.mode = `Active mode: ${mode.name}\n\n${sections.join("\n\n")}`;
 	}
 
+	/**
+	 * Fires for direct calls and for calls made from codemode (`tools.subagent(...)`), which Pi runs
+	 * through the same hook. A matched agent file's frontmatter `model` still wins inside the subagent.
+	 */
 	onToolCall(event: ToolCallEvent): void {
 		const mode = this.current;
-		if (!mode || event.toolName !== "subagent") return;
+		if (!mode) return;
 		const input = event.input as Record<string, unknown>;
-		if (mode.subagentModel) applySubagentModel(input, mode.subagentModel);
-		if (mode.subagentThinking) applySubagentThinking(input, mode.subagentThinking);
+		const force = !mode.leaderOverride;
+		if (event.toolName === "subagent") {
+			if (mode.subagentModel) applySubagentModel(input, mode.subagentModel, force);
+			if (mode.subagentThinking) applySubagentThinking(input, mode.subagentThinking, force);
+		} else if (event.toolName === "resume_subagent" && force) {
+			applyResumeOverrides(input, mode.subagentModel, mode.subagentThinking);
+		}
 	}
 
 	private async restoreSnapshot(): Promise<void> {

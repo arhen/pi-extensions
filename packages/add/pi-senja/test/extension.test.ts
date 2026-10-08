@@ -138,8 +138,8 @@ describe("state and cleanup", () => {
 			const engine = new ModeEngine(h.api as unknown as ConstructorParameters<typeof ModeEngine>[0]);
 			const ctx = h.ctx as unknown as Parameters<ModeEngine["activate"]>[1];
 			const modes: Mode[] = [
-				{ name: "review", enabled: true, color: "warning", tools: "default" },
-				{ name: "build", enabled: true, tools: "default" },
+				{ name: "review", enabled: true, color: "warning", tools: "default", leaderOverride: false },
+				{ name: "build", enabled: true, tools: "default", leaderOverride: false },
 			];
 			engine.setStore({ get: (name: string) => modes.find((mode) => mode.name === name) } as ModeStore);
 			if (activation === "before") await engine.activate("review", ctx);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	applyResumeOverrides,
 	applySubagentModel,
 	applySubagentThinking,
 	cycleList,
@@ -21,7 +22,7 @@ import type { Mode } from "./types.ts";
 const KNOWN = ["read", "bash", "edit", "write", "grep", "find", "ls", "questionnaire", "subagent"];
 
 function mode(name: string, enabled = true): Mode {
-	return { name, enabled, tools: "default" };
+	return { name, enabled, tools: "default", leaderOverride: false };
 }
 
 describe("normalizeTools", () => {
@@ -62,7 +63,14 @@ describe("normalizeModeEntry", () => {
 			thinking: "high",
 			subagentModel: undefined,
 			subagentThinking: undefined,
+			leaderOverride: false,
 		});
+	});
+
+	test("leaderOverride is opt-in: only a literal true allows overrides", () => {
+		expect(normalizeModeEntry("x", {})?.leaderOverride).toBe(false);
+		expect(normalizeModeEntry("x", { leaderOverride: "yes" })?.leaderOverride).toBe(false);
+		expect(normalizeModeEntry("x", { leaderOverride: true })?.leaderOverride).toBe(true);
 	});
 
 	test("drops invalid thinking levels", () => {
@@ -160,6 +168,36 @@ describe("subagent model injection", () => {
 	test("leaves unrelated input alone", () => {
 		const input: Record<string, unknown> = { command: "ls" };
 		expect(applySubagentModel(input, "p/m")).toBe(false);
+	});
+
+	test("force replaces the leader's model and thinking on every task", () => {
+		const input: Record<string, unknown> = {
+			tasks: [
+				{ agent: "a", task: "t", model: "9router/cc/claude-opus-5-5", thinking: "high" },
+				{ agent: "b", task: "t" },
+			],
+		};
+		expect(applySubagentModel(input, "opencode-go/deepseek-v4.1-flash", true)).toBe(true);
+		expect(applySubagentThinking(input, "max", true)).toBe(true);
+		expect(input.tasks).toEqual([
+			{ agent: "a", task: "t", model: "opencode-go/deepseek-v4.1-flash", thinking: "max" },
+			{ agent: "b", task: "t", model: "opencode-go/deepseek-v4.1-flash", thinking: "max" },
+		]);
+		expect(applySubagentModel(input, "opencode-go/deepseek-v4.1-flash", true)).toBe(false);
+	});
+
+	test("force applies to single mode too", () => {
+		const input: Record<string, unknown> = { agent: "a", task: "t", model: "x/y", thinking: "low" };
+		applySubagentModel(input, "p/m", true);
+		applySubagentThinking(input, "max", true);
+		expect([input.model, input.thinking]).toEqual(["p/m", "max"]);
+	});
+
+	test("resume overrides replace the leader's model and thinking", () => {
+		const input: Record<string, unknown> = { runId: "r", taskId: "t", model: "x/y" };
+		expect(applyResumeOverrides(input, "p/m", "max")).toBe(true);
+		expect(input).toEqual({ runId: "r", taskId: "t", model: "p/m", thinking: "max" });
+		expect(applyResumeOverrides(input, undefined, undefined)).toBe(false);
 	});
 });
 

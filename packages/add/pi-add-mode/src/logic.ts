@@ -67,6 +67,7 @@ export function normalizeModeEntry(rawName: string, raw: unknown): Mode | undefi
 		thinking: normalizeThinking(entry.thinking),
 		subagentModel: normalizeString(entry.subagentModel),
 		subagentThinking: normalizeThinking(entry.subagentThinking),
+		leaderOverride: entry.leaderOverride === true,
 	};
 }
 
@@ -125,26 +126,39 @@ export function parseToolList(text: string): string[] {
 }
 
 /**
- * Default the mode's model onto every subagent task that does not pin its own. A model the
- * leader passed on purpose wins, so per-task overrides stay possible. Returns true when patched.
+ * Put the mode's model on every subagent task. `force: false` only fills tasks that name none, so a
+ * model the leader passed on purpose wins; `force: true` replaces it. Returns true when patched.
  */
-export function applySubagentModel(input: Record<string, unknown>, model: string): boolean {
-	return patchSubagentTasks(input, (task) => {
-		const current = task.model;
-		if (typeof current === "string" && current.trim()) return false;
-		task.model = model;
-		return true;
-	});
+export function applySubagentModel(input: Record<string, unknown>, model: string, force = false): boolean {
+	return patchSubagentTasks(input, (task) => setField(task, "model", model, force));
 }
 
-/** Default the mode's thinking level onto every subagent task that does not pin its own. */
-export function applySubagentThinking(input: Record<string, unknown>, thinking: ModeThinking): boolean {
-	return patchSubagentTasks(input, (task) => {
-		const current = task.thinking;
-		if (typeof current === "string" && current.trim()) return false;
-		task.thinking = thinking;
-		return true;
-	});
+/** Same as {@link applySubagentModel}, for the thinking level. */
+export function applySubagentThinking(input: Record<string, unknown>, thinking: ModeThinking, force = false): boolean {
+	return patchSubagentTasks(input, (task) => setField(task, "thinking", thinking, force));
+}
+
+/**
+ * `resume_subagent` may swap a task's model or thinking. A mode that fixes both replaces them, so a
+ * resumed task stays on the mode's model too. Returns true when patched.
+ */
+export function applyResumeOverrides(
+	input: Record<string, unknown>,
+	model: string | undefined,
+	thinking: ModeThinking | undefined,
+): boolean {
+	let changed = false;
+	if (model && setField(input, "model", model, true)) changed = true;
+	if (thinking && setField(input, "thinking", thinking, true)) changed = true;
+	return changed;
+}
+
+function setField(target: Record<string, unknown>, key: string, value: string, force: boolean): boolean {
+	const current = target[key];
+	const pinned = typeof current === "string" && current.trim() !== "";
+	if (pinned && (!force || current === value)) return false;
+	target[key] = value;
+	return true;
 }
 
 function patchSubagentTasks(

@@ -32,7 +32,9 @@ function modeSummary(mode: Mode, theme: ExtensionContext["ui"]["theme"]): string
 	parts.push(`tools: ${describeTools(mode.tools)}`);
 	parts.push(mode.model ? `${mode.model}${mode.thinking ? `:${mode.thinking}` : ""}` : "default model");
 	if (mode.subagentModel)
-		parts.push(`sub: ${mode.subagentModel}${mode.subagentThinking ? `:${mode.subagentThinking}` : ""}`);
+		parts.push(
+			`sub: ${mode.subagentModel}${mode.subagentThinking ? `:${mode.subagentThinking}` : ""}${mode.leaderOverride ? " (leader may override)" : " (fixed)"}`,
+		);
 	if (mode.instructions) parts.push("+instructions");
 	return parts.join(" · ");
 }
@@ -159,7 +161,7 @@ export async function createMode(ctx: ExtensionContext, engine: ModeEngine, stor
 		ctx.ui.notify(`Mode "${name}" already exists`, "error");
 		return;
 	}
-	store.upsert({ name, enabled: true, tools: "default" });
+	store.upsert({ name, enabled: true, tools: "default", leaderOverride: false });
 	store.save();
 	ctx.ui.notify(`Mode "${name}" created`, "info");
 	await editMode(ctx, engine, store, name);
@@ -177,6 +179,14 @@ async function renameMode(ctx: ExtensionContext, store: ModeStore, oldName: stri
 	store.rename(oldName, next);
 	store.save();
 	return next;
+}
+
+async function pickLeaderOverride(ctx: ExtensionContext, name: string, current: boolean): Promise<boolean | undefined> {
+	const fixed = `${current ? "" : "✓ "}No — always use this subagent model and effort`;
+	const open = `${current ? "✓ " : ""}Yes — the leader may pick another model or effort per task`;
+	const choice = await ctx.ui.select(`Leader override for "${name}"`, [fixed, open]);
+	if (choice === undefined) return undefined;
+	return choice === open;
 }
 
 async function pickColor(ctx: ExtensionContext, current: string | undefined): Promise<string | undefined> {
@@ -325,6 +335,7 @@ export async function editMode(
 			`Thinking: ${mode.thinking ?? "(default)"}`,
 			`Subagent model: ${mode.subagentModel ?? "(default)"}`,
 			`Subagent thinking: ${mode.subagentThinking ?? "(default)"}`,
+			`Leader override: ${mode.leaderOverride ? "yes (leader may pick another subagent model/effort)" : "no (subagent model/effort always applied)"}`,
 			`Instructions: ${mode.instructions ? `${mode.instructions.split("\n").length} line(s)` : "(none)"}`,
 			`Description: ${mode.description ?? "(none)"}`,
 			"Rename…",
@@ -408,8 +419,14 @@ export async function editMode(
 					committed = false;
 					break;
 				}
+				const override = await pickLeaderOverride(ctx, name, mode.leaderOverride);
+				if (override === undefined) {
+					committed = false;
+					break;
+				}
 				mode.subagentModel = model;
 				mode.subagentThinking = thinking || undefined;
+				mode.leaderOverride = override;
 				break;
 			}
 			case 6: {
@@ -423,19 +440,22 @@ export async function editMode(
 				else mode.subagentThinking = thinking || undefined;
 				break;
 			}
-			case 7: {
+			case 7:
+				mode.leaderOverride = !mode.leaderOverride;
+				break;
+			case 8: {
 				const text = await ctx.ui.editor(`Instructions for mode "${name}"`, mode.instructions ?? "");
 				if (text === undefined) committed = false;
 				else mode.instructions = text.trim() ? text : undefined;
 				break;
 			}
-			case 8: {
+			case 9: {
 				const text = await ctx.ui.input("Mode description (optional)", mode.description ?? "");
 				if (text === undefined) committed = false;
 				else mode.description = text.trim() || undefined;
 				break;
 			}
-			case 9: {
+			case 10: {
 				const renamed = await renameMode(ctx, store, name);
 				if (!renamed) committed = false;
 				else {

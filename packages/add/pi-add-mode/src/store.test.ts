@@ -66,7 +66,7 @@ describe("ModeStore", () => {
 		if (!projectMode) throw new Error("projectMode missing");
 		projectMode.color = "#ff9f43";
 		store.upsert(projectMode);
-		store.upsert({ name: "fresh", enabled: true, tools: "default" });
+		store.upsert({ name: "fresh", enabled: true, tools: "default", leaderOverride: false });
 		store.save();
 
 		expect(readJson(globalPath)).toEqual({
@@ -98,8 +98,10 @@ describe("ModeStore", () => {
 			thinking: "xhigh",
 			subagentModel: "p/s",
 			subagentThinking: "low",
+			leaderOverride: true,
 		});
 		store.save();
+		expect(readJson(globalPath).review.leaderOverride).toBe(true);
 
 		const reloaded = newStore();
 		expect(reloaded.get("review")).toEqual({
@@ -110,6 +112,7 @@ describe("ModeStore", () => {
 			thinking: "xhigh",
 			subagentModel: "p/s",
 			subagentThinking: "low",
+			leaderOverride: true,
 			description: undefined,
 			instructions: undefined,
 			model: undefined,

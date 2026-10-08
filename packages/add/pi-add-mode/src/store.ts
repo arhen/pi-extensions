@@ -20,6 +20,7 @@ export function serializeMode(mode: Mode): Record<string, unknown> {
 	if (mode.thinking) entry.thinking = mode.thinking;
 	if (mode.subagentModel) entry.subagentModel = mode.subagentModel;
 	if (mode.subagentThinking) entry.subagentThinking = mode.subagentThinking;
+	if (mode.subagentModel || mode.subagentThinking) entry.leaderOverride = mode.leaderOverride;
 	return entry;
 }
 

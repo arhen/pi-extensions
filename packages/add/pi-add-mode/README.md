@@ -63,18 +63,25 @@ binds both to tab switching — so they usually do nothing.
 | `tools` | `"default"`, `"plan"` (read-only), `"build"` (write set + extras) or an explicit list |
 | `model` | `provider/model-id` or unset = session model |
 | `thinking` | effort while the mode is active: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, unset = session level |
-| `subagentModel` | `provider/model-id`, the default for subagent tasks without their own; unset = leave the call's model |
-| `subagentThinking` | effort filled into subagent tasks without their own; unset = leave the call's level |
+| `subagentModel` | `provider/model-id` for subagent tasks; unset = leave the call's model |
+| `subagentThinking` | effort for subagent tasks; unset = leave the call's level |
+| `leaderOverride` | `false` (default): subagent model/effort always applied. `true`: the leader may pick another per task |
 
 Picking a model in the editor always asks for the effort right after; cancelling the effort picker aborts the model
 change. The effort list follows the model: `off` only for non-reasoning models, minus levels the model marks
 unsupported.
 
-`subagentModel` / `subagentThinking` are the **preferred defaults**: they fill in `model` and `thinking` on every
-`subagent` task that does not pin its own. The active mode also states them in the system prompt, so the agent stops
-copying a stale model from earlier in the session. Pass an explicit model or thinking level to override them on
-purpose. A model pinned in an agent file (`.pi/agents/*.md` frontmatter) still wins, because the subagent tool
-resolves that before the call's own model.
+`leaderOverride` decides who wins when the leader names its own subagent model or effort:
+
+- **`false` (default)** — the mode wins. Every `subagent` task and every `resume_subagent` runs on `subagentModel` /
+  `subagentThinking`; any `model` or `thinking` the leader passes is replaced. This also covers calls the leader
+  makes from codemode (`tools.subagent(...)`). The system prompt tells the leader not to pass them.
+- **`true`** — the mode only fills tasks that name none; an explicit `model` or `thinking` from the leader wins, so
+  it can put one risky task on a stronger model.
+
+The editor asks for it right after the subagent effort, and lists it as **Leader override**. A model pinned in an
+agent file (`.pi/agents/*.md` frontmatter) still wins either way, because the subagent tool resolves that before
+the call's own model.
 
 ## Storage
 
@@ -90,7 +97,8 @@ resolves that before the call's own model.
     "model": "openai-codex/gpt-6.1-sol",
     "thinking": "xhigh",
     "subagentModel": "openai-codex/gpt-6.1-luna",
-    "subagentThinking": "low"
+    "subagentThinking": "low",
+    "leaderOverride": false
   }
 }
 ```
