@@ -1,18 +1,12 @@
-/**
- * Per-session store + sidecar persistence. One Map keyed by session id
- * (detached/child sessions never clobber each other). Persisted to a single
- * JSON sidecar in the agent dir — replaces rpiv-todo's branch replay; survives
- * restarts, does not replay history across forks.
- */
-
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { EMPTY_STATE, type TaskState } from "./types.ts";
+import { getAgentDir, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { EMPTY_STATE, type TaskState, TOOL_NAME } from "./types.ts";
+
+export const STATE_TYPE = "pi-core-todo-state";
 
 const sessions = new Map<string, TaskState>();
 let activeRenderSession = "";
-let persistTimer: ReturnType<typeof setTimeout> | undefined;
 
 export function sid(ctx: { sessionManager?: { getSessionId?(): string } }): string {
 	try {
@@ -26,47 +20,34 @@ function freshState(): TaskState {
 	return { tasks: [...EMPTY_STATE.tasks], nextId: EMPTY_STATE.nextId };
 }
 
-function stateFile(): string {
-	return path.join(getAgentDir(), "pi-todo-state.json");
-}
-
-function loadFromDisk(): void {
-	try {
-		const raw = JSON.parse(fs.readFileSync(stateFile(), "utf-8")) as Record<string, TaskState>;
-		for (const [k, v] of Object.entries(raw)) {
-			if (!k) continue; // never restore the anonymous "" slot from an older sidecar
-			if (!v || !Array.isArray(v.tasks) || typeof v.nextId !== "number") continue;
-			if (sessions.has(k)) continue; // L4: never clobber a live in-memory session
-			const maxId = v.tasks.reduce((m, t) => Math.max(m, t.id ?? 0), 0);
-			if (v.nextId <= maxId) v.nextId = maxId + 1; // never reuse ids
-			sessions.set(k, v);
-		}
-	} catch {
-		/* first run or corrupt file — start empty */
+function normalizeState(value: unknown): TaskState | undefined {
+	if (!value || typeof value !== "object") return;
+	const state = value as TaskState;
+	if (!Array.isArray(state.tasks) || !Number.isSafeInteger(state.nextId) || state.nextId < 1) return;
+	for (const task of state.tasks) {
+		if (
+			!task ||
+			!Number.isSafeInteger(task.id) ||
+			task.id < 1 ||
+			typeof task.subject !== "string" ||
+			!["pending", "in_progress", "completed", "deleted"].includes(task.status)
+		)
+			return;
 	}
+	return {
+		tasks: structuredClone(state.tasks),
+		nextId: state.tasks.reduce((nextId, task) => Math.max(nextId, task.id + 1), state.nextId),
+	};
 }
 
-/** Atomic write: tmp + rename so a crash mid-write can't corrupt the sidecar. */
-function writeDisk(): void {
+function loadLegacyState(sessionId: string): TaskState | undefined {
+	if (!sessionId) return;
 	try {
-		const dir = path.dirname(stateFile());
-		fs.mkdirSync(dir, { recursive: true });
-		const tmp = `${stateFile()}.tmp`;
-		// The anonymous "" slot (no sessionManager) is ephemeral — never persisted as a key.
-		fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries([...sessions].filter(([k]) => k !== ""))));
-		fs.renameSync(tmp, stateFile());
+		const raw = JSON.parse(fs.readFileSync(path.join(getAgentDir(), "pi-todo-state.json"), "utf-8"));
+		return normalizeState(raw?.[sessionId]);
 	} catch {
-		/* persistence is best-effort */
+		return;
 	}
-}
-
-/** Debounced write of the whole map. Called on every commit; cheap at this cadence. */
-export function schedulePersist(): void {
-	if (persistTimer) return;
-	persistTimer = setTimeout(() => {
-		persistTimer = undefined;
-		writeDisk();
-	}, 500);
 }
 
 export function getState(sessionId: string): TaskState {
@@ -75,7 +56,6 @@ export function getState(sessionId: string): TaskState {
 
 export function commitState(sessionId: string, state: TaskState): void {
 	sessions.set(sessionId, state);
-	schedulePersist();
 }
 
 export function setActiveRenderSession(id: string): void {
@@ -88,19 +68,32 @@ export function getActiveRenderSession(): string {
 	return activeRenderSession;
 }
 
-/** Ctx-less render pointer: the foreground session's state, or empty. */
 export function getRenderState(): TaskState {
 	return getState(activeRenderSession);
 }
 
-/** Restore the given session's slot from disk. Returns true when restored. */
-export function restoreSession(sessionId: string): boolean {
-	if (!sessions.has(sessionId)) loadFromDisk(); // any missing session reloads from disk
-	if (!sessions.has(sessionId)) return false;
-	return true;
+export function restoreSession(sessionId: string, branch: readonly SessionEntry[], allowLegacy = true): boolean {
+	let state: TaskState | undefined;
+	for (let i = branch.length - 1; i >= 0; i--) {
+		const entry = branch[i]!;
+		if (entry.type === "custom" && entry.customType === STATE_TYPE) {
+			state = normalizeState(entry.data);
+		} else if (entry.type === "message") {
+			const message = entry.message;
+			if (message.role !== "toolResult" || message.toolName !== TOOL_NAME || message.isError) continue;
+			const details = message.details as { action?: string; error?: unknown } | undefined;
+			// Read/error results can contain empty snapshots from the old persistence bug.
+			if (!details || details.error || !["create", "update", "batch", "delete", "clear"].includes(details.action ?? ""))
+				continue;
+			state = normalizeState(details);
+		}
+		if (state) break;
+	}
+	if (!state && allowLegacy) state = loadLegacyState(sessionId);
+	sessions.set(sessionId, state ?? freshState());
+	return state !== undefined;
 }
 
-/** Does the session have a live state slot? (widget reclaim check) */
 export function hasSession(sessionId: string): boolean {
 	return sessions.has(sessionId);
 }

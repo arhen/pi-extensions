@@ -113,7 +113,11 @@ Keep the list live while you work: the same tool adds the new step, splits a ste
 
 ## Persistence
 
-Per-session state is isolated and saved in `~/.pi/agent/pi-todo-state.json`. Parent links survive restarts; old snapshots without them remain valid. There is no branch-history replay. Sidecar persistence assumes one Pi process per agent directory; concurrent processes can overwrite one another's state.
+Every successful mutation saves a state snapshot in Pi's session JSONL log, including mutations called through `codemode`. Snapshots are outside model context and survive compaction, reloads, and restarts. Separate Pi sessions cannot overwrite one another's todos. `--no-session` runs remain ephemeral.
+
+State follows the active branch: `/tree` restores the list at that point, and forks/clones inherit the copied snapshots. `/new` starts a separate list. Parent links, statuses, dependencies, metadata, tombstones, and the next numeric ID are preserved. After a context reset, use `todo` with `action: "list"` rather than recreating tasks.
+
+Existing sessions recover from successful `todo` mutation results in their active branch, or migrate their legacy `~/.pi/agent/pi-todo-state.json` entry when no logged snapshot exists. The legacy file is read-only; new state is never written to the shared sidecar. Error and read-only results do not override saved mutation state.
 
 ## Development
 
@@ -122,7 +126,7 @@ bun test packages/core/pi-core-todo/test
 bunx tsc -p packages/core/pi-core-todo/tsconfig.json --noEmit
 ```
 
-Tests cover reducers, batch atomicity and refs, deep hierarchy operations, deletion, display paths, direct-child counters, narrow/short rendering, keyboard folding/scrolling, resize, and hostile terminal text.
+Tests cover persistence and legacy recovery, reducers, batch atomicity and refs, deep hierarchy operations, deletion, display paths, direct-child counters, narrow/short rendering, keyboard folding/scrolling, resize, and hostile terminal text.
 
 ## License
 

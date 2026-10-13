@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { TodoOverlay } from "./overlay.ts";
 import { applyTaskMutation, buildToolResult, sanitizeTerminalText } from "./state.ts";
 import {
@@ -8,7 +8,7 @@ import {
 	getState,
 	hasSession,
 	restoreSession,
-	schedulePersist,
+	STATE_TYPE,
 	setActiveRenderSession,
 	sid,
 } from "./store.ts";
@@ -36,6 +36,7 @@ const ACTION_GLYPH: Record<TaskAction, string> = {
 };
 
 const DEFAULT_PROMPT_GUIDELINES: string[] = [
+	"Todos persist in the session across compaction, reloads, and restarts. After a context reset, call `todo` with action:'list' before recreating tasks. A new session starts a separate list.",
 	"Use `todo` for complex work with 3+ steps, when the user gives you a list of tasks, or immediately after receiving new instructions to capture requirements. Skip it for single trivial tasks and purely conversational requests.",
 	"When starting any task, mark it in_progress BEFORE beginning work. Mark it completed IMMEDIATELY when done — never batch completions. Exactly one task should be in_progress at a time.",
 	"Never mark a task completed if tests are failing, the implementation is partial, or you hit unresolved errors — keep it in_progress and create a new task for the blocker instead.",
@@ -59,6 +60,13 @@ export default function (pi: ExtensionAPI) {
 		overlay.update();
 	}
 
+	function restore(ctx: ExtensionContext): boolean {
+		const migrated = ctx.sessionManager
+			.getEntries()
+			.some((entry) => entry.type === "custom" && entry.customType === STATE_TYPE);
+		return restoreSession(sid(ctx), ctx.sessionManager.getBranch(), !migrated);
+	}
+
 	pi.registerTool<typeof TodoParamsSchema, TaskDetails, { label?: string }>({
 		name: TOOL_NAME,
 		label: TOOL_LABEL,
@@ -72,8 +80,12 @@ export default function (pi: ExtensionAPI) {
 			const typed = params as unknown as TaskMutationParams;
 			const action = typed.action as TaskAction;
 			const sessionId = sid(ctx);
+			if (!hasSession(sessionId)) restore(ctx);
 			const result = applyTaskMutation(getState(sessionId), action, typed);
-			if (action !== "list" && action !== "get" && result.op.kind !== "error") commitState(sessionId, result.state);
+			if (action !== "list" && action !== "get" && result.op.kind !== "error") {
+				pi.appendEntry(STATE_TYPE, structuredClone(result.state));
+				commitState(sessionId, result.state);
+			}
 			return buildToolResult(action, typed, result.state, result.op);
 		},
 		renderCall(args, theme, context) {
@@ -141,7 +153,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (_event, ctx) => {
 		const id = sid(ctx);
-		restoreSession(id);
+		if (restore(ctx)) pi.appendEntry(STATE_TYPE, structuredClone(getState(id)));
 		if (ctx.mode !== "tui") return;
 		if (getActiveRenderSession() === "" || !hasSession(getActiveRenderSession())) setActiveRenderSession(id);
 		if (id !== getActiveRenderSession()) return;
@@ -149,10 +161,15 @@ export default function (pi: ExtensionAPI) {
 		refreshOverlay(true);
 	});
 
+	pi.on("session_tree", async (_event, ctx) => {
+		const id = sid(ctx);
+		restoreSession(id, ctx.sessionManager.getBranch(), false);
+		if (id === getActiveRenderSession()) refreshOverlay(true);
+	});
+
 	pi.on("session_shutdown", async (_event, ctx) => {
 		const sessionId = sid(ctx);
 		if (!sessionId) return;
-		schedulePersist();
 		if (sessionId === getActiveRenderSession()) {
 			overlay.dispose();
 			clearActiveRenderSession();
