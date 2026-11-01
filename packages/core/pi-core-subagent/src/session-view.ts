@@ -15,6 +15,7 @@ import {
 	type KeybindingsManager,
 	parseSessionEntries,
 	type Theme,
+	type ThemeColor,
 	ToolExecutionComponent,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
@@ -51,6 +52,22 @@ function userText(content: unknown): string {
 		.map((part) => part.text)
 		.join("\n");
 }
+
+// Mirrors pi-senja's footer so the subagent view reads like the leader's.
+const PROVIDER_COLOR: Record<string, ThemeColor> = {
+	anthropic: "accent",
+	openai: "success",
+	"openai-codex": "success",
+	google: "warning",
+	"google-vertex": "warning",
+	"amazon-bedrock": "thinkingHigh",
+	"github-copilot": "mdLink",
+	deepseek: "thinkingLow",
+	xai: "error",
+	groq: "error",
+	"opencode-go": "accent",
+};
+const stressColor = (pct: number): ThemeColor => (pct >= 90 ? "error" : pct >= 70 ? "warning" : "accent");
 
 function tokens(n: number): string {
 	if (n < 1000) return String(n);
@@ -225,7 +242,13 @@ export function createSessionView(opts: SessionViewOptions) {
 		const dim = (s: string) => theme.fg("dim", s);
 		const home = homedir();
 		const cwd = stats?.cwd.startsWith(home) ? `~${stats.cwd.slice(home.length)}` : (stats?.cwd ?? "");
-		const model = [stats?.provider, stats?.model, task?.thinking].filter(Boolean).join(dim(" ▪ "));
+		const model = [
+			stats?.provider && theme.fg(PROVIDER_COLOR[stats.provider.toLowerCase()] ?? "muted", stats.provider),
+			stats?.model && theme.fg("text", stats.model),
+			task?.thinking && theme.getThinkingBorderColor(task.thinking as never)(task.thinking),
+		]
+			.filter(Boolean)
+			.join(dim(" ▪ "));
 		const left1 = truncateToWidth(theme.fg("accent", cwd), Math.max(0, width - visibleWidth(model) - 1), "…");
 		const gap1 = Math.max(1, width - visibleWidth(left1) - visibleWidth(model));
 		const parts = stats
@@ -236,10 +259,16 @@ export function createSessionView(opts: SessionViewOptions) {
 				]
 			: [];
 		const window = opts.contextWindow(stats?.provider, stats?.model);
-		const ctx =
-			stats && window
-				? `${((stats.context / window) * 100).toFixed(1)}% ${dim("▪")} ${tokens(stats.context)}/${tokens(window)}`
-				: "";
+		let ctx = "";
+		if (stats && window && stats.context > 0) {
+			const pct = (stats.context / window) * 100;
+			const pctText = theme.fg(stressColor(pct), `${pct.toFixed(1)}%`);
+			const sizes = `${theme.fg("text", tokens(stats.context))}${dim("/")}${theme.fg("text", tokens(window))}`;
+			const barWidth = Math.max(6, Math.min(16, width - visibleWidth(pctText) - visibleWidth(sizes) - 6));
+			const filled = Math.max(0, Math.min(barWidth, Math.round((pct / 100) * barWidth)));
+			const bar = `${dim("[")}${theme.fg(stressColor(pct), "█".repeat(filled))}${dim("░".repeat(barWidth - filled))}${dim("]")}`;
+			ctx = `${bar} ${pctText} ${dim("▪")} ${sizes}`;
+		}
 		const left2 = parts.join(dim(" | "));
 		const gap2 = Math.max(1, width - visibleWidth(left2) - visibleWidth(ctx));
 		return [

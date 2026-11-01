@@ -12,7 +12,12 @@ import type { RunSnapshot, TaskSnapshot } from "../src/types.ts";
 initTheme();
 const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
 setKeybindings(keybindings);
-const plain = { fg: (_c: string, s: string) => s, bg: (_c: string, s: string) => s, bold: (s: string) => s } as any;
+const plain = {
+	fg: (_c: string, s: string) => s,
+	bg: (_c: string, s: string) => s,
+	bold: (s: string) => s,
+	getThinkingBorderColor: () => (s: string) => s,
+} as any;
 const strip = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
 const dirs: string[] = [];
 afterEach(() => {
@@ -206,7 +211,7 @@ test("session view renders the child transcript with a leader bar, follows live,
 	expect(screen()).toContain("echo ok");
 	expect(screen()).toContain("prov ▪ mod-1");
 	expect(screen()).toContain("↑1.2k");
-	expect(screen()).toContain("2.0% ▪ 2.0k/100k");
+	expect(screen()).toMatch(/\[░+\] 2\.0% ▪ 2\.0k\/100k/);
 	expect(screen()).toContain("alpha is working…");
 
 	appendFileSync(
