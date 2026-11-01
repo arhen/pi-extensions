@@ -14,6 +14,8 @@ import {
 	type SelectItem,
 	SelectList,
 	type TUI,
+	type TuiMouseEvent,
+	type TuiMouseEventResult,
 	truncateToWidth,
 	visibleWidth,
 	wrapTextWithAnsi,
@@ -32,6 +34,8 @@ export class QuestionnaireComponent implements Component {
 	private done: (result: { answers: QuestionAnswer[]; cancelled: boolean }) => void;
 	private select: SelectList;
 	private finished = false;
+	/** Folded to one row so the transcript behind stays readable; answers and position are kept. */
+	private collapsed = false;
 
 	constructor(
 		private readonly questions: QuestionData[],
@@ -221,8 +225,31 @@ export class QuestionnaireComponent implements Component {
 		/* no cached strings */
 	}
 
+	private toggleCollapsed(): void {
+		this.collapsed = !this.collapsed;
+		// Regular mode keeps stale rows when content shrinks, so the editor would float up; redraw fully.
+		this.tui.requestRender(true);
+	}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		// Title row (y 1, under the top border) toggles, like the subagents widget header.
+		if (this.finished || event.type !== "click" || event.button !== "left" || event.y > 1) return undefined;
+		this.toggleCollapsed();
+		return { handled: true };
+	}
+
 	handleInput(data: string): void {
 		if (this.finished) return; // stale keys after done can't mutate answers
+		if (matchesKey(data, Key.alt("s"))) {
+			this.toggleCollapsed();
+			return;
+		}
+		if (this.collapsed) {
+			// Folded: nothing answers by accident. Enter unfolds, Esc still cancels.
+			if (matchesKey(data, Key.enter)) this.toggleCollapsed();
+			else if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c"))) this.finish(true);
+			return;
+		}
 		if (this.customMode) {
 			// Explicit keys: Enter submits the typed answer, Esc returns to options.
 			// Intercepting here (not via Input callbacks) keeps the flow deterministic.
@@ -272,16 +299,6 @@ export class QuestionnaireComponent implements Component {
 		const row = (content: string): string =>
 			`${dim("│")} ${content}${" ".repeat(Math.max(0, boxWidth - visibleWidth(content) - 3))}${dim("│")}`;
 
-		lines.push(pad(dim(`╭${"─".repeat(boxWidth - 2)}╮`)));
-		lines.push(
-			pad(
-				row(
-					`${this.theme.fg("accent", this.theme.bold("Questions"))} ${this.theme.fg("dim", `(${this.tab + 1}/${this.questions.length})`)}`,
-				),
-			),
-		);
-		lines.push(pad(bar()));
-
 		// progress dots
 		const dots = this.questions
 			.map((_, i) => {
@@ -290,6 +307,20 @@ export class QuestionnaireComponent implements Component {
 				return dim("○");
 			})
 			.join(" ");
+		const title = `${dim(this.collapsed ? "▸" : "▾")} ${this.theme.fg("accent", this.theme.bold("Questions"))} ${this.theme.fg("dim", `(${this.tab + 1}/${this.questions.length})`)}`;
+
+		lines.push(pad(dim(`╭${"─".repeat(boxWidth - 2)}╮`)));
+		if (this.collapsed) {
+			const summary = `${title} ${dots} ${this.theme.fg("accent", `[${q.header}]`)} ${q.question}`;
+			const hint = dim(" · enter/alt+s expand · esc cancel");
+			const room = Math.max(0, contentWidth - visibleWidth(hint));
+			const line = room > 8 ? `${truncateToWidth(summary, room, "…")}${hint}` : summary;
+			lines.push(pad(row(truncateToWidth(line, Math.max(0, boxWidth - 4), "…"))));
+			lines.push(pad(dim(`╰${"─".repeat(boxWidth - 2)}╯`)));
+			return lines;
+		}
+		lines.push(pad(row(title)));
+		lines.push(pad(bar()));
 		lines.push(pad(row(dots)));
 		lines.push(pad(row("")));
 
@@ -347,7 +378,7 @@ export class QuestionnaireComponent implements Component {
 
 		lines.push(pad(bar()));
 		const multi = q.multiSelect ? "Enter toggle · Ctrl+S done · " : "Enter next · ";
-		const controls = dim(`${multi}←/→ prev/next · ↑↓ select · Type something. = custom · Esc cancel`);
+		const controls = dim(`${multi}←/→ prev/next · ↑↓ select · alt+s collapse · Type something. = custom · Esc cancel`);
 		lines.push(pad(row(truncateToWidth(controls, contentWidth))));
 		lines.push(pad(dim(`╰${"─".repeat(boxWidth - 2)}╯`)));
 		return lines;
