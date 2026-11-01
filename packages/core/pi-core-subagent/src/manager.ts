@@ -168,6 +168,19 @@ export class SubagentManager {
 		return false;
 	}
 
+	set onWidgetOpen(open: ((taskId: string) => void) | undefined) {
+		this.widget.onOpen = open;
+	}
+
+	widgetKey(data: string, editorEmpty: boolean): boolean {
+		return this.widget.handleKey(data, editorEmpty);
+	}
+
+	toggleWidgetCollapsed(): boolean {
+		this.widget.toggleCollapsed();
+		return this.widget.collapsed;
+	}
+
 	clearWidget(ctx?: ExtensionContext): void {
 		this.widget.clear(ctx);
 	}
@@ -1098,14 +1111,15 @@ export class SubagentManager {
 		runId: string,
 		taskId: string,
 		ctx: ExtensionContext,
-		opts: { message?: string; model?: string; thinking?: string } = {},
+		opts: { message?: string; model?: string; thinking?: string; continueCompleted?: boolean } = {},
 	): { ok: true; task: TaskSnapshot; note?: string } | { ok: false; reason: string } {
 		const run = this.runs.get(runId);
 		const task = run?.tasks.find((t) => t.id === taskId);
 		if (!run || !task) return { ok: false, reason: `Unknown ${runId}/${taskId}.` };
 		if (!TERMINAL.includes(task.status))
 			return { ok: false, reason: `${taskId} is still ${task.status} — use steer_subagent.` };
-		if (task.status === "completed") return { ok: false, reason: `${taskId} completed — spawn a new task instead.` };
+		if (task.status === "completed" && !opts.continueCompleted)
+			return { ok: false, reason: `${taskId} completed — spawn a new task instead.` };
 		if (!task.sessionFile || !existsSync(task.sessionFile)) {
 			return { ok: false, reason: `${taskId} has no session file to resume (never started) — respawn it.` };
 		}
@@ -1216,6 +1230,16 @@ export class SubagentManager {
 			run,
 			run.status === "completed" ? "completed" : run.status === "aborted" ? "aborted" : "failed",
 		);
+	}
+
+	/** A user typing into a subagent's view: answers a pending ask_parent, steers a live child, or resumes a stopped one. */
+	messageTask(runId: string, taskId: string, message: string, ctx: ExtensionContext): string {
+		if (this.deliverReply(runId, taskId, message)) return "answered its question";
+		if (this.liveChildren.has(`${runId}:${taskId}`) && this.steerTask(runId, taskId, message)) return "sent";
+		// The completed guard keeps the leader model from re-running finished work; a user typing into
+		// a finished subagent is asking for a follow-up turn in that same session.
+		const res = this.resumeTask(runId, taskId, ctx, { message, continueCompleted: true });
+		return res.ok ? "resumed with your message" : res.reason;
 	}
 
 	steerTask(runId: string, taskId: string | undefined, message: string): boolean {

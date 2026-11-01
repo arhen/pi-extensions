@@ -14,6 +14,8 @@ export interface PeekTask {
 	running: boolean;
 	sessionFile?: string;
 	line: string;
+	thinking?: string;
+	startedAt?: number;
 }
 
 function readTail(path: string): string {
@@ -139,6 +141,7 @@ export function createPeekPane(
 	requestRender: () => void,
 	close: () => void,
 	abort: (task: PeekTask) => void,
+	open?: (task: PeekTask) => void,
 ): PeekPane {
 	let selected = 0;
 	let tailing = false;
@@ -187,7 +190,9 @@ export function createPeekPane(
 						"dim",
 						tailing
 							? "↑↓ / jk scroll · ⇧ page · g/G top·live · esc back · x abort"
-							: "shift+↑↓ / jk move · enter tail · x abort · esc close",
+							: open
+								? "↑↓ / jk move · enter open session · → tail · x abort · esc close"
+								: "shift+↑↓ / jk move · enter tail · x abort · esc close",
 					);
 
 			const crumb = tailing
@@ -242,6 +247,10 @@ export function createPeekPane(
 					tailing = false;
 					scrollback = 0;
 				} else close();
+			} else if (open && !tailing && matchesKey(data, Key.enter)) {
+				const task = tasks[selected];
+				if (task) open(task);
+				return;
 			} else if (matchesKey(data, Key.enter) || matchesKey(data, Key.right)) {
 				tailing = true;
 				scrollback = 0;

@@ -337,6 +337,10 @@ a retroactive change to that npm release.
 ## Commands
 
 - `/subagents` — list runs; `/subagents peek` (or `ctrl+shift+a`) — browsable pane
+- `/subagents toggle` (or `alt+s`, or a click on the widget in fullscreen mode) — collapse the live widget to one line; the choice persists as `widgetCollapsed` in `~/.pi/agent/subagents-config.json`. On macOS `alt+s` needs the terminal to send Option as Meta.
+- From the leader's editor, when it is empty: `↓` moves into the widget rows, `↑↓` move (up to the `Subagents (x/y)` header), `Enter` opens the highlighted subagent, expands `+N more`, or on the header collapses/expands the widget like `alt+s`. `Esc` or `↑` past the header gives the arrows back to the editor.
+- Fullscreen mode: click a task row in the widget to open its session; click `+N more` to show every task (`show less` folds it back).
+- Session view (Enter in peek, a widget row, or a click): the subagent's transcript in the whole window, drawn like a normal pi session, with a `◀ Leader` bar showing whether the leader is working. At the bottom is pi's own editor (multi-line with `Shift+Enter`, history with `↑↓`, paste) with `<agent> is working…` in its border while the subagent runs, and a footer with the subagent's cwd, provider ▪ model ▪ thinking, tokens, cost and context use. Enter sends what you typed to that subagent: it answers a pending `ask_parent` question, steers a running subagent, or resumes a finished or failed one in the same session. `Tab`/`Shift+Tab` switch subagent, PgUp/PgDn/wheel scroll, `End` live, `Esc` back. It is not a real session switch, because `switchSession` would abort the leader's turn and end every child. Both keep running while you type.
 - `/subagents auto-limit on|off` — toggle leader-imposed `maxRuntimeMs` caps (persists to `~/.pi/agent/subagents-config.json`; default **off**). `on` gives tasks without an explicit `maxRuntimeMs` the 1 h default ceiling; `off` raises the ceiling to 6 h (still a ceiling — an unbounded child would pin the run forever). Bare `/subagents auto-limit` shows the current state.
 
 ## Peek — `/subagents peek` or `ctrl+shift+a`

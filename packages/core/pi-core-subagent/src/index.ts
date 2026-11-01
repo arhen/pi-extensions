@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { Text, truncateToWidth } from "@earendil-works/pi-tui";
+import { Key, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import {
 	compactLines,
@@ -27,6 +27,7 @@ import {
 	SubagentParams,
 	type SubagentParamsShape,
 } from "./schemas.ts";
+import { createSessionView } from "./session-view.ts";
 import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
@@ -58,21 +59,46 @@ export default function (pi: ExtensionAPI) {
 		definitions.push(definition as AnyToolDefinition);
 	};
 
+	const getTasks = (): PeekTask[] =>
+		manager
+			.listRuns()
+			.flatMap((run) => run.tasks)
+			.map((task) => ({
+				runId: task.runId,
+				taskId: task.id,
+				agent: task.agent,
+				status: task.status,
+				running: !TERMINAL.includes(task.status),
+				sessionFile: task.sessionFile,
+				line: taskLine(task),
+				thinking: task.thinking,
+				startedAt: task.startedAt,
+			}));
+
+	// Never ctx.switchSession(): it aborts the leader's turn and its session_shutdown kills every child.
+	const openSession = async (ctx: ExtensionContext, taskId: string) => {
+		if (ctx.mode !== "tui") return;
+		await ctx.ui.custom<void>(
+			(tui, theme, keybindings, done) =>
+				createSessionView({
+					tui,
+					theme,
+					keybindings,
+					getTasks,
+					contextWindow: (provider, model) =>
+						provider && model ? ctx.modelRegistry.find(provider, model)?.contextWindow : undefined,
+					startTaskId: taskId,
+					leaderBusy: () => !ctx.isIdle(),
+					hideThinking: pi.getSettings().hideThinkingBlock === true,
+					send: (task, message) => manager.messageTask(task.runId, task.taskId, message, ctx),
+					close: () => done(undefined),
+				}),
+			{ overlay: true, overlayOptions: { anchor: "top-left", width: "100%", maxHeight: "100%" } },
+		);
+	};
+
 	const openPeek = async (ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		const getTasks = (): PeekTask[] =>
-			manager
-				.listRuns()
-				.flatMap((run) => run.tasks)
-				.map((task) => ({
-					runId: task.runId,
-					taskId: task.id,
-					agent: task.agent,
-					status: task.status,
-					running: !TERMINAL.includes(task.status),
-					sessionFile: task.sessionFile,
-					line: taskLine(task),
-				}));
 		if (getTasks().length === 0) {
 			ctx.ui.notify("No subagents in this session.", "info");
 			return;
@@ -87,13 +113,19 @@ export default function (pi: ExtensionAPI) {
 					(t) => {
 						if (manager.cancelTask(t.runId, t.taskId, ctx)) ctx.ui.notify(`Aborted subagent ${t.agent}.`, "warning");
 					},
+					ctx.mode === "tui"
+						? (t) => {
+								done(undefined);
+								void openSession(ctx, t.taskId);
+							}
+						: undefined,
 				),
 			{ overlay: true, overlayOptions: { anchor: "center", width: "70%", minWidth: 60, maxHeight: "70%", margin: 2 } },
 		);
 	};
 	pi.registerCommand("subagents", {
 		description:
-			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents mode [auto|direct|codemode]` reports or switches the globally stored tool exposure profile; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
+			"List subagent runs. `/subagents peek` opens the browsable pane; `/subagents toggle` (or alt+s) collapses/expands the live widget; `/subagents mode [auto|direct|codemode]` reports or switches the globally stored tool exposure profile; `/subagents auto-limit on|off` toggles the 1 h default runtime ceiling (default off = 6 h).",
 		handler: async (args, ctx) => {
 			const arg = String(args ?? "")
 				.trim()
@@ -118,6 +150,10 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			if (arg === "peek") return openPeek(ctx);
+			if (arg === "toggle") {
+				manager.toggleWidgetCollapsed();
+				return;
+			}
 			if (arg === "auto-limit" || arg.startsWith("auto-limit ")) {
 				const value = arg.split(/\s+/)[1];
 				if (value === "on" || value === "off") {
@@ -144,6 +180,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerShortcut("ctrl+shift+a", { description: "Peek at running subagents", handler: openPeek });
+	pi.registerShortcut(Key.alt("s"), {
+		description: "Collapse or expand the subagents widget",
+		handler: () => {
+			manager.toggleWidgetCollapsed();
+		},
+	});
 
 	pi.on("input", (event) => {
 		manager.noteLeaderInput(event.text, event.source);
@@ -179,6 +221,12 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
+		manager.onWidgetOpen = (taskId) => void openSession(ctx, taskId);
+		if (ctx.mode === "tui") {
+			ctx.ui.onTerminalInput((data) =>
+				manager.widgetKey(data, ctx.ui.getEditorText() === "") ? { consume: true } : undefined,
+			);
+		}
 		await manager.restoreFromSidecar(ctx);
 		presentation.restore(ctx);
 		presentation.sync();

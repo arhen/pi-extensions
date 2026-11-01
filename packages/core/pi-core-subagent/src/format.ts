@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { Theme } from "@earendil-works/pi-coding-agent";
-import { type Component, truncateToWidth } from "@earendil-works/pi-tui";
+import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { type Component, type TuiMouseEvent, type TuiMouseEventResult, truncateToWidth } from "@earendil-works/pi-tui";
 import {
 	MAX_TASKS,
 	type ModelCatalog,
@@ -132,13 +132,45 @@ export function compactLines(run: RunSnapshot): string[] {
 // header + 4 task rows; live tasks are ordered first, so the cap only ever hides finished work
 const WIDGET_MAX_LINES = 5;
 
+export interface WidgetCollapse {
+	collapsed: () => boolean;
+	showAll?: () => boolean;
+	/** Keyboard highlight: index into `selectable()`. */
+	selected?: () => number | undefined;
+	/** The rest are set only where pi routes mouse events to widgets (fullscreen). */
+	toggle?: () => void;
+	toggleAll?: () => void;
+	open?: (taskId: string) => void;
+}
+
+type RowTarget = "head" | "more" | { taskId: string } | undefined;
+export type SelectTarget = "head" | "more" | { taskId: string };
+
 export class SubagentsWidget implements Component {
 	constructor(
 		private readonly getRuns: () => RunSnapshot[],
 		private readonly theme: Theme,
+		private readonly collapse?: WidgetCollapse,
 	) {}
 
+	private targets: RowTarget[] = [];
+
+	/** Rows the keyboard can land on, top to bottom, as of the last render. */
+	selectable(): SelectTarget[] {
+		return this.targets.filter((t): t is SelectTarget => t !== undefined);
+	}
+
 	invalidate(): void {}
+
+	handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
+		if (!this.collapse?.toggle || event.type !== "click" || event.button !== "left") return undefined;
+		const target = this.targets[event.y];
+		if (target === "head") this.collapse.toggle();
+		else if (target === "more") this.collapse.toggleAll?.();
+		else if (target) this.collapse.open?.(target.taskId);
+		else return undefined;
+		return { handled: true };
+	}
 
 	render(width: number): string[] {
 		const runs = this.getRuns().filter((r) => r.tasks.length > 0);
@@ -147,14 +179,38 @@ export class SubagentsWidget implements Component {
 		const done = runs.reduce((n, r) => n + r.tasks.filter((t) => TERMINAL.includes(t.status)).length, 0);
 		const live = total - done;
 		const head = live > 0 ? "accent" : "dim";
-		const lines = [
-			truncateToWidth(
-				`${this.theme.fg(head, live > 0 ? "●" : "○")} ${this.theme.fg(head, `Subagents (${done}/${total})`)}`,
-				width,
-				"…",
-			),
-		];
-		const budget = WIDGET_MAX_LINES - 1;
+		const collapsed = this.collapse?.collapsed() ?? false;
+		const chevron = this.collapse ? `${this.theme.fg("dim", collapsed ? "▸" : "▾")} ` : "";
+		const title = `${chevron}${this.theme.fg(head, live > 0 ? "●" : "○")} ${this.theme.fg(head, `Subagents (${done}/${total})`)}`;
+		if (collapsed) {
+			const all = runs.flatMap((r) => r.tasks);
+			const count = (...statuses: TaskStatus[]) => all.filter((t) => statuses.includes(t.status)).length;
+			const tallies: [number, ThemeColor, string][] = [
+				[count("starting", "running"), "accent", "working"],
+				[count("awaiting_parent"), "warning", "waiting"],
+				[count("queued"), "muted", "idle"],
+				[count("completed"), "success", "done"],
+				[count("failed"), "error", "failed"],
+				[count("aborted"), "dim", "cancelled"],
+			];
+			const parts = [title];
+			for (const [n, color, label] of tallies) if (n > 0) parts.push(this.theme.fg(color, `${n} ${label}`));
+			const sum = (key: "input" | "output" | "cost") => all.reduce((n, t) => n + (t.usage?.[key] ?? 0), 0);
+			const [input, output, cost] = [sum("input"), sum("output"), sum("cost")];
+			if (input || output) {
+				const usage = [`↑${fmtTokens(input)}`, `↓${fmtTokens(output)}`];
+				if (cost > 0) usage.push(cost >= 0.001 ? `$${cost.toFixed(3)}` : "$<0.001");
+				parts.push(this.theme.fg("muted", usage.join(" ")));
+			}
+			if (this.collapse?.selected?.() === undefined)
+				parts.push(this.theme.fg("dim", this.collapse?.toggle ? "click or alt+s" : "alt+s"));
+			this.targets = ["head"];
+			return this.highlight([truncateToWidth(parts.join(this.theme.fg("dim", " · ")), width, "…")], width);
+		}
+		const lines = [truncateToWidth(title, width, "…")];
+		const targets: RowTarget[] = ["head"];
+		const showAll = this.collapse?.showAll?.() ?? false;
+		const budget = showAll ? MAX_TASKS : WIDGET_MAX_LINES - 1;
 		// live tasks first so the budget never hides work in progress
 		const all = runs.flatMap((run) => run.tasks);
 		const ordered = [
@@ -170,14 +226,49 @@ export class SubagentsWidget implements Component {
 			lines.push(
 				truncateToWidth(`${this.theme.fg("dim", "├─")} ${themedTaskLine(task, this.theme, activity)}`, width, "…"),
 			);
+			targets.push({ taskId: task.id });
 		}
 		const hidden = total - shown;
+		const clickable = Boolean(this.collapse?.toggleAll);
 		if (hidden > 0) {
-			lines.push(`${this.theme.fg("dim", "└─")} ${this.theme.fg("dim", `+${hidden} more`)}`);
+			const hint = clickable && !showAll ? " · click to show" : "";
+			lines.push(`${this.theme.fg("dim", "└─")} ${this.theme.fg("dim", `+${hidden} more${hint}`)}`);
+			targets.push(showAll ? undefined : "more");
+		} else if (showAll && total > WIDGET_MAX_LINES - 1) {
+			lines.push(`${this.theme.fg("dim", "└─")} ${this.theme.fg("dim", "show less")}`);
+			targets.push("more");
 		} else if (lines.length > 1) {
 			const last = lines[lines.length - 1];
 			if (last) lines[lines.length - 1] = last.replace("├─", "└─");
 		}
+		this.targets = targets;
+		return this.highlight(lines, width);
+	}
+
+	/** Keyboard highlight on the selected row, with what Enter does there spelled out on the header. */
+	private highlight(lines: string[], width: number): string[] {
+		const selected = this.collapse?.selected?.();
+		if (selected === undefined) return lines;
+		const rows = this.targets.flatMap((t, i) => (t !== undefined ? [i] : []));
+		const row = rows[Math.min(selected, rows.length - 1)] ?? 0;
+		const target = this.targets[row];
+		const action =
+			target === "head"
+				? this.collapse?.collapsed()
+					? "expand"
+					: "collapse"
+				: target === "more"
+					? this.collapse?.showAll?.()
+						? "show less"
+						: "show all"
+					: "open";
+		lines[0] = truncateToWidth(
+			`${lines[0] ?? ""}${this.theme.fg("dim", ` · ↑↓ move · enter ${action} · esc back`)}`,
+			width,
+			"…",
+		);
+		const line = lines[row];
+		if (line !== undefined) lines[row] = this.theme.bg("selectedBg", truncateToWidth(line, width, "…", true));
 		return lines;
 	}
 }

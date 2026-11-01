@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { compactLines, makeSummary, SubagentsWidget, taskLine } from "../src/format.ts";
 import type { RunSnapshot, TaskSnapshot, UsageStats } from "../src/types.ts";
 
@@ -135,5 +136,53 @@ describe("SubagentsWidget", () => {
 		expect(out).not.toContain("done-2");
 		// header + 4 rows + the "+n more" footer
 		expect(out.split("\n")).toHaveLength(6);
+	});
+
+	test("collapsed renders one line; click toggles only when clickable", () => {
+		let collapsed = true;
+		const runs = () => [
+			run([
+				task({
+					id: "a",
+					agent: "done-a",
+					status: "completed",
+					usage: { ...usage, input: 6000, output: 200, cost: 0.002 },
+				}),
+				task({
+					id: "b",
+					agent: "worker",
+					status: "running",
+					usage: { ...usage, input: 6600, output: 61, cost: 0.001 },
+				}),
+				task({ id: "c", agent: "w2", status: "starting" }),
+				task({ id: "d", agent: "q", status: "queued" }),
+				task({ id: "e", agent: "ask", status: "awaiting_parent" }),
+				task({ id: "f", agent: "x", status: "aborted" }),
+			]),
+		];
+		const click = { type: "click", button: "left", y: 0 } as Parameters<SubagentsWidget["handleMouse"]>[0];
+
+		const regular = new SubagentsWidget(runs, plain, { collapsed: () => collapsed });
+		const line = regular.render(200);
+		expect(line).toHaveLength(1);
+		expect(line[0]).toContain("▸");
+		expect(line[0]).toContain(
+			"Subagents (2/6) · 2 working · 1 waiting · 1 idle · 1 done · 1 cancelled · ↑12.6k ↓261 $0.003",
+		);
+		expect(line[0]).not.toContain("failed");
+		expect(line[0]).toContain("alt+s");
+		expect(line[0]).not.toContain("click");
+		expect(regular.handleMouse(click)).toBeUndefined();
+		for (const w of [1, 5, 20]) expect(visibleWidth(regular.render(w)[0] ?? "")).toBeLessThanOrEqual(w);
+
+		const full = new SubagentsWidget(runs, plain, {
+			collapsed: () => collapsed,
+			toggle: () => (collapsed = !collapsed),
+		});
+		expect(full.render(200)[0]).toContain("click or alt+s");
+		expect(full.handleMouse({ ...click, button: "right" })).toBeUndefined();
+		expect(full.handleMouse(click)).toEqual({ handled: true });
+		expect(full.render(200).length).toBeGreaterThan(1);
+		expect(full.render(200)[0]).toContain("▾");
 	});
 });
