@@ -3,7 +3,7 @@ import type { Component } from "@earendil-works/pi-tui";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { sanitizeTerminalText } from "./state.ts";
 import { prioritizeRows, type TaskRow, TaskTree } from "./tree.ts";
-import type { TaskDetails, TaskState } from "./types.ts";
+import type { Task, TaskDetails, TaskState } from "./types.ts";
 
 export function widgetBudget(terminalRows: number): number {
 	return Math.max(0, Math.min(8, Math.floor(terminalRows / 4)));
@@ -56,12 +56,50 @@ export interface WidgetRender {
 	displayedIds: number[];
 }
 
+export interface WidgetOptions {
+	/** Render only the summary line; the user collapsed the widget. */
+	collapsed?: boolean;
+	/** Fullscreen pi routes mouse events to the widget, so advertise the click affordance. */
+	clickable?: boolean;
+}
+
+function widgetHead(theme: Theme, live: readonly Task[], active: Task | undefined, collapsed: boolean): string {
+	const done = live.filter((task) => task.status === "completed").length;
+	const chevron = theme.fg("dim", collapsed ? "▸" : "▾");
+	const dot = theme.fg(active ? "accent" : "muted", active ? "●" : "○");
+	return `${chevron} ${dot} ${theme.fg("muted", `Todos (${done}/${live.length})`)}`;
+}
+
+/** Expanded header: the chevron plus a click hint when the terminal reports mouse input. */
+function expandedHead(theme: Theme, live: readonly Task[], active: Task | undefined, clickable: boolean): string {
+	const head = widgetHead(theme, live, active, false);
+	return clickable ? `${head}${theme.fg("dim", " · click to collapse")}` : head;
+}
+
+/** One-line summary shown while collapsed: counts, the active task, and the affordance to expand. */
+function collapsedWidgetLine(
+	live: readonly Task[],
+	active: Task | undefined,
+	theme: Theme,
+	width: number,
+	clickable: boolean,
+): string {
+	const parts = [widgetHead(theme, live, active, true)];
+	if (active) {
+		const subject = sanitizeTerminalText(active.subject);
+		parts.push(theme.fg("accent", `◐ ${clip(subject, Math.max(8, Math.min(48, Math.floor(width * 0.5))))}`));
+	}
+	if (clickable) parts.push(theme.fg("dim", "click or /todos"));
+	return clip(parts.join(theme.fg("dim", " · ")), width);
+}
+
 export function renderWidget(
 	state: TaskState,
 	hiddenCompleted: ReadonlySet<number>,
 	theme: Theme,
 	width: number,
 	terminalRows: number,
+	options: WidgetOptions = {},
 ): WidgetRender {
 	const budget = widgetBudget(terminalRows);
 	const live = state.tasks.filter((task) => task.status !== "deleted");
@@ -70,9 +108,10 @@ export function renderWidget(
 	);
 	if (!budget || !visible.size || width <= 0) return { lines: [], displayedIds: [] };
 	const tree = new TaskTree(state.tasks);
-	const done = live.filter((task) => task.status === "completed").length;
 	const active = live.find((task) => task.status === "in_progress");
-	const head = `${theme.fg(active ? "accent" : "muted", active ? "●" : "○")} ${theme.fg("muted", `Todos (${done}/${live.length})`)}`;
+	const head = expandedHead(theme, live, active, !options.collapsed && Boolean(options.clickable));
+	if (options.collapsed)
+		return { lines: [collapsedWidgetLine(live, active, theme, width, Boolean(options.clickable))], displayedIds: [] };
 	if (budget === 1) {
 		const row = active && tree.preorder.find((row) => row.task.id === active.id);
 		return {

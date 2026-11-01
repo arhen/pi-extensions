@@ -20,6 +20,7 @@ function registeredTool(): TodoTool {
 			tool = value;
 		},
 		registerCommand: () => {},
+		registerShortcut: () => {},
 		on: () => () => {},
 	} as unknown as ExtensionAPI);
 	return tool!;

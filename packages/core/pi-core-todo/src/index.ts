@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Key } from "@earendil-works/pi-tui";
+import { flushTodoConfigWrites, readTodoConfig, writeTodoConfig } from "./config.ts";
 import { TodoOverlay } from "./overlay.ts";
 import { applyTaskMutation, buildToolResult, sanitizeTerminalText } from "./state.ts";
 import {
@@ -53,7 +55,14 @@ const DEFAULT_PROMPT_GUIDELINES: string[] = [
 ];
 
 export default function (pi: ExtensionAPI) {
-	const overlay = new TodoOverlay();
+	const stored = readTodoConfig();
+	let persistCollapsed = stored.persistCollapsed;
+	const overlay = new TodoOverlay({
+		initialCollapsed: stored.persistCollapsed && stored.collapsed,
+		onCollapsedChange(collapsed) {
+			if (persistCollapsed) void writeTodoConfig({ collapsed });
+		},
+	});
 
 	function refreshOverlay(reset = false): void {
 		if (reset) overlay.resetCompletedDisplayState();
@@ -132,9 +141,36 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	/**
+	 * Turn collapse persistence on or off. Enabling records the state that is on screen, so the next
+	 * start matches what the user saw rather than a decision made before persistence was enabled.
+	 */
+	async function setPersistCollapsed(ctx: ExtensionContext, next: boolean): Promise<void> {
+		persistCollapsed = next;
+		await writeTodoConfig(
+			next ? { persistCollapsed: next, collapsed: overlay.isCollapsed() } : { persistCollapsed: next },
+		);
+		ctx.ui.notify(
+			next
+				? `Todo widget collapse state is remembered (${overlay.isCollapsed() ? "collapsed" : "expanded"}).`
+				: "Todo widget collapse state is no longer remembered.",
+			"info",
+		);
+	}
+
+	pi.registerShortcut(Key.alt("t"), {
+		description: "Collapse or expand the todo widget",
+		handler: () => overlay.toggleCollapsed(),
+	});
+
 	pi.registerCommand(COMMAND_NAME, {
-		description: "Browse the todo tree: scroll, expand, and collapse branches",
-		handler: async (_args, ctx) => {
+		description: "Browse the todo tree, or collapse/expand the inline widget: /todos [collapse|expand|toggle]",
+		handler: async (args, ctx) => {
+			const verb = args.trim().toLowerCase();
+			if (verb === "collapse" || verb === "expand" || verb === "toggle") {
+				overlay.setCollapsed(verb === "toggle" ? !overlay.isCollapsed() : verb === "collapse");
+				return;
+			}
 			if (!ctx.hasUI) return;
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/todos tree browser requires interactive mode", "info");
@@ -148,6 +184,19 @@ export default function (pi: ExtensionAPI) {
 					overlayOptions: { anchor: "center", width: "90%", maxHeight: "70%", margin: 0 },
 				},
 			);
+		},
+	});
+
+	pi.registerCommand("todos-persist-toggle", {
+		description:
+			"Toggle whether the todo widget's collapse state is remembered across sessions: /todos-persist-toggle [on|off]",
+		handler: async (args, ctx) => {
+			const value = args.trim().toLowerCase();
+			if (value && value !== "on" && value !== "off") {
+				ctx.ui.notify(`Unknown value "${value}". Use \`/todos-persist-toggle [on|off]\`.`, "warning");
+				return;
+			}
+			await setPersistCollapsed(ctx, value === "on" ? true : value === "off" ? false : !persistCollapsed);
 		},
 	});
 
@@ -174,6 +223,8 @@ export default function (pi: ExtensionAPI) {
 			overlay.dispose();
 			clearActiveRenderSession();
 		}
+		// A collapse right before exit is a fire-and-forget write; let it land.
+		await flushTodoConfigWrites();
 	});
 
 	pi.on("tool_execution_end", async (event) => {

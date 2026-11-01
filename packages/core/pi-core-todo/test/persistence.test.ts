@@ -54,6 +54,7 @@ function harness(session: SessionManager, failPersist = false) {
 			tool = value;
 		},
 		registerCommand: () => {},
+		registerShortcut: () => {},
 		appendEntry: (type: string, data: unknown) => {
 			if (failPersist) throw new Error("disk unavailable");
 			session.appendCustomEntry(type, data);
