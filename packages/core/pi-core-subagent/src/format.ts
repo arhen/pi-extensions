@@ -198,9 +198,15 @@ export class SubagentsWidget implements Component {
 			const sum = (key: "input" | "output" | "cost") => all.reduce((n, t) => n + (t.usage?.[key] ?? 0), 0);
 			const [input, output, cost] = [sum("input"), sum("output"), sum("cost")];
 			if (input || output) {
-				const usage = [`↑${fmtTokens(input)}`, `↓${fmtTokens(output)}`];
-				if (cost > 0) usage.push(cost >= 0.001 ? `$${cost.toFixed(3)}` : "$<0.001");
-				parts.push(this.theme.fg("muted", usage.join(" ")));
+				// Same shape and colors as the leader footer: `in ↑x | out ↓y | cost $z`.
+				const dim = (s: string) => this.theme.fg("dim", s);
+				const usage = [
+					`${dim("in")} ${this.theme.fg("accent", `↑${fmtTokens(input)}`)}`,
+					`${dim("out")} ${this.theme.fg("success", `↓${fmtTokens(output)}`)}`,
+				];
+				if (cost > 0)
+					usage.push(`${dim("cost")} ${this.theme.fg("warning", cost >= 0.001 ? `$${cost.toFixed(3)}` : "$<0.001")}`);
+				parts.push(usage.join(dim(" | ")));
 			}
 			if (this.collapse?.selected?.() === undefined)
 				parts.push(this.theme.fg("dim", this.collapse?.toggle ? "click or alt+s" : "alt+s"));

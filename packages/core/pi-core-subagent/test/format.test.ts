@@ -167,7 +167,7 @@ describe("SubagentsWidget", () => {
 		expect(line).toHaveLength(1);
 		expect(line[0]).toContain("▸");
 		expect(line[0]).toContain(
-			"Subagents (2/6) · 2 working · 1 waiting · 1 idle · 1 done · 1 cancelled · ↑12.6k ↓261 $0.003",
+			"Subagents (2/6) · 2 working · 1 waiting · 1 idle · 1 done · 1 cancelled · in ↑12.6k | out ↓261 | cost $0.003",
 		);
 		expect(line[0]).not.toContain("failed");
 		expect(line[0]).toContain("alt+s");
