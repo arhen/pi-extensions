@@ -5,6 +5,11 @@ import { isTalking, SubagentsWidget } from "./format.ts";
 import { type RunSnapshot, TERMINAL } from "./types.ts";
 
 const THROTTLE_MS = 150;
+
+/** pi's CustomEditor (default or a mode's subclass); duck-typed so another pi copy still matches. */
+function isLeaderEditor(component: unknown): boolean {
+	return typeof component === "object" && component !== null && "onExtensionShortcut" in component;
+}
 const PULSE_MS = 700;
 
 /**
@@ -29,8 +34,18 @@ export class RunWidget {
 	 * highlighted ↑↓ move, Enter opens it (or expands `+N more`), Esc gives the arrows back.
 	 */
 	handleKey(data: string, editorEmpty: boolean): boolean {
-		// Peek, the session view and dialogs own the keyboard while open.
-		if (this.tui?.hasOverlay()) return false;
+		// Only the leader's own editor hands arrows to the widget. Overlays, and inline UI that replaces
+		// the editor (ask_user_question, selectors, ui.editor()), own the keyboard while they are up.
+		// getFocusedComponent is on both screen implementations but not the TUI interface; absent means
+		// we cannot tell, so stay out of the way.
+		const focused = (this.tui as { getFocusedComponent?: () => unknown } | null)?.getFocusedComponent?.();
+		if (this.tui?.hasOverlay() || !isLeaderEditor(focused)) {
+			if (this.selected !== undefined) {
+				this.selected = undefined;
+				this.tui?.requestRender();
+			}
+			return false;
+		}
 		// Kitty terminals also report key releases, and input listeners see them before pi drops them;
 		// swallow the release of a key we handled, or one press moves two rows.
 		if (isKeyRelease(data)) return this.selected !== undefined;

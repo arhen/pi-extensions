@@ -77,6 +77,9 @@ test("empty leader editor: ↓ enters the widget rows, enter opens, esc leaves",
 		selected: () => widget.selected,
 	});
 	(widget as any).component = component;
+	const editor = { onExtensionShortcut: () => false };
+	let focused: object = editor;
+	(widget as any).tui = { hasOverlay: () => false, getFocusedComponent: () => focused, requestRender: () => {} };
 	const down = "\x1b[B";
 	const up = "\x1b[A";
 	component.render(200);
@@ -122,6 +125,16 @@ test("empty leader editor: ↓ enters the widget rows, enter opens, esc leaves",
 	expect(widget.handleKey("\x1b", true)).toBe(true);
 	expect(widget.selected).toBeUndefined();
 	expect(widget.handleKey("x", true)).toBe(false);
+
+	// An inline question (ask_user_question) replaces the editor: its options own the arrows.
+	widget.handleKey(down, true);
+	expect(widget.selected).toBeDefined();
+	focused = { handleInput: () => {} };
+	expect(widget.handleKey(down, true)).toBe(false);
+	expect(widget.handleKey(up, true)).toBe(false);
+	expect(widget.selected).toBeUndefined();
+	focused = editor;
+	expect(widget.handleKey(down, true)).toBe(true);
 	await require("../src/config.ts").writeSubagentConfig({});
 	if (previousDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousDir;
