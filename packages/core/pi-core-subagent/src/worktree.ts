@@ -140,7 +140,8 @@ function commitIn(dir: string, message: string, expectBranch?: string): "committ
 		if (head !== expectBranch) throw new Error(`worktree HEAD is "${head}", expected ${expectBranch}`);
 	}
 
-	gitIn(dir, ["add", "-A", "--", ".", ":(exclude)node_modules", ":(exclude,glob)**/node_modules/**"]);
+	// Wildcard excludes only: a literal ":(exclude)node_modules" makes git add abort on a gitignored node_modules.
+	gitIn(dir, ["add", "-A", "--", ".", ":(exclude,glob)**/node_modules", ":(exclude,glob)**/node_modules/**"]);
 	if (gitIn(dir, ["diff", "--cached", "--name-only"]).length === 0) return "empty";
 	gitIn(dir, [...COMMIT_CONFIG, "commit", "-m", message, "--no-verify"]);
 	return "committed";
