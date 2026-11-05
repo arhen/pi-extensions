@@ -261,6 +261,8 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.setWidget("subagents", [], { placement: "aboveEditor" });
 			} catch {}
 		}
+		// A reload kills every child; persist first so the next runner can restore the runs as resumable.
+		if (ctx) await manager.flushPersisted(ctx);
 		manager.clearRuns();
 	});
 

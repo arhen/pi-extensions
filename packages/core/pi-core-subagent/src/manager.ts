@@ -301,6 +301,12 @@ export class SubagentManager {
 			this.widget.schedule(this.listRuns()[0], ctx);
 		}
 	}
+	/** Snapshot the current runs and wait for the write to land — for the last moment before the runner dies. */
+	async flushPersisted(ctx: ExtensionContext): Promise<void> {
+		this.persist(ctx);
+		await this.persistChain;
+	}
+
 	private persist(ctx: ExtensionContext): void {
 		if (this.cleared) return;
 		try {

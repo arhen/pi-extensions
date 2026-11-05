@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunSnapshot, TaskSnapshot } from "../../src/types.ts";
 import { run, task, usage } from "./fixtures.ts";
@@ -223,6 +223,32 @@ describe("sidecar restoration", () => {
 		const restored = await statusOf("run_dup");
 		expect(restored.createdAt).toBe(10);
 		expect((restored.tasks as TaskSnapshot[]).map((t) => t.agent)).toEqual(["first"]);
+	});
+
+	test("an in-flight run reaches the sidecar before session shutdown drops it", async () => {
+		const started = await runTool(h, "subagent", { agent: "a", task: "t" });
+		const runId = /run_[a-z0-9_]+/.exec(resultText(started))![0];
+
+		await h.invoke("session_shutdown");
+
+		const persisted = JSON.parse(readFileSync(h.sidecarFile, "utf-8")) as RunSnapshot[];
+		const snapshot = persisted.find((r) => r.id === runId);
+		expect(snapshot).toBeDefined();
+		expect(snapshot!.tasks.every((t) => !["completed", "failed", "aborted"].includes(t.status))).toBe(true);
+
+		// A reload builds a fresh extension instance over the same session file.
+		const reloaded = createExtensionHarness();
+		try {
+			await reloaded.invoke("session_start", h.ctx());
+			const status = await runTool(reloaded, "subagent_status", { runId }, h.ctx());
+			expect(status.isError).toBeFalsy();
+			const restored = status.details?.run as RunSnapshot | undefined;
+			expect(restored).toBeDefined();
+			expect(restored!.status).toBe("aborted");
+			expect(restored!.tasks[0]!.error).toBe("Interrupted by session reload");
+		} finally {
+			await reloaded.dispose();
+		}
 	});
 
 	test("session shutdown empties this session's runs", async () => {
