@@ -7,10 +7,13 @@ import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-w
 import { SubagentsWidget } from "../src/format.ts";
 import type { PeekTask } from "../src/peek.ts";
 import { createSessionView } from "../src/session-view.ts";
-import type { RunSnapshot, TaskSnapshot } from "../src/types.ts";
+import type { RunSnapshot, TaskRef, TaskSnapshot } from "../src/types.ts";
 
 initTheme();
-const keybindings = new KeybindingsManager(TUI_KEYBINDINGS);
+const keybindings = new KeybindingsManager({
+	...TUI_KEYBINDINGS,
+	"app.thinking.toggle": { defaultKeys: "ctrl+t", description: "Toggle thinking blocks" },
+});
 setKeybindings(keybindings);
 const plain = {
 	fg: (_c: string, s: string) => s,
@@ -47,7 +50,7 @@ test("widget rows are click targets: header collapses, task opens, +N more shows
 		showAll: () => showAll,
 		toggle: () => calls.push("toggle"),
 		toggleAll: () => (showAll = !showAll),
-		open: (id) => calls.push(`open:${id}`),
+		open: (t) => calls.push(`open:${t.taskId}`),
 	});
 
 	const lines = widget.render(200);
@@ -64,6 +67,24 @@ test("widget rows are click targets: header collapses, task opens, +N more shows
 	expect(widget.render(200).at(-1)).toContain("+2 more");
 });
 
+test("widget rows carry their run, so colliding task ids open the right task", () => {
+	const opened: string[] = [];
+	const owned = (runId: string, agent: string) => ({ ...task("task_1"), runId, agent });
+	const widget = new SubagentsWidget(
+		() => [
+			{ id: "run-a", status: "running", tasks: [owned("run-a", "alpha")] } as unknown as RunSnapshot,
+			{ id: "run-b", status: "running", tasks: [owned("run-b", "beta")] } as unknown as RunSnapshot,
+		],
+		plain,
+		{ collapsed: () => false, toggle: () => {}, open: (t) => opened.push(`${t.runId}/${t.taskId}`) },
+	);
+
+	widget.render(200);
+	widget.handleMouse(click(1));
+	widget.handleMouse(click(2));
+	expect(opened).toEqual(["run-a/task_1", "run-b/task_1"]);
+});
+
 test("empty leader editor: ↓ enters the widget rows, enter opens, esc leaves", async () => {
 	const agentDir = mkdtempSync(join(tmpdir(), "subagent-agentdir-"));
 	dirs.push(agentDir);
@@ -72,7 +93,7 @@ test("empty leader editor: ↓ enters the widget rows, enter opens, esc leaves",
 	const { RunWidget } = require("../src/run-widget.ts");
 	const widget = new RunWidget();
 	const opened: string[] = [];
-	widget.onOpen = (id: string) => opened.push(id);
+	widget.onOpen = (t: TaskRef) => opened.push(t.taskId);
 	widget.collapsed = false;
 	const tasks = ["a", "b", "c", "d", "e"].map((id) => task(id));
 	widget.runs = run(tasks);
@@ -91,7 +112,7 @@ test("empty leader editor: ↓ enters the widget rows, enter opens, esc leaves",
 
 	expect(widget.handleKey(down, false)).toBe(false);
 	expect(widget.handleKey(down, true)).toBe(true);
-	expect(component.selectable().at(widget.selected)).toEqual({ taskId: "a" });
+	expect(component.selectable().at(widget.selected)).toEqual({ runId: "r", taskId: "a" });
 	expect(component.render(200)[0]).toContain("enter open");
 
 	// ↑ reaches the header; Enter collapses like alt+s, Enter again expands.
@@ -162,6 +183,7 @@ test("session view renders the child transcript with a leader bar, follows live,
 				model: "mod-1",
 				usage: { input: 1200, output: 300, cacheRead: 800, cacheWrite: 0, cost: { total: 0.004 } },
 				content: [
+					{ type: "thinking", thinking: "pondering the void" },
 					{ type: "text", text: "hello from child" },
 					{ type: "toolCall", id: "c1", name: "bash", arguments: { command: "echo ok" } },
 				],
@@ -181,6 +203,8 @@ test("session view renders the child transcript with a leader bar, follows live,
 	const tasks: PeekTask[] = [
 		{ runId: "r", taskId: "a", agent: "alpha", status: "running", running: true, sessionFile: file, line: "" },
 		{ runId: "r", taskId: "b", agent: "beta", status: "queued", running: true, line: "" },
+		// Same id as alpha but a different run: the flat lookup used to land here.
+		{ runId: "other", taskId: "a", agent: "decoy", status: "completed", running: false, line: "" },
 	];
 	let busy = true;
 	let closed = false;
@@ -192,7 +216,7 @@ test("session view renders the child transcript with a leader bar, follows live,
 		keybindings: keybindings as any,
 		contextWindow: (p, m) => (p === "prov" && m === "mod-1" ? 100_000 : undefined),
 		getTasks: () => tasks,
-		startTaskId: "a",
+		startTask: { runId: "r", taskId: "a" },
 		leaderBusy: () => busy,
 		hideThinking: false,
 		send: (t, message) => {
@@ -206,6 +230,8 @@ test("session view renders the child transcript with a leader bar, follows live,
 	expect(view.render(80)).toHaveLength(30);
 	expect(screen()).toContain("◀ Leader ● working");
 	expect(screen()).toContain("subagent: alpha");
+	// Run identity decides the row, not the shared `a` id.
+	expect(screen()).not.toContain("decoy");
 	expect(screen()).toContain("say hi");
 	expect(screen()).toContain("hello from child");
 	expect(screen()).toContain("echo ok");
@@ -213,6 +239,19 @@ test("session view renders the child transcript with a leader bar, follows live,
 	expect(screen()).toContain("↑1.2k");
 	expect(screen()).toMatch(/\[░+\] 2\.0% ▪ 2\.0k\/100k/);
 	expect(screen()).toContain("alpha is working…");
+
+	// ctrl+t is the leader's thinking toggle and must reach this view too.
+	expect(screen()).toContain("pondering the void");
+	view.handleInput("\x14");
+	const folded = view.render(80).map(strip);
+	expect(folded.join("\n")).toContain("Thinking...");
+	expect(folded.join("\n")).not.toContain("pondering the void");
+	// A click on the collapsed label expands that block back.
+	const labelRow = folded.findIndex((line) => line.includes("Thinking..."));
+	expect(view.handleMouse({ type: "click", button: "left", y: labelRow, width: 80 } as any)).toEqual({
+		handled: true,
+	});
+	expect(screen()).toContain("pondering the void");
 
 	appendFileSync(
 		file,

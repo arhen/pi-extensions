@@ -7,6 +7,7 @@ import {
 	type ModelPricing,
 	type RunSnapshot,
 	type RunStatus,
+	type TaskRef,
 	type TaskSnapshot,
 	type TaskStatus,
 	TERMINAL,
@@ -140,11 +141,11 @@ export interface WidgetCollapse {
 	/** The rest are set only where pi routes mouse events to widgets (fullscreen). */
 	toggle?: () => void;
 	toggleAll?: () => void;
-	open?: (taskId: string) => void;
+	open?: (task: TaskRef) => void;
 }
 
-type RowTarget = "head" | "more" | { taskId: string } | undefined;
-export type SelectTarget = "head" | "more" | { taskId: string };
+type RowTarget = "head" | "more" | TaskRef | undefined;
+export type SelectTarget = "head" | "more" | TaskRef;
 
 export class SubagentsWidget implements Component {
 	constructor(
@@ -167,7 +168,7 @@ export class SubagentsWidget implements Component {
 		const target = this.targets[event.y];
 		if (target === "head") this.collapse.toggle();
 		else if (target === "more") this.collapse.toggleAll?.();
-		else if (target) this.collapse.open?.(target.taskId);
+		else if (target) this.collapse.open?.(target);
 		else return undefined;
 		return { handled: true };
 	}
@@ -232,7 +233,7 @@ export class SubagentsWidget implements Component {
 			lines.push(
 				truncateToWidth(`${this.theme.fg("dim", "├─")} ${themedTaskLine(task, this.theme, activity)}`, width, "…"),
 			);
-			targets.push({ taskId: task.id });
+			targets.push({ runId: task.runId, taskId: task.id });
 		}
 		const hidden = total - shown;
 		const clickable = Boolean(this.collapse?.toggleAll);
