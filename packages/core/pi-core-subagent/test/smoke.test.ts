@@ -196,15 +196,17 @@ describe("ensureUsableModel", () => {
 		});
 		expect(await ensureUsableModel(ctx, other, undefined)).toMatchObject({ model: session });
 	});
-	test("opencode-go MissingSessionID leaves validation to the child AgentSession", async () => {
+	test("opencode-go is not probed — only an AgentSession request carries its session header", async () => {
 		const opencode = { provider: "opencode-go", id: "deepseek-v4.1-flash" } as never;
-		const ctx = makeCtx(async () => ({
-			stopReason: "error",
-			errorMessage: "400 MissingSessionID: Request is missing x-opencode-session",
-		}));
+		let probes = 0;
+		const ctx = makeCtx(async () => {
+			probes++;
+			return { stopReason: "error", errorMessage: "400 MissingSessionID: missing x-opencode-session" };
+		});
 		const out = await ensureUsableModel(ctx, opencode, undefined);
 		expect(out.model).toBe(opencode);
-		expect(out.note).toContain("child session will validate");
+		expect(out.note).toBeUndefined();
+		expect(probes).toBe(0);
 	});
 	test("with no session model to fall back to, an unusable model throws", async () => {
 		const ctx = {

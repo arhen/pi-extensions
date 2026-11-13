@@ -82,7 +82,7 @@ The dotted arrows are the whole point: a child may burn 200k tokens reading file
 
 ## Usage — the leader invents the agents
 
-Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: explicit `model` → agent-file `model` (validated against the pi model registry) → the parent's current model → settings default. Any model that is not the session model is preflight-probed; if the provider rejects it, the task falls back to the session model and the result carries a `Model:` note.
+Define agents inline per call, or reference a named agent file (see [Agent files](#agent-files)). Model resolution: explicit `model` → agent-file `model` (validated against the pi model registry) → the parent's current model → settings default. Any model that is not the session model is preflight-probed; if the provider rejects it, the task falls back to the session model and the result carries a `Model:` note. `opencode-go` is exempt from the probe — its routes only answer AgentSession requests — so the child validates the model itself.
 
 ```json
 {

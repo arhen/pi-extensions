@@ -85,13 +85,12 @@ export async function ensureUsableModel(
 	const session = ctx.model;
 	if (!model || !ctx.modelRegistry) return { model };
 	if (session && model.provider === session.provider && model.id === session.id) return { model };
+	// ponytail: an opencode-go probe can only ever fail — its routes need the x-opencode-session header,
+	// which only an AgentSession request carries — so the child validates the model instead of a wasted 400.
+	// Upgrade path: probe again once modelRegistry.complete can carry AgentSession request transforms.
+	if (model.provider === "opencode-go") return { model };
 	const error = await probeModel(ctx, model, signal, thinking);
 	if (!error) return { model };
-	if (model.provider === "opencode-go" && /MissingSessionID|x-opencode-session/i.test(error)) {
-		// ponytail: opencode-go rejects stateless probes but accepts AgentSession requests, which add the session header.
-		// Upgrade path: remove this exception when modelRegistry.complete can carry AgentSession request transforms.
-		return { model, note: `preflight unavailable (${error}); child session will validate the model` };
-	}
 	if (!session) throw new Error(`Model ${model.provider}/${model.id} is unusable: ${error}`);
 	return {
 		model: session,
