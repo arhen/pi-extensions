@@ -45,10 +45,10 @@ export class TodoOverlay {
 
 	/** Collapse or expand the widget. Expanding on purpose reveals completed rows hidden after earlier turns. */
 	setCollapsed(collapsed: boolean): void {
-		if (this.collapsed === collapsed) return;
+		const changed = this.collapsed !== collapsed;
 		this.collapsed = collapsed;
 		if (!collapsed) this.hiddenCompletedTaskIds.clear();
-		this.onCollapsedChange?.(collapsed);
+		if (changed) this.onCollapsedChange?.(collapsed);
 		this.update();
 	}
 

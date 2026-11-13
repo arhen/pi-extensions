@@ -11,7 +11,7 @@ Flat or arbitrarily nested todos for [Pi](https://github.com/earendil-works/pi),
 pi install npm:@arhen/pi-core-todo
 ```
 
-Registers `todo`, `/todos`, `/todos-persist-toggle`, and `alt+t`; use only one todo extension at a time. `/todos collapse`, `/todos expand`, and `/todos toggle` control the inline widget, and `alt+t` toggles it from anywhere in the editor; bare `/todos` opens the browser.
+Registers `todo`, `/todos`, and `alt+t`; use only one todo extension at a time. `/todos collapse`, `/todos expand`, and `/todos toggle` control the inline widget, and `alt+t` toggles it from anywhere in the editor; bare `/todos` opens the browser.
 
 ## Nested todos
 
@@ -66,25 +66,20 @@ Tool calls are single-line previews. Results remain bounded even when expanded: 
 Collapse the widget to a single summary line — chevron, progress counts, and the active task — with `/todos collapse`. `/todos expand` restores the tree and also reveals completed rows hidden after earlier turns; `/todos toggle` flips the current state.
 
 ```text
-▸ ● Todos (2/12) · ◐ Reject cycles · click or /todos
+▸ ● Todos (2/12) · ◐ Reject cycles · click or alt+t
 ```
 
-In fullscreen mode the widget takes clicks: a left click toggles collapse, and the header advertises it. Terminals that do not report mouse input, and the regular (non-fullscreen) screen mode, keep `alt+t` and the command as the only affordances.
+In fullscreen mode the widget takes clicks: a left click toggles collapse, and the header advertises it. Regular (non-fullscreen) mode does not route widget clicks; use `alt+t` or `/todos toggle`. On macOS, `alt+t` needs the terminal to send Option as Meta (Ghostty `macos-option-as-alt = true`, iTerm2 “Esc+”); otherwise use `/todos toggle`.
 
 ### Remembering the collapse state
 
-The collapsed state is per-process by default: a new session starts expanded. `/todos-persist-toggle` flips a global switch that stores the decision in `<agent-dir>/todo-config.json` instead, so the next start matches what was on screen when the session ended. `/todos-persist-toggle on` and `off` set it explicitly; bare `/todos-persist-toggle` toggles. Enabling persistence records the state visible at that moment and applies from the next start, not retroactively to the current widget. Turning it off leaves the stored decision in place, so turning it back on resumes from where it was.
-
-The file is global, not per-session, and is read once at load:
+The widget always remembers its collapsed state in `<agent-dir>/todo-config.json`, shared across sessions and read once at extension load:
 
 ```json
-{
-  "persistCollapsed": true,
-  "collapsed": false
-}
+{ "collapsed": false }
 ```
 
-`persistCollapsed` remembers the decision; `collapsed` is the decision itself. A missing, unreadable or malformed file falls back to the per-process default. Pi 1.4 has no way for an extension to add a row to `/settings` — `SettingsSelectorComponent` has a fixed option list and `ExtensionAPI` only exposes `getSettings()` — so this file and the command are the whole surface. `alt+t` and the widget click both write through it.
+Commands, `alt+t`, and widget clicks save the preference. A missing, unreadable, malformed, or non-boolean value defaults to expanded; `/todos expand` restores the tree. Writes are queued, atomically replace the file, and finish before shutdown. Concurrent Pi processes use the last saved decision. If saving fails, the widget still changes for the current session and shows a warning.
 
 ### `/todos` browser
 

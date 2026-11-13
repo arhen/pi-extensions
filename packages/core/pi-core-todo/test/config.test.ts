@@ -1,18 +1,12 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { isolateAgentDir } from "../../../../test-support/fake-pi.ts";
-import {
-	DEFAULT_TODO_CONFIG,
-	flushTodoConfigWrites,
-	readTodoConfig,
-	TODO_CONFIG_FILENAME,
-	writeTodoConfig,
-} from "../src/config.ts";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { createFakePi, isolateAgentDir } from "../../../../test-support/fake-pi.ts";
+import { flushTodoConfigWrites, readTodoConfig, TODO_CONFIG_FILENAME, writeTodoConfig } from "../src/config.ts";
+import extension from "../src/index.ts";
 import { TodoOverlay } from "../src/overlay.ts";
-import { clearActiveRenderSession, commitState, setActiveRenderSession } from "../src/store.ts";
-import type { Task, TaskState } from "../src/types.ts";
+import { clearActiveRenderSession } from "../src/store.ts";
 
 const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
 const previousCacheHome = process.env.XDG_CACHE_HOME;
@@ -20,7 +14,14 @@ const { root, agentDir } = isolateAgentDir("todo-config");
 mkdirSync(agentDir, { recursive: true });
 const configFile = join(agentDir, TODO_CONFIG_FILENAME);
 
-afterAll(() => {
+function reset() {
+	rmSync(configFile, { recursive: true, force: true });
+	clearActiveRenderSession();
+}
+
+afterAll(async () => {
+	await flushTodoConfigWrites();
+	clearActiveRenderSession();
 	if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
 	if (previousCacheHome === undefined) delete process.env.XDG_CACHE_HOME;
@@ -28,213 +29,135 @@ afterAll(() => {
 	rmSync(root, { recursive: true, force: true });
 });
 
-function reset() {
-	rmSync(configFile, { force: true });
-}
-
 describe("todo config file", () => {
-	test("a missing or malformed file degrades to the defaults", () => {
+	test("missing, malformed and non-boolean values default to expanded", () => {
 		reset();
-		expect(readTodoConfig()).toEqual(DEFAULT_TODO_CONFIG);
-		writeFileSync(configFile, "{ nope");
-		expect(readTodoConfig()).toEqual(DEFAULT_TODO_CONFIG);
-		writeFileSync(configFile, "[]");
-		expect(readTodoConfig()).toEqual(DEFAULT_TODO_CONFIG);
+		expect(readTodoConfig()).toEqual({ collapsed: false });
+		for (const raw of ["{ nope", "null", "[]", "true", '{"collapsed":"true"}', '{"collapsed":1}']) {
+			writeFileSync(configFile, raw);
+			expect(readTodoConfig()).toEqual({ collapsed: false });
+		}
 	});
 
-	test("non-boolean values are not coerced", () => {
-		writeFileSync(configFile, JSON.stringify({ persistCollapsed: "yes", collapsed: 1 }));
-		expect(readTodoConfig()).toEqual(DEFAULT_TODO_CONFIG);
+	test("stores just the collapsed boolean, creating the directory if needed", async () => {
+		const path = join(root, "new-agent", TODO_CONFIG_FILENAME);
+		await writeTodoConfig({ collapsed: true }, path);
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({ collapsed: true });
+		await writeTodoConfig({ collapsed: false }, path);
+		expect(readTodoConfig(path)).toEqual({ collapsed: false });
+		expect(existsSync(`${path}.${process.pid}.tmp`)).toBe(false);
 	});
 
-	test("writes merge, so turning persistence off keeps the remembered state", async () => {
+	test("queued toggles preserve the last decision and flush waits for it", async () => {
 		reset();
-		await writeTodoConfig({ persistCollapsed: true, collapsed: true });
-		await writeTodoConfig({ persistCollapsed: false });
-		expect(JSON.parse(readFileSync(configFile, "utf8"))).toEqual({ persistCollapsed: false, collapsed: true });
+		const writes = [true, false, true].map((collapsed) => writeTodoConfig({ collapsed }));
+		await flushTodoConfigWrites();
+		await Promise.all(writes);
+		expect(readTodoConfig()).toEqual({ collapsed: true });
+	});
+
+	test("a failed atomic replacement preserves existing data and does not poison the queue", async () => {
+		reset();
+		mkdirSync(configFile);
+		const sentinel = join(configFile, "keep");
+		writeFileSync(sentinel, "unchanged");
+		await expect(writeTodoConfig({ collapsed: true })).rejects.toThrow();
+		expect(readFileSync(sentinel, "utf8")).toBe("unchanged");
+		expect(existsSync(`${configFile}.${process.pid}.tmp`)).toBe(false);
+		reset();
+		await writeTodoConfig({ collapsed: true });
+		expect(readTodoConfig()).toEqual({ collapsed: true });
 	});
 });
 
-describe("overlay collapse persistence", () => {
-	const fixture: TaskState = {
-		tasks: [
-			{ id: 1, subject: "Root", status: "pending" },
-			{ id: 2, parentId: 1, subject: "Child", status: "in_progress" },
-		] as Task[],
-		nextId: 3,
-	};
-
-	function overlay(options: ConstructorParameters<typeof TodoOverlay>[0] = {}) {
-		clearActiveRenderSession();
-		setActiveRenderSession("config-test-session");
-		commitState("config-test-session", structuredClone(fixture));
-		return new TodoOverlay(options);
-	}
-
-	test("starts collapsed when told to, and reports changes upward", () => {
+describe("overlay collapse changes", () => {
+	test("restores the initial state and reports only changed decisions", () => {
 		const seen: boolean[] = [];
-		const subject = overlay({ initialCollapsed: true, onCollapsedChange: (collapsed) => seen.push(collapsed) });
-		expect(subject.isCollapsed()).toBe(true);
-		subject.toggleCollapsed();
-		expect(subject.isCollapsed()).toBe(false);
+		const overlay = new TodoOverlay({ initialCollapsed: true, onCollapsedChange: (value) => seen.push(value) });
+		expect(overlay.isCollapsed()).toBe(true);
+		overlay.setCollapsed(true);
+		overlay.toggleCollapsed();
+		overlay.setCollapsed(false);
+		expect(overlay.isCollapsed()).toBe(false);
 		expect(seen).toEqual([false]);
 	});
-
-	test("setting the same value twice does not report or notify a change", () => {
-		const seen: boolean[] = [];
-		const subject = overlay({ onCollapsedChange: (collapsed) => seen.push(collapsed) });
-		subject.setCollapsed(false);
-		expect(seen).toEqual([]);
-		subject.setCollapsed(true);
-		subject.setCollapsed(true);
-		expect(seen).toEqual([true]);
-	});
 });
 
-describe("/todos-persist-toggle", () => {
+describe("widget preferences", () => {
 	function harness() {
-		const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
-		const shortcuts = new Map<string, Parameters<ExtensionAPI["registerShortcut"]>[1]>();
+		const app = createFakePi();
 		const notifications: Array<{ message: string; type?: string }> = [];
-		const extension = require("../src/index.ts").default as (pi: ExtensionAPI) => void;
-		extension({
-			registerCommand: (name: string, command: Parameters<ExtensionAPI["registerCommand"]>[1]) =>
-				commands.set(name, command),
-			registerShortcut: (key: string, shortcut: Parameters<ExtensionAPI["registerShortcut"]>[1]) =>
-				shortcuts.set(key, shortcut),
-			registerTool: () => {},
-			on: () => () => {},
-			appendEntry: () => {},
-		} as unknown as ExtensionAPI);
+		let browserOpens = 0;
+		extension(app.api);
 		const ctx = {
-			mode: "print",
-			hasUI: false,
-			ui: { notify: (message: string, type?: string) => notifications.push({ message, type }) },
-			sessionManager: { getEntries: () => [], getBranch: () => [] },
+			mode: "tui",
+			hasUI: true,
+			ui: {
+				notify: (message: string, type?: string) => notifications.push({ message, type }),
+				setWidget: () => {},
+				custom: async () => {
+					browserOpens++;
+				},
+			},
+			sessionManager: { getSessionId: () => "config-test", getEntries: () => [], getBranch: () => [] },
 		} as unknown as ExtensionCommandContext;
 		return {
-			run: (args = "") => commands.get("todos-persist-toggle")!.handler(args, ctx),
-			async toggle() {
-				await shortcuts.get("alt+t")!.handler(ctx as never);
-				// The mouse path cannot await, so collapse writes are fire-and-forget.
-				await flushTodoConfigWrites();
-			},
+			...app,
+			ctx,
 			notifications,
-			commands,
+			get browserOpens() {
+				return browserOpens;
+			},
+			run: (args = "") => app.run("todos", args, ctx),
+			toggle: () => app.shortcuts.get("alt+t")!.handler(ctx),
 		};
 	}
 
-	test("bare invocation turns persistence on, then off again", async () => {
+	test("collapse/expand/toggle are always remembered; bare /todos still browses", async () => {
 		reset();
 		const app = harness();
-		await app.run("");
-		expect(readTodoConfig()).toEqual({ persistCollapsed: true, collapsed: false });
-		expect(app.notifications.at(-1)?.message).toContain("remembered (expanded)");
-		await app.run("");
-		expect(readTodoConfig()).toEqual({ persistCollapsed: false, collapsed: false });
-		expect(app.notifications.at(-1)?.message).toContain("no longer remembered");
+		expect([...app.commands.keys()]).toEqual(["todos"]);
+		await app.run("collapse");
+		await flushTodoConfigWrites();
+		expect(readTodoConfig()).toEqual({ collapsed: true });
+		await app.run("expand");
+		await flushTodoConfigWrites();
+		expect(readTodoConfig()).toEqual({ collapsed: false });
+		await app.run("toggle");
+		await flushTodoConfigWrites();
+		expect(readTodoConfig()).toEqual({ collapsed: true });
+		await app.run();
+		expect(app.browserOpens).toBe(1);
 	});
 
-	test("on and off are idempotent", async () => {
+	test("reload restores the saved state; keyboard changes are drained on shutdown", async () => {
 		reset();
+		await writeTodoConfig({ collapsed: true });
 		const app = harness();
-		await app.run("on");
-		await app.run("on");
-		expect(readTodoConfig().persistCollapsed).toBe(true);
-		await app.run("off");
-		await app.run("off");
-		expect(readTodoConfig().persistCollapsed).toBe(false);
+		await app.toggle();
+		await app.emit("session_shutdown", {}, app.ctx);
+		expect(readTodoConfig()).toEqual({ collapsed: false });
+		expect(app.shortcuts.get("alt+t")?.description).toBe("Collapse or expand the todo widget");
 	});
 
-	test("turning persistence off keeps the stored decision for later", async () => {
+	test("unknown subcommands warn without changing the preference or opening the browser", async () => {
 		reset();
 		const app = harness();
-		await app.run("on");
-		await app.toggle(); // collapses the widget while persistence is on
-		expect(readTodoConfig()).toEqual({ persistCollapsed: true, collapsed: true });
-		await app.run("off");
-		expect(readTodoConfig()).toEqual({ persistCollapsed: false, collapsed: true });
-	});
-
-	test("an unknown value is rejected without writing", async () => {
-		reset();
-		const app = harness();
-		await app.run("maybe");
-		expect(readTodoConfig()).toEqual(DEFAULT_TODO_CONFIG);
+		await app.run("unknown");
 		expect(app.notifications.at(-1)?.type).toBe("warning");
+		expect(existsSync(configFile)).toBe(false);
+		expect(app.browserOpens).toBe(0);
 	});
 
-	test("the legacy `/todos persist` subcommand is gone", async () => {
+	test("a failed background save warns instead of rejecting unhandled", async () => {
 		reset();
 		const app = harness();
-		const todos = (app.commands as Map<string, { description?: string }>).get("todos");
-		expect(todos?.description).not.toContain("persist");
-	});
-});
-
-describe("alt+t shortcut", () => {
-	test("is registered and toggles the widget", () => {
-		const shortcuts = new Map<string, Parameters<ExtensionAPI["registerShortcut"]>[1]>();
-		require("../src/index.ts").default({
-			registerCommand: () => {},
-			registerShortcut: (key: string, shortcut: Parameters<ExtensionAPI["registerShortcut"]>[1]) =>
-				shortcuts.set(key, shortcut),
-			registerTool: () => {},
-			on: () => () => {},
-			appendEntry: () => {},
-		} as unknown as ExtensionAPI);
-		expect(shortcuts.has("alt+t")).toBe(true);
-		expect(shortcuts.get("alt+t")!.description).toBe("Collapse or expand the todo widget");
-	});
-
-	test("does not claim a key pi or another extension already uses", () => {
-		const shortcuts = new Map<string, unknown>();
-		require("../src/index.ts").default({
-			registerCommand: () => {},
-			registerShortcut: (key: string) => shortcuts.set(key, {}),
-			registerTool: () => {},
-			on: () => () => {},
-			appendEntry: () => {},
-		} as unknown as ExtensionAPI);
-		// Pi's documented defaults, plus the shortcuts sibling @arhen packages register.
-		const taken = [
-			"escape",
-			"ctrl+c",
-			"ctrl+d",
-			"ctrl+z",
-			"ctrl+g",
-			"ctrl+v",
-			"ctrl+p",
-			"ctrl+s",
-			"ctrl+n",
-			"ctrl+r",
-			"ctrl+l",
-			"ctrl+t",
-			"ctrl+o",
-			"ctrl+x",
-			"ctrl+a",
-			"ctrl+b",
-			"ctrl+e",
-			"ctrl+f",
-			"ctrl+j",
-			"ctrl+k",
-			"ctrl+q",
-			"ctrl+u",
-			"ctrl+w",
-			"ctrl+y",
-			"ctrl+backspace",
-			"ctrl+shift+z",
-			"ctrl+shift+a",
-			"ctrl+shift+b",
-			"ctrl+shift+j",
-			"ctrl+shift+x",
-			"alt+m",
-			"alt+p",
-			"alt+z",
-			"alt+enter",
-			"shift+tab",
-			"shift+down",
-		];
-		for (const key of [...shortcuts.keys()]) expect(taken).not.toContain(key);
+		await app.emit("session_start", {}, app.ctx);
+		mkdirSync(configFile);
+		await app.run("collapse");
+		await flushTodoConfigWrites();
+		expect(app.notifications.at(-1)?.type).toBe("warning");
+		expect(app.notifications.at(-1)?.message).toContain("Could not save");
+		reset();
 	});
 });

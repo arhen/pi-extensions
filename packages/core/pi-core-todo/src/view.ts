@@ -89,7 +89,7 @@ function collapsedWidgetLine(
 		const subject = sanitizeTerminalText(active.subject);
 		parts.push(theme.fg("accent", `◐ ${clip(subject, Math.max(8, Math.min(48, Math.floor(width * 0.5))))}`));
 	}
-	if (clickable) parts.push(theme.fg("dim", "click or /todos"));
+	parts.push(theme.fg("dim", clickable ? "click or alt+t" : "alt+t"));
 	return clip(parts.join(theme.fg("dim", " · ")), width);
 }
 
@@ -107,11 +107,11 @@ export function renderWidget(
 		live.filter((task) => !(task.status === "completed" && hiddenCompleted.has(task.id))).map((task) => task.id),
 	);
 	if (!budget || !visible.size || width <= 0) return { lines: [], displayedIds: [] };
-	const tree = new TaskTree(state.tasks);
 	const active = live.find((task) => task.status === "in_progress");
-	const head = expandedHead(theme, live, active, !options.collapsed && Boolean(options.clickable));
 	if (options.collapsed)
 		return { lines: [collapsedWidgetLine(live, active, theme, width, Boolean(options.clickable))], displayedIds: [] };
+	const tree = new TaskTree(state.tasks);
+	const head = expandedHead(theme, live, active, Boolean(options.clickable));
 	if (budget === 1) {
 		const row = active && tree.preorder.find((row) => row.task.id === active.id);
 		return {

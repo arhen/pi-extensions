@@ -37,13 +37,14 @@ describe("widget collapse rendering", () => {
 		expect(text).toContain("▸");
 		expect(text).toContain("Todos (1/3)");
 		expect(text).toContain("Add collapse");
-		expect(text).toContain("click or /todos");
+		expect(text).toContain("click or alt+t");
 	});
 
 	test("collapsed drops the click hint when the terminal cannot report clicks", () => {
 		const text = plain(renderWidget(fixture, new Set(), theme, 80, 40, { collapsed: true }).lines);
 		expect(text).toContain("Todos (1/3)");
 		expect(text).not.toContain("click");
+		expect(text).toContain("alt+t");
 	});
 
 	test("expanded header carries a disclosure chevron and collapse hint", () => {
@@ -56,7 +57,7 @@ describe("widget collapse rendering", () => {
 	});
 
 	test("collapsed stays width-bounded and renders nothing without a budget", () => {
-		for (const width of [1, 8, 16, 24, 40, 80]) {
+		for (let width = 1; width <= 80; width++) {
 			const lines = renderWidget(fixture, new Set(), theme, width, 40, { collapsed: true, clickable: true }).lines;
 			expect(lines).toHaveLength(1);
 			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
@@ -138,7 +139,17 @@ describe("widget click toggling", () => {
 		expect(overlay.isCollapsed()).toBe(false);
 		overlay.setCollapsed(true);
 		expect(component.render(80)).toHaveLength(1);
-		expect(plain(component.render(80))).not.toContain("click or /todos");
+		expect(plain(component.render(80))).not.toContain("click");
+		expect(plain(component.render(80))).toContain("alt+t");
+	});
+
+	test("expand also reveals completed rows when already expanded", () => {
+		const { overlay, component } = harness();
+		component.render(80);
+		overlay.hideCompletedTasksFromPreviousTurn();
+		expect(plain(component.render(80))).not.toContain("Read the source");
+		overlay.setCollapsed(false);
+		expect(plain(component.render(80))).toContain("Read the source");
 	});
 
 	test("an explicit expand brings back rows hidden after the previous turn", () => {
