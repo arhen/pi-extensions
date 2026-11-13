@@ -1,4 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Key } from "@earendil-works/pi-tui";
+import { flushTodoConfigWrites, readTodoConfig, writeTodoConfig } from "./config.ts";
 import { TodoOverlay } from "./overlay.ts";
 import { applyTaskMutation, buildToolResult, sanitizeTerminalText } from "./state.ts";
 import {
@@ -53,7 +55,18 @@ const DEFAULT_PROMPT_GUIDELINES: string[] = [
 ];
 
 export default function (pi: ExtensionAPI) {
-	const overlay = new TodoOverlay();
+	let ui: ExtensionContext["ui"] | undefined;
+	const overlay = new TodoOverlay({
+		initialCollapsed: readTodoConfig().collapsed,
+		onCollapsedChange(collapsed) {
+			void writeTodoConfig({ collapsed }).catch(() => {
+				ui?.notify(
+					"Could not save todo widget preference; this change applies only to the current session.",
+					"warning",
+				);
+			});
+		},
+	});
 
 	function refreshOverlay(reset = false): void {
 		if (reset) overlay.resetCompletedDisplayState();
@@ -132,10 +145,24 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerShortcut(Key.alt("t"), {
+		description: "Collapse or expand the todo widget",
+		handler: () => overlay.toggleCollapsed(),
+	});
+
 	pi.registerCommand(COMMAND_NAME, {
-		description: "Browse the todo tree: scroll, expand, and collapse branches",
-		handler: async (_args, ctx) => {
+		description: "Browse the todo tree, or collapse/expand the inline widget: /todos [collapse|expand|toggle]",
+		handler: async (args, ctx) => {
+			const verb = args.trim().toLowerCase();
+			if (verb === "collapse" || verb === "expand" || verb === "toggle") {
+				overlay.setCollapsed(verb === "toggle" ? !overlay.isCollapsed() : verb === "collapse");
+				return;
+			}
 			if (!ctx.hasUI) return;
+			if (verb) {
+				ctx.ui.notify("Usage: /todos [collapse|expand|toggle]", "warning");
+				return;
+			}
 			if (ctx.mode !== "tui") {
 				ctx.ui.notify("/todos tree browser requires interactive mode", "info");
 				return;
@@ -157,6 +184,7 @@ export default function (pi: ExtensionAPI) {
 		if (ctx.mode !== "tui") return;
 		if (getActiveRenderSession() === "" || !hasSession(getActiveRenderSession())) setActiveRenderSession(id);
 		if (id !== getActiveRenderSession()) return;
+		ui = ctx.ui;
 		overlay.setUICtx(ctx.ui);
 		refreshOverlay(true);
 	});
@@ -168,6 +196,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {
+		await flushTodoConfigWrites();
 		const sessionId = sid(ctx);
 		if (!sessionId) return;
 		if (sessionId === getActiveRenderSession()) {

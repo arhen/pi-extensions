@@ -5,13 +5,27 @@ import type { TaskState } from "./types.ts";
 import { WIDGET_KEY } from "./types.ts";
 import { renderWidget } from "./view.ts";
 
+export interface TodoOverlayOptions {
+	/** Collapsed state to start with; the caller passes the remembered decision. */
+	initialCollapsed?: boolean;
+	/** Called after a user-driven collapse or expand, so the caller can remember it. */
+	onCollapsedChange?(collapsed: boolean): void;
+}
+
 export class TodoOverlay {
 	private uiCtx: ExtensionUIContext | undefined;
 	private widgetRegistered = false;
 	private tui: TUI | undefined;
+	private collapsed: boolean;
+	private readonly onCollapsedChange: ((collapsed: boolean) => void) | undefined;
 	private completedTaskIdsPendingHide = new Set<number>();
 	private hiddenCompletedTaskIds = new Set<number>();
 	private lastNextId: number | undefined;
+
+	constructor(options: TodoOverlayOptions = {}) {
+		this.collapsed = options.initialCollapsed ?? false;
+		this.onCollapsedChange = options.onCollapsedChange;
+	}
 
 	get terminalRows(): number {
 		return this.tui?.terminal.rows ?? process.stdout.rows ?? 32;
@@ -23,6 +37,23 @@ export class TodoOverlay {
 			this.widgetRegistered = false;
 			this.tui = undefined;
 		}
+	}
+
+	isCollapsed(): boolean {
+		return this.collapsed;
+	}
+
+	/** Collapse or expand the widget. Expanding on purpose reveals completed rows hidden after earlier turns. */
+	setCollapsed(collapsed: boolean): void {
+		const changed = this.collapsed !== collapsed;
+		this.collapsed = collapsed;
+		if (!collapsed) this.hiddenCompletedTaskIds.clear();
+		if (changed) this.onCollapsedChange?.(collapsed);
+		this.update();
+	}
+
+	toggleCollapsed(): void {
+		this.setCollapsed(!this.collapsed);
 	}
 
 	update(): void {
@@ -42,6 +73,7 @@ export class TodoOverlay {
 				WIDGET_KEY,
 				(tui, factoryTheme) => {
 					this.tui = tui;
+					const clickable = tui.mode === "fullscreen";
 					return {
 						render: (width) => {
 							const state = getRenderState();
@@ -52,12 +84,18 @@ export class TodoOverlay {
 								this.uiCtx?.theme ?? factoryTheme,
 								width,
 								tui.terminal.rows,
+								{ collapsed: this.collapsed, clickable },
 							);
 							for (const id of result.displayedIds) {
 								if (state.tasks.find((task) => task.id === id)?.status === "completed")
 									this.completedTaskIdsPendingHide.add(id);
 							}
 							return result.lines;
+						},
+						handleMouse: (event) => {
+							if (!clickable || event.type !== "click" || event.button !== "left") return undefined;
+							this.toggleCollapsed();
+							return { handled: true };
 						},
 						invalidate: () => {},
 					};

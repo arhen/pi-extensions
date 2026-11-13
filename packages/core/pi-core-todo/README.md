@@ -11,7 +11,7 @@ Flat or arbitrarily nested todos for [Pi](https://github.com/earendil-works/pi),
 pi install npm:@arhen/pi-core-todo
 ```
 
-Registers `todo` and `/todos`; use only one todo extension at a time.
+Registers `todo`, `/todos`, and `alt+t`; use only one todo extension at a time. `/todos collapse`, `/todos expand`, and `/todos toggle` control the inline widget, and `alt+t` toggles it from anywhere in the editor; bare `/todos` opens the browser.
 
 ## Nested todos
 
@@ -60,6 +60,26 @@ The above-editor widget uses at most **8 total lines or one quarter of the termi
 Deep indentation compresses with an explicit depth marker; long display paths compress in tool headings. Subjects are sanitized and truncated by visible terminal columns, including ANSI styling, wide characters, and emoji.
 
 Tool calls are single-line previews. Results remain bounded even when expanded: at most 5 collapsed or 8 expanded lines, reduced further for short panes. Mutations show the affected task rather than repeating the whole list. Model-facing `list` output shows up to 100 tasks; `get` provides individual details.
+
+### Collapsing the widget
+
+Collapse the widget to a single summary line — chevron, progress counts, and the active task — with `/todos collapse`. `/todos expand` restores the tree and also reveals completed rows hidden after earlier turns; `/todos toggle` flips the current state.
+
+```text
+▸ ● Todos (2/12) · ◐ Reject cycles · click or alt+t
+```
+
+In fullscreen mode the widget takes clicks: a left click toggles collapse, and the header advertises it. Regular (non-fullscreen) mode does not route widget clicks; use `alt+t` or `/todos toggle`. On macOS, `alt+t` needs the terminal to send Option as Meta (Ghostty `macos-option-as-alt = true`, iTerm2 “Esc+”); otherwise use `/todos toggle`.
+
+### Remembering the collapse state
+
+The widget always remembers its collapsed state in `<agent-dir>/todo-config.json`, shared across sessions and read once at extension load:
+
+```json
+{ "collapsed": false }
+```
+
+Commands, `alt+t`, and widget clicks save the preference. A missing, unreadable, malformed, or non-boolean value defaults to expanded; `/todos expand` restores the tree. Writes are queued, atomically replace the file, and finish before shutdown. Concurrent Pi processes use the last saved decision. If saving fails, the widget still changes for the current session and shows a warning.
 
 ### `/todos` browser
 

@@ -19,6 +19,12 @@
 		"format": "biome check --write .",
 		"release": "bash scripts/release.sh"
 	},
+	"overrides": {
+		"@earendil-works/pi-coding-agent": {
+			"minimatch": "11.0.8",
+			"undici": "8.12.4"
+		}
+	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.5.8",
 		"@earendil-works/pi-agent-core": "^1.0.1",
