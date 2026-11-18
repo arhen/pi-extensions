@@ -160,6 +160,33 @@ describe("resolveChildModel", () => {
 		} as never as Parameters<typeof resolveChildModel>[0];
 		expect(resolveChildModel(sessionCtx, "claude-opus-5")).toBe(models[0]);
 	});
+	test("a slash reference prefers the scoped provider over a colliding full id", () => {
+		const colliding = [
+			{ provider: "anthropic", id: "claude-opus-5-5" },
+			{ provider: "openrouter", id: "anthropic/claude-opus-5-5" },
+		] as never[];
+		const collisionCtx = {
+			model: { provider: "parent", id: "inherited" },
+			modelRegistry: {
+				getAvailable: () => colliding,
+				find: (p: string, id: string) =>
+					colliding.find(
+						(m: never) =>
+							(m as never as { provider: string; id: string }).provider === p &&
+							(m as never as { id: string }).id === id,
+					),
+			},
+		} as never as Parameters<typeof resolveChildModel>[0];
+		expect(resolveChildModel(collisionCtx, "anthropic/claude-opus-5-5")).toBe(colliding[0]);
+	});
+	test("a slash reference still matches a literal full id when no provider matches", () => {
+		const literal = [{ provider: "other", id: "kitchen/cc/claude-haiku" }] as never[];
+		const literalCtx = {
+			model: { provider: "parent", id: "inherited" },
+			modelRegistry: { getAvailable: () => literal, find: () => undefined },
+		} as never as Parameters<typeof resolveChildModel>[0];
+		expect(resolveChildModel(literalCtx, "kitchen/cc/claude-haiku")).toBe(literal[0]);
+	});
 });
 
 describe("ensureUsableModel", () => {

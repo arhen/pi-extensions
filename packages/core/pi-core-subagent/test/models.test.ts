@@ -137,14 +137,12 @@ describe("listSelectableModels", () => {
 		}
 	});
 
-	test("a reference another model's bare id would shadow is reported ambiguous, not listed", () => {
+	test("scoped resolution de-shadows: a slash-bearing id cannot steal another provider's reference", () => {
 		const shadow = fixture({ provider: "9router", id: "anthropic/claude-x" });
 		const real = fixture({ provider: "anthropic", id: "claude-x" });
 		const catalog = listSelectableModels(ctxFor([shadow, real]), { prefer: [], hide: [], path: "f" });
-		expect(catalog.models.map((m) => m.reference)).toEqual(["9router/anthropic/claude-x"]);
-		expect(catalog.ambiguous).toEqual(["anthropic/claude-x"]);
-		const text = renderModelCatalog(catalog).content[0]!.text;
-		expect(text).toContain("Do not pass these references");
+		expect(catalog.models.map((m) => m.reference)).toEqual(["9router/anthropic/claude-x", "anthropic/claude-x"]);
+		expect(catalog.ambiguous ?? []).toEqual([]);
 	});
 
 	test("a registry that cannot resolve an entry is reported as a fault, not a collision", () => {

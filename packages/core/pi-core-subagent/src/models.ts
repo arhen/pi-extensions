@@ -20,12 +20,16 @@ export function resolveChildModel(ctx: ExtensionContext, explicit: string | unde
 		if (hit) return hit;
 	}
 
+	// A slash reference means provider/model: try the scoped lookup first, because a bare-id
+	// match can otherwise hit another provider whose id embeds the same prefix (id collisions).
+	if (ref.includes("/")) {
+		for (let slash = ref.indexOf("/"); slash > 0; slash = ref.indexOf("/", slash + 1)) {
+			const model = ctx.modelRegistry.find(ref.slice(0, slash), ref.slice(slash + 1));
+			if (model) return model;
+		}
+	}
 	const byId = available.find((m) => m.id === ref);
 	if (byId) return byId;
-	for (let slash = ref.indexOf("/"); slash > 0; slash = ref.indexOf("/", slash + 1)) {
-		const model = ctx.modelRegistry.find(ref.slice(0, slash), ref.slice(slash + 1));
-		if (model) return model;
-	}
 	throw new Error(`Model not found: ${ref}`);
 }
 
@@ -85,11 +89,11 @@ export function normalizeCost(cost: unknown): ModelPricing | undefined {
  * `/scoped-models` shows. When no scoping is configured pi reports an empty list, and only then
  * does this fall back to the full available catalogue; `scope` tells the caller which case applies.
  *
- * A reference is listed only when it resolves back to the model it describes. Resolution is not a
- * pure `provider/id` split (a model whose bare id contains a slash can shadow another provider's
- * `provider/id`), so building the string naively could advertise a reference that silently selects
- * a different model. Anything ambiguous is reported as such, and a registry fault is reported
- * separately because the caller's fix differs.
+ * A reference is listed only when it resolves back to the model it describes. The scoped
+ * `provider/id` lookup comes first, so a slash-bearing id cannot shadow another provider's
+ * reference; a mismatch that still remains (registry fault, literal-id collision) means the
+ * reference could silently select a different model, so it is reported as ambiguous rather than
+ * advertised, and a registry fault is reported separately because the caller's fix differs.
  */
 export function listSelectableModels(ctx: ExtensionContext, preferences?: ModelPreferences): ModelCatalog {
 	if (!ctx.modelRegistry) {
