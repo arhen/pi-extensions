@@ -31,6 +31,7 @@ import {
 	visibleWidth,
 } from "@earendil-works/pi-tui";
 import type { PeekTask } from "./peek.ts";
+import type { TaskRef } from "./types.ts";
 
 const POLL_MS = 700;
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -157,7 +158,7 @@ export interface SessionViewOptions {
 	theme: Theme;
 	keybindings: KeybindingsManager;
 	getTasks: () => PeekTask[];
-	startTaskId: string;
+	startTask: TaskRef;
 	leaderBusy: () => boolean;
 	hideThinking: boolean;
 	contextWindow: (provider: string | undefined, model: string | undefined) => number | undefined;
@@ -173,20 +174,20 @@ export interface SessionViewOptions {
  */
 export function createSessionView(opts: SessionViewOptions) {
 	const { tui, theme } = opts;
-	let taskId = opts.startTaskId;
+	let target = opts.startTask;
 	let fromBottom = 0;
 	let viewport = 10;
-	let cache: { key: string; lines: string[]; stats: ChildStats } | undefined;
+	let hideThinking = opts.hideThinking;
+	let cache: { key: string; lines: string[]; stats: ChildStats; root: Container } | undefined;
+	let layout: { width: number; head: number; pad: number; start: number; end: number } | undefined;
 	let notice: { text: string; until: number } | undefined;
 	const timer = setInterval(() => tui.requestRender(), POLL_MS / 7);
 
 	const current = () => {
 		const tasks = opts.getTasks();
-		const index = Math.max(
-			0,
-			tasks.findIndex((t) => t.taskId === taskId),
-		);
-		return { tasks, index, task: tasks[index] };
+		// Task ids repeat across runs, so identity is the pair — never the id alone.
+		const index = tasks.findIndex((t) => t.runId === target.runId && t.taskId === target.taskId);
+		return { tasks, index, task: index === -1 ? undefined : tasks[index] };
 	};
 
 	const editor = new ChildEditor(
@@ -202,6 +203,11 @@ export function createSessionView(opts: SessionViewOptions) {
 		const since = task.startedAt ? ` ${Math.floor((Date.now() - task.startedAt) / 1000)}s` : "";
 		return `${theme.fg("accent", frame ?? "")} ${theme.fg("muted", `${task.agent} is working…${since}`)}`;
 	};
+	editor.onAction("app.thinking.toggle", () => {
+		hideThinking = !hideThinking;
+		cache = undefined;
+		tui.requestRender();
+	});
 	editor.onSubmit = (value) => {
 		const message = value.trim();
 		const { task } = current();
@@ -218,20 +224,21 @@ export function createSessionView(opts: SessionViewOptions) {
 		try {
 			size = statSync(task.sessionFile).size;
 		} catch {}
-		const key = `${task.sessionFile}:${size}:${width}`;
+		const key = `${task.sessionFile}:${size}:${width}:${hideThinking}`;
 		if (cache?.key === key) return cache;
 		const previous = cache?.key.startsWith(`${task.sessionFile}:`) ? cache.lines.length : undefined;
-		const { root, stats } = transcript(task.sessionFile, tui, opts.hideThinking);
+		const { root, stats } = transcript(task.sessionFile, tui, hideThinking);
 		const lines = root.render(width);
 		// Hold the reading position while new output lands below it.
 		if (fromBottom > 0 && previous !== undefined) fromBottom += Math.max(0, lines.length - previous);
-		cache = { key, lines, stats };
+		cache = { key, lines, stats, root };
 		return cache;
 	};
 	const switchTask = (step: number) => {
 		const { tasks, index } = current();
 		if (tasks.length === 0) return;
-		taskId = tasks[(index + step + tasks.length) % tasks.length]!.taskId;
+		const next = tasks[(Math.max(0, index) + step + tasks.length) % tasks.length]!;
+		target = { runId: next.runId, taskId: next.taskId };
 		fromBottom = 0;
 	};
 	const scroll = (rows: number) => {
@@ -316,6 +323,14 @@ export function createSessionView(opts: SessionViewOptions) {
 			fromBottom = Math.min(fromBottom, Math.max(0, lines.length - viewport));
 			const end = lines.length - fromBottom;
 			const window = lines.slice(Math.max(0, end - viewport), end);
+			// Blank filler above a short transcript shifts every row; the click mapping must know it.
+			layout = {
+				width,
+				head: head.length,
+				pad: Math.max(0, viewport - window.length),
+				start: Math.max(0, end - viewport),
+				end,
+			};
 			while (window.length < viewport) window.unshift("");
 			return [
 				...head,
@@ -341,8 +356,22 @@ export function createSessionView(opts: SessionViewOptions) {
 			tui.requestRender();
 		},
 		handleMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {
-			if (event.type !== "wheel" || !event.wheelDelta) return undefined;
-			scroll(-event.wheelDelta);
+			if (event.type === "wheel" && event.wheelDelta) {
+				scroll(-event.wheelDelta);
+				return { handled: true };
+			}
+			if (event.type !== "click" || event.button !== "left" || !layout || !cache || layout.width !== event.width)
+				return undefined;
+			// The transcript is cached as flat lines; hand the click back to its own components, which
+			// is what makes the thinking blocks (MouseRegion) and anything else clickable.
+			const y = layout.start + event.y - layout.head - layout.pad;
+			if (event.y < layout.head + layout.pad || y >= layout.end || y < 0) return undefined;
+			const before = cache.lines.length;
+			if (!cache.root.handleMouse({ ...event, y, height: before })) return undefined;
+			cache.lines = cache.root.render(layout.width);
+			// Keep the clicked line under the pointer as the block grows or shrinks.
+			fromBottom = Math.max(0, fromBottom + cache.lines.length - before);
+			tui.requestRender();
 			return { handled: true };
 		},
 		invalidate(): void {

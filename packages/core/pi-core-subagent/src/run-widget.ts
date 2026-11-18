@@ -2,7 +2,7 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isKeyRelease, Key, matchesKey, type TUI } from "@earendil-works/pi-tui";
 import { readSubagentConfig, writeSubagentConfig } from "./config.ts";
 import { isTalking, SubagentsWidget } from "./format.ts";
-import { type RunSnapshot, TERMINAL } from "./types.ts";
+import { type RunSnapshot, type TaskRef, TERMINAL } from "./types.ts";
 
 const THROTTLE_MS = 150;
 
@@ -24,7 +24,7 @@ export class RunWidget {
 	collapsed = readSubagentConfig().widgetCollapsed === true;
 	showAll = false;
 	/** Set by the extension: opens a task's session view. */
-	onOpen: ((taskId: string) => void) | undefined;
+	onOpen: ((task: TaskRef) => void) | undefined;
 	private component: SubagentsWidget | undefined;
 	/** Keyboard highlight in the widget; undefined while the editor owns the arrows. */
 	selected: number | undefined;
@@ -71,7 +71,7 @@ export class RunWidget {
 			if (row === "more") this.toggleShowAll();
 			else if (row) {
 				this.selected = undefined;
-				this.onOpen?.(row.taskId);
+				this.onOpen?.(row);
 			}
 		} else {
 			this.selected = undefined;
@@ -203,7 +203,7 @@ export class RunWidget {
 					selected: () => this.selected,
 					toggle: clickable ? () => this.toggleCollapsed() : undefined,
 					toggleAll: clickable ? () => this.toggleShowAll() : undefined,
-					open: clickable ? (taskId) => this.onOpen?.(taskId) : undefined,
+					open: clickable ? (task) => this.onOpen?.(task) : undefined,
 				});
 				return this.component;
 			},

@@ -6,6 +6,12 @@ export const TERMINAL: TaskStatus[] = ["completed", "failed", "aborted"];
 
 export const MAX_TASKS = 16;
 
+/** A task's identity. Task ids repeat across runs (`task_1`, `task_2`…), so both parts are needed. */
+export interface TaskRef {
+	runId: string;
+	taskId: string;
+}
+
 export interface UsageStats {
 	input: number;
 	output: number;

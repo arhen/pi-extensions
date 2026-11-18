@@ -48,6 +48,7 @@ import {
 	type RunMode,
 	type RunSnapshot,
 	type RunStatus,
+	type TaskRef,
 	type TaskSnapshot,
 	type TaskStatus,
 	TERMINAL,
@@ -168,7 +169,7 @@ export class SubagentManager {
 		return false;
 	}
 
-	set onWidgetOpen(open: ((taskId: string) => void) | undefined) {
+	set onWidgetOpen(open: ((task: TaskRef) => void) | undefined) {
 		this.widget.onOpen = open;
 	}
 

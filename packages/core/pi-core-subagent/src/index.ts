@@ -28,7 +28,7 @@ import {
 	type SubagentParamsShape,
 } from "./schemas.ts";
 import { createSessionView } from "./session-view.ts";
-import { type ModelCatalog, type RunDetails, type RunSnapshot, TERMINAL } from "./types.ts";
+import { type ModelCatalog, type RunDetails, type RunSnapshot, type TaskRef, TERMINAL } from "./types.ts";
 import { cleanupMerged, ownerAlive, reapDeadWorktrees, repoRoot, sweepStale } from "./worktree.ts";
 
 function unreportedIntercom(run: RunSnapshot, messages: ParkedMsg[], covered: ReadonlySet<string>): ParkedMsg[] {
@@ -76,7 +76,7 @@ export default function (pi: ExtensionAPI) {
 			}));
 
 	// Never ctx.switchSession(): it aborts the leader's turn and its session_shutdown kills every child.
-	const openSession = async (ctx: ExtensionContext, taskId: string) => {
+	const openSession = async (ctx: ExtensionContext, startTask: TaskRef) => {
 		if (ctx.mode !== "tui") return;
 		await ctx.ui.custom<void>(
 			(tui, theme, keybindings, done) =>
@@ -87,7 +87,7 @@ export default function (pi: ExtensionAPI) {
 					getTasks,
 					contextWindow: (provider, model) =>
 						provider && model ? ctx.modelRegistry.find(provider, model)?.contextWindow : undefined,
-					startTaskId: taskId,
+					startTask,
 					leaderBusy: () => !ctx.isIdle(),
 					hideThinking: pi.getSettings().hideThinkingBlock === true,
 					send: (task, message) => manager.messageTask(task.runId, task.taskId, message, ctx),
@@ -116,7 +116,7 @@ export default function (pi: ExtensionAPI) {
 					ctx.mode === "tui"
 						? (t) => {
 								done(undefined);
-								void openSession(ctx, t.taskId);
+								void openSession(ctx, { runId: t.runId, taskId: t.taskId });
 							}
 						: undefined,
 				),
@@ -221,7 +221,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_start", async (_event, ctx) => {
-		manager.onWidgetOpen = (taskId) => void openSession(ctx, taskId);
+		manager.onWidgetOpen = (task) => void openSession(ctx, task);
 		if (ctx.mode === "tui") {
 			ctx.ui.onTerminalInput((data) =>
 				manager.widgetKey(data, ctx.ui.getEditorText() === "") ? { consume: true } : undefined,
