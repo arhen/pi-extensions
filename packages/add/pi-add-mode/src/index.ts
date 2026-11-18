@@ -125,7 +125,7 @@ export default function piMode(pi: ExtensionAPI): void {
 		}),
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			try {
-				const { text, model, thinking, via } = await engine.consultAdvisor(
+				const { text, model, thinking, usage, via } = await engine.consultAdvisor(
 					params.question,
 					ctx,
 					signal ?? ctx.signal,
@@ -134,6 +134,7 @@ export default function piMode(pi: ExtensionAPI): void {
 				return {
 					content: [{ type: "text" as const, text }],
 					details: { model, thinking, via },
+					...(usage ? { usage } : {}),
 				};
 			} catch (error) {
 				return {

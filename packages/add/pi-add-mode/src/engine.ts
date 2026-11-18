@@ -1,4 +1,4 @@
-import { clampThinkingLevel, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type Model, type ModelThinkingLevel, type Usage } from "@earendil-works/pi-ai";
 import type {
 	BeforeAgentStartEvent,
 	ExtensionAPI,
@@ -68,6 +68,7 @@ export interface AdvisorResult {
 	text: string;
 	model: string;
 	thinking?: ModeThinking;
+	usage?: Usage;
 	via: "subagent" | "direct";
 }
 
@@ -80,11 +81,20 @@ interface AdvisorTaskSnapshot {
 	agentFile?: string;
 }
 
+interface AdvisorRunUsageStats {
+	input: number;
+	output: number;
+	cacheRead: number;
+	cacheWrite: number;
+	cost: number;
+	turns: number;
+}
+
 interface AdvisorOutcome {
 	isError: boolean;
 	result?: {
 		content?: { type: string; text?: string }[];
-		details?: { run?: { id?: string; tasks?: AdvisorTaskSnapshot[] } };
+		details?: { run?: { id?: string; tasks?: AdvisorTaskSnapshot[]; aggregateUsage?: AdvisorRunUsageStats } };
 	};
 }
 
@@ -93,6 +103,18 @@ interface AdvisorOutcome {
  * summary text, a failed preflight silently swaps in the leader model (`modelNote`), and a repo agent
  * file can take over the prompt and model (`agentFile`) — all three fall back to the one-shot call.
  */
+function statsUsage(stats: AdvisorRunUsageStats | undefined): Usage | undefined {
+	if (!stats) return undefined;
+	return {
+		input: stats.input,
+		output: stats.output,
+		cacheRead: stats.cacheRead,
+		cacheWrite: stats.cacheWrite,
+		totalTokens: stats.input + stats.output + stats.cacheRead + stats.cacheWrite,
+		cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: stats.cost },
+	};
+}
+
 function advisorTask(
 	outcome: AdvisorOutcome,
 	provider: string,
@@ -305,7 +327,13 @@ export class ModeEngine {
 		const split = splitModelRef(ref);
 		const model = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
 		if (!model || !split) throw new Error(`Advisor model ${ref} not found in pi's registry.`);
+		if (!ctx.modelRegistry.hasConfiguredAuth(model)) {
+			throw new Error(`Advisor model ${ref} has no configured credentials.`);
+		}
 		const thinking = clampThinkingLevel(model, (mode.advisorThinking ?? "off") as ModelThinkingLevel);
+		const wrap = (text: string, via: "subagent" | "direct") => `<advisor model="${ref}" via="${via}">
+${text}
+</advisor>`;
 
 		const nested = ctx as ExtensionContext & {
 			executeTool?: (name: string, args: unknown, options?: { signal?: AbortSignal }) => Promise<AdvisorOutcome>;
@@ -337,20 +365,30 @@ export class ModeEngine {
 				if (!("task" in checked)) await this.cancelAdvisorRun(outcome, nested);
 				if ("task" in checked) {
 					const text = (checked.task.finalText ?? "").trim();
-					if (text) return { text, model: ref, thinking, via: "subagent" };
+					if (text) {
+						return {
+							text: wrap(text, "subagent"),
+							model: ref,
+							thinking,
+							usage: statsUsage(outcome.result?.details?.run?.aggregateUsage),
+							via: "subagent",
+						};
+					}
 				}
+				const direct = await this.consultDirect(
+					model,
+					ref,
+					thinking,
+					question,
+					ctx,
+					signal,
+					"task" in checked ? "empty advisor response" : checked.reason,
+				);
 				return {
-					text: await this.consultDirect(
-						model,
-						ref,
-						thinking,
-						question,
-						ctx,
-						signal,
-						"task" in checked ? "empty advisor response" : checked.reason,
-					),
+					text: wrap(direct.text, "direct"),
 					model: ref,
 					thinking,
+					usage: direct.usage,
 					via: "direct",
 				};
 			} finally {
@@ -358,18 +396,20 @@ export class ModeEngine {
 			}
 		}
 
+		const direct = await this.consultDirect(
+			model,
+			ref,
+			thinking,
+			question,
+			ctx,
+			signal,
+			"subagent tool unavailable; answered without repo access",
+		);
 		return {
-			text: await this.consultDirect(
-				model,
-				ref,
-				thinking,
-				question,
-				ctx,
-				signal,
-				"subagent tool unavailable; answered without repo access",
-			),
+			text: wrap(direct.text, "direct"),
 			model: ref,
 			thinking,
+			usage: direct.usage,
 			via: "direct",
 		};
 	}
@@ -399,7 +439,7 @@ export class ModeEngine {
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
 		note?: string,
-	): Promise<string> {
+	): Promise<{ text: string; usage?: Usage }> {
 		// ponytail: "off" omits `reasoning`, which disables thinking on every transport.
 		// Ceiling: per-call override is out of scope; add an `effort` param to the advisor tool for that.
 		const reasoning = thinking && thinking !== "off" ? thinking : undefined;
@@ -428,7 +468,10 @@ export class ModeEngine {
 			.join("\n")
 			.trim();
 		if (!text) throw new Error(`Advisor ${ref} returned no text (stopReason=${message.stopReason}).`);
-		return note ? `[isolated one-shot: ${note}]\n\n${text}` : text;
+		return {
+			text: note ? `[isolated one-shot: ${note}]\n\n${text}` : text,
+			usage: message.usage as Usage | undefined,
+		};
 	}
 
 	/**
@@ -463,7 +506,9 @@ export class ModeEngine {
 		if (!this.snapshot) return;
 		if (this.snapshot.model) await this.pi.setModel(this.snapshot.model);
 		this.pi.setThinkingLevel(this.snapshot.thinking);
-		this.pi.setActiveTools(this.snapshot.tools);
+		// Default mode has no advisor; snapshots from versions that registered the tool by default
+		// would otherwise re-activate a tool that can only error.
+		this.pi.setActiveTools(this.snapshot.tools.filter((name) => name !== "advisor"));
 	}
 
 	private applyVisuals(ctx: ExtensionContext): void {

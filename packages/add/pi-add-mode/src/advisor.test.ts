@@ -9,6 +9,7 @@ function fakeRegistry(captured: { reasoning?: unknown; signal?: unknown }) {
 		find: (provider: string, id: string) =>
 			provider === "p" && (id === "m" || id === "other") ? (id === "m" ? model : other) : undefined,
 		getAvailable: () => [model, other],
+		hasConfiguredAuth: () => true,
 		streamSimple: (_m: unknown, _ctx: unknown, options?: Record<string, unknown>) => {
 			captured.reasoning = options?.reasoning;
 			captured.signal = options?.signal;
@@ -27,7 +28,11 @@ function completedRun(finalText: string, task?: Record<string, unknown>) {
 		isError: false,
 		result: {
 			details: {
-				run: { id: "run-ok", tasks: [{ status: "completed", finalText, model: "m", provider: "p", ...task }] },
+				run: {
+					id: "run-ok",
+					tasks: [{ status: "completed", finalText, model: "m", provider: "p", ...task }],
+					aggregateUsage: { input: 100, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.01, turns: 1 },
+				},
 			},
 		},
 	};
@@ -119,7 +124,10 @@ describe("advisor mode fields", () => {
 		const subagent: { args?: unknown } = {};
 		const engine = engineWithAdvisor("p/m", "high");
 		const result = await engine.consultAdvisor("q?", ctxWith(captured, subagent), undefined, "call-1");
-		expect(result).toMatchObject({ text: "advisor says hi", model: "p/m", thinking: "high", via: "subagent" });
+		expect(result).toMatchObject({ model: "p/m", thinking: "high", via: "subagent" });
+		expect(result.text).toContain("advisor says hi");
+		expect(result.text).toContain('<advisor model="p/m" via="subagent">');
+		expect(result.usage).toMatchObject({ input: 100, output: 20, totalTokens: 120, cost: { total: 0.01 } });
 		expect(subagent.args).toMatchObject({
 			agent: "advisor",
 			task: "q?",
@@ -227,6 +235,44 @@ describe("advisor mode fields", () => {
 		expect(result.via).toBe("direct");
 		expect(result.text).toContain("subagent tool unavailable");
 		expect(result.text).toContain("advice");
+		expect(result.text).toContain('<advisor model="p/m" via="direct">');
+	});
+
+	test("an advisor model without credentials is rejected before any call is paid for", async () => {
+		const captured: { reasoning?: unknown } = {};
+		const ctx = ctxWith(captured);
+		(ctx as unknown as { modelRegistry: { hasConfiguredAuth: () => boolean } }).modelRegistry.hasConfiguredAuth = () =>
+			false;
+		await expect(engineWithAdvisor("p/m").consultAdvisor("q?", ctx, undefined)).rejects.toThrow(
+			"no configured credentials",
+		);
+	});
+
+	test("restoring the default mode strips the advisor tool from a stale snapshot", async () => {
+		const active: string[][] = [];
+		const pi = {
+			getThinkingLevel: () => "medium",
+			getActiveTools: () => ["read", "advisor", "bash"],
+			getAllTools: () => [{ name: "read" }, { name: "advisor" }],
+			setActiveTools: (tools: string[]) => active.push(tools),
+			setThinkingLevel: () => {},
+			setModel: async () => true,
+			events: { emit: () => {} },
+		} as never;
+		const ui = {
+			theme: {},
+			setWorkingMessage: () => {},
+			setWorkingIndicator: () => {},
+			setWidget: () => {},
+		};
+		const engine = new ModeEngine(pi);
+		(engine as unknown as { snapshot: unknown }).snapshot = {
+			model: undefined,
+			thinking: "high",
+			tools: ["read", "advisor", "bash"],
+		};
+		await engine.activate(undefined, { modelRegistry: { find: () => undefined }, ui } as never);
+		expect(active.at(-1)).toEqual(["read", "bash"]);
 	});
 
 	test("a failed advisor run is not returned as advice", async () => {
