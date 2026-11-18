@@ -64,15 +64,15 @@ binds both to tab switching — so they usually do nothing.
 | `model` | `provider/model-id` or unset = session model |
 | `thinking` | effort while the mode is active: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, unset = session level |
 | `subagentModel` | `provider/model-id` for subagent tasks; unset = leave the call's model |
-| `subagentThinking` | effort for subagent tasks; unset = leave the call's level |
+| `subagentThinking` | effort for subagent tasks; unset = leave the call's level; clamped to the model's ceiling when applied |
 | `advisorModel` | `provider/model-id` for the `advisor` second-opinion tool; unset = no advisor |
-| `advisorThinking` | effort for advisor calls; unset = the model's default effort |
+| `advisorThinking` | effort for advisor calls; unset = thinking off (clamped to the model's ceiling when set) |
 | `leaderOverride` | `false` (default): subagent model/effort always applied. `true`: the leader may pick another per task |
 
 Picking a model in the editor always asks for the effort right after; cancelling the effort picker aborts the model
 change. The effort list follows the model: `off` only for non-reasoning models, minus levels the model marks
-unsupported. Same for the advisor model: pick the model, then the effort, or keep `(default)` to let the
-advisor run at the model's default effort.
+unsupported. Same for the advisor model: pick the model, then the effort, or keep `(default)` to run the
+advisor with thinking off.
 
 ## Advisor
 
@@ -83,8 +83,10 @@ The advisor is read-only: when `@arhen/pi-core-subagent` is installed it runs as
 on the advisor model, so it reads and searches the repo itself — only add context it cannot find
 (decisions, constraints, off-repo facts). Without the subagent tool it falls back to an isolated one-shot
 call that sees only the question. Either way the leader must verify the advice against the code before
-acting. With no effort set, the request omits the effort parameter so the provider applies the model's
-default.
+acting. Effort is off unless the mode sets it, and any set effort is clamped to what the advisor model
+supports (activating a mode with an unsupported pair warns and reports the level it will actually use).
+Advisor subagent runs carry a 10-minute ceiling, and a run that falls back is cancelled instead of
+lingering.
 
 The `advisor` tool is dormant unless the mode sets `advisorModel` (it activates on mode switch and
 deactivates when leaving the mode). Only a completed advisor run counts: failed runs, substituted models,
@@ -117,6 +119,8 @@ the call's own model.
     "thinking": "xhigh",
     "subagentModel": "openai-codex/gpt-6.1-luna",
     "subagentThinking": "low",
+    "advisorModel": "openai/gpt-6.2-sol",
+    "advisorThinking": "high",
     "leaderOverride": false
   }
 }

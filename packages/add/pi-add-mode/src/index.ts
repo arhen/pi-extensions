@@ -115,7 +115,7 @@ export default function piMode(pi: ExtensionAPI): void {
 		name: "advisor",
 		label: "Advisor",
 		description:
-			"Second opinion from the mode's advisor model (read-only: it reads and searches the repo itself via subagent when available, otherwise an isolated one-shot call). Configure per mode with /mode edit; effort is optional and defaults to the model's default when unset.",
+			"Second opinion from the mode's advisor model (read-only: it reads and searches the repo itself via subagent when available, otherwise an isolated one-shot call). Configure per mode with /mode edit; effort is off unless the mode sets it.",
 		promptSnippet: "Ask the mode's advisor model for a second opinion (read-only).",
 		// Dormant until a mode with an advisor is active (engine.activate adds it); the mode's prompt
 		// section carries the usage guidance, so no promptGuidelines here.
@@ -187,8 +187,8 @@ export default function piMode(pi: ExtensionAPI): void {
 		engine.onBeforeAgentStart(event);
 	});
 
-	pi.on("tool_call", (event) => {
-		engine.onToolCall(event);
+	pi.on("tool_call", (event, ctx) => {
+		engine.onToolCall(event, ctx);
 	});
 
 	pi.on("session_shutdown", async (_event, ctx) => {

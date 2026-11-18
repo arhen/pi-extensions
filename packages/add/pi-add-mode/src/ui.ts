@@ -234,7 +234,7 @@ async function pickThinking(
 	model: ThinkingModel | undefined,
 ): Promise<ModeThinking | "" | undefined> {
 	const available = thinkingLevelsFor(model);
-	const levels = THINKING_LEVELS.filter((level) => available.includes(level) || level === current);
+	const levels = THINKING_LEVELS.filter((level) => available.includes(level));
 	const options = [
 		`${current ? "" : "✓ "}(default)`,
 		...levels.map((level) => `${current === level ? "✓ " : ""}${level}`),
@@ -474,6 +474,11 @@ export async function editMode(
 				break;
 			}
 			case 8: {
+				if (!mode.advisorModel) {
+					ctx.ui.notify("Set an advisor model first.", "warning");
+					committed = false;
+					break;
+				}
 				const thinking = await pickThinking(
 					ctx,
 					`Advisor effort for "${name}"`,
@@ -481,10 +486,7 @@ export async function editMode(
 					resolveModel(ctx, mode.advisorModel),
 				);
 				if (thinking === undefined) committed = false;
-				else if (!mode.advisorModel) {
-					ctx.ui.notify("Set an advisor model first.", "warning");
-					committed = false;
-				} else mode.advisorThinking = thinking || undefined;
+				else mode.advisorThinking = thinking || undefined;
 				break;
 			}
 			case 9:

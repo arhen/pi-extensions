@@ -12,12 +12,20 @@ import {
 	applyResumeOverrides,
 	applySubagentModel,
 	applySubagentThinking,
+	clampSubagentThinking,
 	formatStandby,
 	formatWorkingMessage,
 	resolveToolNames,
 } from "./logic.ts";
 import type { ModeStore } from "./store.ts";
-import { DEFAULT_MODE_NAME, type Mode, STATE_ENTRY_TYPE, WIDGET_KEY, WORKING_MESSAGE_EVENT } from "./types.ts";
+import {
+	DEFAULT_MODE_NAME,
+	type Mode,
+	type ModeThinking,
+	STATE_ENTRY_TYPE,
+	WIDGET_KEY,
+	WORKING_MESSAGE_EVENT,
+} from "./types.ts";
 
 type ThinkingLevel = ReturnType<ExtensionAPI["getThinkingLevel"]>;
 
@@ -51,13 +59,15 @@ function splitModelRef(ref: string): [string, string] | undefined {
 	return [ref.slice(0, slash), ref.slice(slash + 1)];
 }
 
+const ADVISOR_MAX_RUNTIME_MS = 10 * 60_000;
+
 const ADVISOR_PROMPT =
 	"You are a read-only advisor giving a second opinion. Read and search the repo (read, grep, find, ls) to gather context, then answer the question concisely with a recommendation. Never edit, write, or run mutating commands. Never use ask_parent; if context is missing, say what is missing in your final answer instead of guessing.";
 
 export interface AdvisorResult {
 	text: string;
 	model: string;
-	thinking?: string;
+	thinking?: ModeThinking;
 	via: "subagent" | "direct";
 }
 
@@ -74,7 +84,7 @@ interface AdvisorOutcome {
 	isError: boolean;
 	result?: {
 		content?: { type: string; text?: string }[];
-		details?: { run?: { tasks?: AdvisorTaskSnapshot[] } };
+		details?: { run?: { id?: string; tasks?: AdvisorTaskSnapshot[] } };
 	};
 }
 
@@ -90,7 +100,7 @@ function advisorTask(
 ): { task: AdvisorTaskSnapshot } | { reason: string } {
 	if (outcome.isError) return { reason: "subagent call failed" };
 	const task = outcome.result?.details?.run?.tasks?.[0];
-	if (!task || task.status !== "completed") return { reason: `advisor run ${task?.status ?? "unknown"}` };
+	if (task?.status !== "completed") return { reason: `advisor run ${task?.status ?? "unknown"}` };
 	if (task.modelNote || task.model !== modelId || (task.provider !== undefined && task.provider !== provider))
 		return { reason: "advisor model was substituted" };
 	if (task.agentFile) return { reason: `agent file ${task.agentFile} took over the advisor` };
@@ -155,11 +165,43 @@ export class ModeEngine {
 			await this.pi.setModel(this.snapshot.model);
 		}
 
+		if (target.advisorModel) {
+			const split = splitModelRef(target.advisorModel);
+			const advisor = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
+			if (!advisor) {
+				notes.push(`advisor model ${target.advisorModel} not found`);
+			} else if (target.advisorThinking) {
+				const clamped = clampThinkingLevel(advisor, target.advisorThinking as ModelThinkingLevel);
+				if (clamped !== target.advisorThinking) {
+					notes.push(
+						`advisor thinking ${target.advisorThinking} unsupported on ${target.advisorModel}; runs at ${clamped}`,
+					);
+				}
+			}
+		}
+		if (target.subagentModel && target.subagentThinking) {
+			const split = splitModelRef(target.subagentModel);
+			const sub = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
+			if (sub) {
+				const clamped = clampThinkingLevel(sub, target.subagentThinking as ModelThinkingLevel);
+				if (clamped !== target.subagentThinking) {
+					notes.push(
+						`subagent thinking ${target.subagentThinking} unsupported on ${target.subagentModel}; runs at ${clamped}`,
+					);
+				}
+			}
+		}
+
 		const known = this.pi.getAllTools().map((tool) => tool.name);
 		const resolved = resolveToolNames(target.tools, this.snapshot.tools, known);
-		// The advisor tool stays dormant unless the mode configures it; explicit tool lists that name
-		// it keep working because it is already in `resolved` via the known-tools intersection.
-		if (target.advisorModel && known.includes("advisor") && !resolved.includes("advisor")) resolved.push("advisor");
+		// The advisor tool activates only for modes that configure it; a mode that names it without an
+		// advisor model would register a tool that can only error, so strip it.
+		if (!target.advisorModel) {
+			const index = resolved.indexOf("advisor");
+			if (index >= 0) resolved.splice(index, 1);
+		} else if (known.includes("advisor") && !resolved.includes("advisor")) {
+			resolved.push("advisor");
+		}
 		this.pi.setActiveTools(resolved);
 		this.pi.setThinkingLevel(target.thinking ?? this.snapshot.thinking);
 
@@ -224,9 +266,7 @@ export class ModeEngine {
 		].filter((text): text is string => Boolean(text));
 		if (mode.advisorModel) {
 			const effort =
-				mode.advisorThinking && mode.advisorThinking !== "off"
-					? `${mode.advisorThinking} effort`
-					: "the model's default effort";
+				mode.advisorThinking && mode.advisorThinking !== "off" ? `${mode.advisorThinking} effort` : "thinking off";
 			sections.push(
 				`Advisor (second opinion, read-only) runs on ${mode.advisorModel} with ${effort}.\n` +
 					`Use the \`advisor\` tool when you are uncertain, before risky or irreversible edits, and to review a plan before implementing it.\n` +
@@ -265,7 +305,7 @@ export class ModeEngine {
 		const split = splitModelRef(ref);
 		const model = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
 		if (!model || !split) throw new Error(`Advisor model ${ref} not found in pi's registry.`);
-		const thinking = mode.advisorThinking && mode.advisorThinking !== "off" ? mode.advisorThinking : undefined;
+		const thinking = clampThinkingLevel(model, (mode.advisorThinking ?? "off") as ModelThinkingLevel);
 
 		const nested = ctx as ExtensionContext & {
 			executeTool?: (name: string, args: unknown, options?: { signal?: AbortSignal }) => Promise<AdvisorOutcome>;
@@ -287,12 +327,14 @@ export class ModeEngine {
 						prompt: ADVISOR_PROMPT,
 						task: question,
 						model: ref,
-						...(thinking ? { thinking } : {}),
+						thinking,
+						maxRuntimeMs: ADVISOR_MAX_RUNTIME_MS,
 						autoAwait: true,
 					},
 					signal ? { signal } : {},
 				);
 				const checked = advisorTask(outcome, split[0], split[1]);
+				if (!("task" in checked)) await this.cancelAdvisorRun(outcome, nested);
 				if ("task" in checked) {
 					const text = (checked.task.finalText ?? "").trim();
 					if (text) return { text, model: ref, thinking, via: "subagent" };
@@ -317,26 +359,50 @@ export class ModeEngine {
 		}
 
 		return {
-			text: await this.consultDirect(model, ref, thinking, question, ctx, signal),
+			text: await this.consultDirect(
+				model,
+				ref,
+				thinking,
+				question,
+				ctx,
+				signal,
+				"subagent tool unavailable; answered without repo access",
+			),
 			model: ref,
 			thinking,
 			via: "direct",
 		};
 	}
 
-	/** Isolated one-shot call: the advisor sees only the question. Unset effort sends the model default. */
+	/** Best-effort: stop a spawned advisor run that will not be used, before falling back. */
+	private async cancelAdvisorRun(
+		outcome: AdvisorOutcome,
+		nested: ExtensionContext & {
+			executeTool?: (name: string, args: unknown, options?: { signal?: AbortSignal }) => Promise<AdvisorOutcome>;
+		},
+	): Promise<void> {
+		const runId = outcome.result?.details?.run?.id;
+		if (!runId) return;
+		try {
+			await nested.executeTool?.("subagent_cancel", { runId });
+		} catch {
+			// The run still ends at maxRuntimeMs.
+		}
+	}
+
+	/** Isolated one-shot call: the advisor sees only the question. Effort is off unless the mode sets it. */
 	private async consultDirect(
 		model: Model<any>,
 		ref: string,
-		thinking: string | undefined,
+		thinking: ModeThinking | undefined,
 		question: string,
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
 		note?: string,
 	): Promise<string> {
-		// ponytail: unset/off effort omits `reasoning`, so the provider applies the model default.
+		// ponytail: "off" omits `reasoning`, which disables thinking on every transport.
 		// Ceiling: per-call override is out of scope; add an `effort` param to the advisor tool for that.
-		const reasoning = thinking ? clampThinkingLevel(model, thinking as ModelThinkingLevel) : undefined;
+		const reasoning = thinking && thinking !== "off" ? thinking : undefined;
 		const stream = ctx.modelRegistry.streamSimple(
 			model,
 			{
@@ -350,7 +416,7 @@ export class ModeEngine {
 					},
 				],
 			},
-			reasoning && reasoning !== "off" ? { reasoning, signal } : { signal },
+			reasoning ? { reasoning, signal } : { signal },
 		);
 		const message = await stream.result();
 		if (message.stopReason === "error" || message.stopReason === "aborted") {
@@ -369,7 +435,7 @@ export class ModeEngine {
 	 * Fires for direct calls and for calls made from codemode (`tools.subagent(...)`), which Pi runs
 	 * through the same hook. A matched agent file's frontmatter `model` still wins inside the subagent.
 	 */
-	onToolCall(event: ToolCallEvent): void {
+	onToolCall(event: ToolCallEvent, ctx?: ExtensionContext): void {
 		const mode = this.current;
 		if (!mode) return;
 		// Advisor delegation is internal machinery, not a leader subagent request: never let mode
@@ -380,9 +446,17 @@ export class ModeEngine {
 		if (event.toolName === "subagent") {
 			if (mode.subagentModel) applySubagentModel(input, mode.subagentModel, force);
 			if (mode.subagentThinking) applySubagentThinking(input, mode.subagentThinking, force);
+			clampSubagentThinking(input, (ref) => this.resolveModelRef(ref, ctx));
 		} else if (event.toolName === "resume_subagent" && force) {
 			applyResumeOverrides(input, mode.subagentModel, mode.subagentThinking);
 		}
+	}
+
+	private resolveModelRef(ref: string, ctx?: ExtensionContext): Model<any> | undefined {
+		if (!ctx?.modelRegistry) return undefined;
+		const split = splitModelRef(ref);
+		if (split) return ctx.modelRegistry.find(split[0], split[1]);
+		return ctx.modelRegistry.getAvailable().find((candidate) => candidate.id === ref);
 	}
 
 	private async restoreSnapshot(): Promise<void> {

@@ -1,4 +1,10 @@
 import {
+	clampThinkingLevel,
+	getSupportedThinkingLevels,
+	type Model,
+	type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
+import {
 	BUILD_TOOLS,
 	DEFAULT_MODE_NAME,
 	MANAGED_TOOLS,
@@ -43,13 +49,12 @@ export function normalizeThinking(value: unknown): ModeThinking | undefined {
 		: undefined;
 }
 
-/** Thinking levels a model accepts: `off` only for non-reasoning models, minus explicitly unsupported levels. */
+/** Thinking levels a model accepts, per pi-ai: null map entries drop, xhigh/max only when mapped. */
 export function thinkingLevelsFor(
 	model: { reasoning: boolean; thinkingLevelMap?: Record<string, string | null> } | undefined,
 ): ModeThinking[] {
 	if (!model) return [...THINKING_LEVELS];
-	if (!model.reasoning) return ["off"];
-	return THINKING_LEVELS.filter((level) => model.thinkingLevelMap?.[level] !== null);
+	return getSupportedThinkingLevels(model as Model<any>) as ModeThinking[];
 }
 
 export function normalizeModeEntry(rawName: string, raw: unknown): Mode | undefined {
@@ -138,6 +143,27 @@ export function applySubagentModel(input: Record<string, unknown>, model: string
 /** Same as {@link applySubagentModel}, for the thinking level. */
 export function applySubagentThinking(input: Record<string, unknown>, thinking: ModeThinking, force = false): boolean {
 	return patchSubagentTasks(input, (task) => setField(task, "thinking", thinking, force));
+}
+
+/**
+ * Clamp every subagent task's thinking level to what its named model supports. Unclamped forced pairs
+ * (a mode pinning a model plus a level the model rejects) otherwise die at spawn with no fallback.
+ */
+export function clampSubagentThinking(
+	input: Record<string, unknown>,
+	resolve: (ref: string) => Model<any> | undefined,
+): boolean {
+	return patchSubagentTasks(input, (task) => {
+		const ref = typeof task.model === "string" ? task.model : undefined;
+		const level = typeof task.thinking === "string" ? (task.thinking as ModelThinkingLevel) : undefined;
+		if (!ref || !level) return false;
+		const model = resolve(ref);
+		if (!model) return false;
+		const clamped = clampThinkingLevel(model, level);
+		if (clamped === level) return false;
+		task.thinking = clamped;
+		return true;
+	});
 }
 
 /**

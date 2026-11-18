@@ -3,6 +3,7 @@ import {
 	applyResumeOverrides,
 	applySubagentModel,
 	applySubagentThinking,
+	clampSubagentThinking,
 	cycleList,
 	describeTools,
 	formatStandby,
@@ -209,17 +210,46 @@ describe("thinking", () => {
 		expect(normalizeThinking(3)).toBeUndefined();
 	});
 
-	test("thinkingLevelsFor follows model reasoning support", () => {
+	test("thinkingLevelsFor matches pi-ai support: null entries drop, xhigh/max only when mapped", () => {
 		expect(thinkingLevelsFor(undefined)).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 		expect(thinkingLevelsFor({ reasoning: false })).toEqual(["off"]);
-		expect(thinkingLevelsFor({ reasoning: true })).toEqual(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+		expect(thinkingLevelsFor({ reasoning: true })).toEqual(["off", "minimal", "low", "medium", "high"]);
 		expect(thinkingLevelsFor({ reasoning: true, thinkingLevelMap: { minimal: null, low: null } })).toEqual([
 			"off",
 			"medium",
 			"high",
-			"xhigh",
-			"max",
 		]);
+		expect(
+			thinkingLevelsFor({ reasoning: true, thinkingLevelMap: { high: "high", xhigh: "xhigh", max: null } }),
+		).toEqual(["off", "minimal", "low", "medium", "high", "xhigh"]);
+	});
+
+	test("clampSubagentThinking clamps each task to its named model's ceiling", () => {
+		const capped = { reasoning: true, thinkingLevelMap: { high: "high", xhigh: "xhigh", max: null } };
+		const full = { reasoning: true, thinkingLevelMap: { high: "high", xhigh: "xhigh", max: "max" } };
+		const input: Record<string, unknown> = {
+			tasks: [
+				{ agent: "a", task: "t", model: "p/capped", thinking: "max" },
+				{ agent: "b", task: "t", model: "p/full", thinking: "max" },
+				{ agent: "c", task: "t", model: "p/capped" },
+			],
+		};
+		expect(
+			clampSubagentThinking(input, (ref) =>
+				ref === "p/capped" ? (capped as never) : ref === "p/full" ? (full as never) : undefined,
+			),
+		).toBe(true);
+		expect(input.tasks).toEqual([
+			{ agent: "a", task: "t", model: "p/capped", thinking: "xhigh" },
+			{ agent: "b", task: "t", model: "p/full", thinking: "max" },
+			{ agent: "c", task: "t", model: "p/capped" },
+		]);
+	});
+
+	test("clampSubagentThinking leaves unknown models and missing levels alone", () => {
+		const input: Record<string, unknown> = { task: "t", model: "p/gone", thinking: "max" };
+		expect(clampSubagentThinking(input, () => undefined)).toBe(false);
+		expect(input).toEqual({ task: "t", model: "p/gone", thinking: "max" });
 	});
 
 	test("subagent thinking fills the gaps, leaving explicit values alone", () => {
