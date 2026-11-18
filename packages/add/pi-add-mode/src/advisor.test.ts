@@ -19,11 +19,22 @@ function fakeRegistry(captured: { reasoning?: unknown; signal?: unknown }) {
 	};
 }
 
+function completedRun(finalText: string, task?: Record<string, unknown>) {
+	return {
+		isError: false,
+		result: {
+			details: {
+				run: { tasks: [{ status: "completed", finalText, model: "m", provider: "p", ...task }] },
+			},
+		},
+	};
+}
+
 function ctxWith(
 	captured: { reasoning?: unknown; signal?: unknown },
 	subagent?: {
 		args?: unknown;
-		outcome?: { isError: boolean; result?: { content: { type: string; text?: string }[] } };
+		outcome?: { isError: boolean; result?: { details?: { run?: { tasks?: unknown[] } } } };
 	},
 ) {
 	return {
@@ -34,12 +45,7 @@ function ctxWith(
 					executeTool: async (name: string, args: unknown) => {
 						expect(name).toBe("subagent");
 						subagent.args = args;
-						return (
-							subagent.outcome ?? {
-								isError: false,
-								result: { content: [{ type: "text", text: "advisor says hi" }] },
-							}
-						);
+						return subagent.outcome ?? completedRun("advisor says hi");
 					},
 				}
 			: {}),
@@ -135,7 +141,7 @@ describe("advisor mode fields", () => {
 			subagent.args = args;
 			nestedInput = { ...(args as Record<string, unknown>) };
 			engine.onToolCall({ toolName: "subagent", input: nestedInput, parentToolCallId: "call-9" } as never);
-			return { isError: false, result: { content: [{ type: "text", text: "ok" }] } };
+			return completedRun("ok");
 		};
 		await engine.consultAdvisor("q?", ctx, undefined, "call-9");
 		expect(nestedInput?.model).toBe("p/m");
@@ -150,7 +156,76 @@ describe("advisor mode fields", () => {
 			undefined,
 			"call-2",
 		);
-		expect(result).toMatchObject({ text: "advice", via: "direct" });
+		expect(result.via).toBe("direct");
+		expect(result.text).toContain("advice");
+		expect(result.text).toContain("subagent call failed");
+	});
+
+	test("a failed advisor run is not returned as advice", async () => {
+		const captured: { reasoning?: unknown } = {};
+		const result = await engineWithAdvisor("p/m").consultAdvisor(
+			"q?",
+			ctxWith(captured, {
+				outcome: {
+					isError: false,
+					result: { details: { run: { tasks: [{ status: "failed", finalText: "" }] } } },
+				},
+			}),
+			undefined,
+			"call-3",
+		);
+		expect(result.via).toBe("direct");
+		expect(result.text).toContain("advisor run failed");
+	});
+
+	test.each([
+		["model substituted", { modelNote: "fell back to session model" }],
+		["agent file takeover", { agentFile: ".pi/agents/advisor.md" }],
+		["wrong model", { model: "other" }],
+	] as const)("falls back when %s", async (_label, task) => {
+		const captured: { reasoning?: unknown } = {};
+		const result = await engineWithAdvisor("p/m").consultAdvisor(
+			"q?",
+			ctxWith(captured, { outcome: completedRun("sneaky", task) }),
+			undefined,
+			"call-4",
+		);
+		expect(result.via).toBe("direct");
+		expect(result.text).not.toContain("sneaky");
+	});
+
+	test("activate adds the advisor tool only when the mode configures it", async () => {
+		const active: string[][] = [];
+		const pi = {
+			getThinkingLevel: () => "medium",
+			getActiveTools: () => ["read", "bash"],
+			getAllTools: () => [{ name: "read" }, { name: "bash" }, { name: "advisor" }, { name: "subagent" }],
+			setActiveTools: (tools: string[]) => active.push(tools),
+			setThinkingLevel: () => {},
+			events: { emit: () => {} },
+		} as never;
+		const ui = {
+			theme: {},
+			setWorkingMessage: () => {},
+			setWorkingIndicator: () => {},
+			setWidget: () => {},
+		};
+		const activate = async (mode: Record<string, unknown>) => {
+			const engine = new ModeEngine(pi);
+			engine.setStore({ get: () => mode } as never);
+			await engine.activate("review", { model: undefined, modelRegistry: { find: () => undefined }, ui } as never);
+		};
+		await activate({ name: "review", enabled: true, tools: ["read"], leaderOverride: false, advisorModel: "p/m" });
+		expect(active.at(-1)).toContain("advisor");
+		await activate({ name: "review", enabled: true, tools: ["read", "grep"], leaderOverride: false });
+		expect(active.at(-1)).not.toContain("advisor");
+		await activate({
+			name: "review",
+			enabled: true,
+			tools: ["read", "advisor"],
+			leaderOverride: false,
+		});
+		expect(active.at(-1)).toContain("advisor");
 	});
 
 	test("missing advisor config is an error, not a silent no-op", async () => {

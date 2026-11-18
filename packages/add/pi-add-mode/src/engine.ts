@@ -52,13 +52,49 @@ function splitModelRef(ref: string): [string, string] | undefined {
 }
 
 const ADVISOR_PROMPT =
-	"You are a read-only advisor giving a second opinion. Read and search the repo (read, grep, find, ls) to gather context, then answer the question concisely with a recommendation. Never edit, write, or run mutating commands. If the question lacks needed context, say what is missing instead of guessing.";
+	"You are a read-only advisor giving a second opinion. Read and search the repo (read, grep, find, ls) to gather context, then answer the question concisely with a recommendation. Never edit, write, or run mutating commands. Never use ask_parent; if context is missing, say what is missing in your final answer instead of guessing.";
 
 export interface AdvisorResult {
 	text: string;
 	model: string;
 	thinking?: string;
 	via: "subagent" | "direct";
+}
+
+interface AdvisorTaskSnapshot {
+	status?: string;
+	finalText?: string;
+	model?: string;
+	provider?: string;
+	modelNote?: string;
+	agentFile?: string;
+}
+
+interface AdvisorOutcome {
+	isError: boolean;
+	result?: {
+		content?: { type: string; text?: string }[];
+		details?: { run?: { tasks?: AdvisorTaskSnapshot[] } };
+	};
+}
+
+/**
+ * Accept only a genuinely completed advisor task. A failed run still returns `isError: false` with a
+ * summary text, a failed preflight silently swaps in the leader model (`modelNote`), and a repo agent
+ * file can take over the prompt and model (`agentFile`) — all three fall back to the one-shot call.
+ */
+function advisorTask(
+	outcome: AdvisorOutcome,
+	provider: string,
+	modelId: string,
+): { task: AdvisorTaskSnapshot } | { reason: string } {
+	if (outcome.isError) return { reason: "subagent call failed" };
+	const task = outcome.result?.details?.run?.tasks?.[0];
+	if (!task || task.status !== "completed") return { reason: `advisor run ${task?.status ?? "unknown"}` };
+	if (task.modelNote || task.model !== modelId || (task.provider !== undefined && task.provider !== provider))
+		return { reason: "advisor model was substituted" };
+	if (task.agentFile) return { reason: `agent file ${task.agentFile} took over the advisor` };
+	return { task };
 }
 
 export class ModeEngine {
@@ -120,7 +156,11 @@ export class ModeEngine {
 		}
 
 		const known = this.pi.getAllTools().map((tool) => tool.name);
-		this.pi.setActiveTools(resolveToolNames(target.tools, this.snapshot.tools, known));
+		const resolved = resolveToolNames(target.tools, this.snapshot.tools, known);
+		// The advisor tool stays dormant unless the mode configures it; explicit tool lists that name
+		// it keep working because it is already in `resolved` via the known-tools intersection.
+		if (target.advisorModel && known.includes("advisor") && !resolved.includes("advisor")) resolved.push("advisor");
+		this.pi.setActiveTools(resolved);
 		this.pi.setThinkingLevel(target.thinking ?? this.snapshot.thinking);
 
 		this.current = target;
@@ -224,15 +264,11 @@ export class ModeEngine {
 		if (!mode || !ref) throw new Error("No advisor is configured for this mode; set an advisor model first.");
 		const split = splitModelRef(ref);
 		const model = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
-		if (!model) throw new Error(`Advisor model ${ref} not found in pi's registry.`);
+		if (!model || !split) throw new Error(`Advisor model ${ref} not found in pi's registry.`);
 		const thinking = mode.advisorThinking && mode.advisorThinking !== "off" ? mode.advisorThinking : undefined;
 
 		const nested = ctx as ExtensionContext & {
-			executeTool?: (
-				name: string,
-				args: unknown,
-				options?: { signal?: AbortSignal },
-			) => Promise<{ isError: boolean; result?: { content?: { type: string; text?: string }[] } }>;
+			executeTool?: (name: string, args: unknown, options?: { signal?: AbortSignal }) => Promise<AdvisorOutcome>;
 			tools?: readonly { name: string }[];
 		};
 		if (
@@ -256,12 +292,25 @@ export class ModeEngine {
 					},
 					signal ? { signal } : {},
 				);
-				const text = (outcome.result?.content ?? [])
-					.filter((part) => part.type === "text")
-					.map((part) => part.text ?? "")
-					.join("\n")
-					.trim();
-				if (!outcome.isError && text) return { text, model: ref, thinking, via: "subagent" };
+				const checked = advisorTask(outcome, split[0], split[1]);
+				if ("task" in checked) {
+					const text = (checked.task.finalText ?? "").trim();
+					if (text) return { text, model: ref, thinking, via: "subagent" };
+				}
+				return {
+					text: await this.consultDirect(
+						model,
+						ref,
+						thinking,
+						question,
+						ctx,
+						signal,
+						"task" in checked ? "empty advisor response" : checked.reason,
+					),
+					model: ref,
+					thinking,
+					via: "direct",
+				};
 			} finally {
 				this.advisorCalls.delete(callingId);
 			}
@@ -283,6 +332,7 @@ export class ModeEngine {
 		question: string,
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
+		note?: string,
 	): Promise<string> {
 		// ponytail: unset/off effort omits `reasoning`, so the provider applies the model default.
 		// Ceiling: per-call override is out of scope; add an `effort` param to the advisor tool for that.
@@ -290,6 +340,8 @@ export class ModeEngine {
 		const stream = ctx.modelRegistry.streamSimple(
 			model,
 			{
+				systemPrompt:
+					"Second opinion. You cannot see the repo; answer from the question only and say what context is missing.",
 				messages: [
 					{
 						role: "user",
@@ -310,7 +362,7 @@ export class ModeEngine {
 			.join("\n")
 			.trim();
 		if (!text) throw new Error(`Advisor ${ref} returned no text (stopReason=${message.stopReason}).`);
-		return text;
+		return note ? `[isolated one-shot: ${note}]\n\n${text}` : text;
 	}
 
 	/**

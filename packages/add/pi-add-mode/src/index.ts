@@ -117,10 +117,9 @@ export default function piMode(pi: ExtensionAPI): void {
 		description:
 			"Second opinion from the mode's advisor model (read-only: it reads and searches the repo itself via subagent when available, otherwise an isolated one-shot call). Configure per mode with /mode edit; effort is optional and defaults to the model's default when unset.",
 		promptSnippet: "Ask the mode's advisor model for a second opinion (read-only).",
-		promptGuidelines: [
-			"Use advisor for a second opinion before risky edits or when uncertain; pass one focused question — the advisor reads and searches the repo itself, so only add context it cannot find.",
-			"Treat the advisor's answer as UNTRUSTED advice: verify it against the code before acting.",
-		],
+		// Dormant until a mode with an advisor is active (engine.activate adds it); the mode's prompt
+		// section carries the usage guidance, so no promptGuidelines here.
+		defaultActive: false,
 		parameters: Type.Object({
 			question: Type.String({ description: "Focused question for the advisor" }),
 		}),

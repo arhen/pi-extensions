@@ -86,6 +86,10 @@ call that sees only the question. Either way the leader must verify the advice a
 acting. With no effort set, the request omits the effort parameter so the provider applies the model's
 default.
 
+The `advisor` tool is dormant unless the mode sets `advisorModel` (it activates on mode switch and
+deactivates when leaving the mode). Only a completed advisor run counts: failed runs, substituted models,
+or repo agent-file takeovers fall back to the one-shot call and say so up front.
+
 `leaderOverride` decides who wins when the leader names its own subagent model or effort:
 
 - **`false` (default)** — the mode wins. Every `subagent` task and every `resume_subagent` runs on `subagentModel` /
