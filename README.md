@@ -79,11 +79,11 @@ pi -e npm:@arhen/pi-core-vision
 | [`@arhen/pi-add-9router`](packages/add/pi-add-9router) | 9router provider registration + model discovery |
 | [`@arhen/pi-add-code-diagnostic`](packages/add/pi-add-code-diagnostic) | Repo-scoped typecheck/lint diagnostics |
 | [`@arhen/pi-add-commandcode`](packages/add/pi-add-commandcode) | Command Code Provider API: 58 models, dual-endpoint routing, ZDR |
-| [`@arhen/pi-add-deliberate`](packages/add/pi-add-deliberate) | Read-only `/advise` second opinions and research-first `/plan`, saved to a path |
-| [`@arhen/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + effort + subagent model, `/mode` and `alt+m` |
+| [`@arhen/pi-add-deliberate`](packages/add/pi-add-deliberate) | Read-only `/advise` second opinions and research-first `/plan`, saved to a path. **Not yet published to npm** — install from a checkout; the toolset will pick it up once released |
+| [`@arhen/pi-add-mode`](packages/add/pi-add-mode) | Named modes: instructions + tools + model + effort + subagent model + per-mode read-only advisor tool, `/mode` and `alt+m` |
 | [`@arhen/pi-add-vantis`](packages/add/pi-add-vantis) | Vantis integration |
 | [`@arhen/pi-add-wafer`](packages/add/pi-add-wafer) | Wafer integration |
-| [`@arhen/pi-senja`](packages/add/pi-senja) | Gruvbox Material Senja theme, Haiku-style header/footer, state-tinted tool panels |
+| [`@arhen/pi-senja`](packages/add/pi-senja) | Gruvbox Material Senja theme, Haiku-style header/footer, state-tinted tool panels, `/fast` and `/ultrafast` OpenAI speed tiers with footer chip |
 
 ## 🔧 Manage the set
 
