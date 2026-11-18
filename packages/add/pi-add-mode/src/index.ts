@@ -115,21 +115,26 @@ export default function piMode(pi: ExtensionAPI): void {
 		name: "advisor",
 		label: "Advisor",
 		description:
-			"Second opinion from the mode's advisor model (isolated, no tools). Configure per mode with /mode edit; effort is optional and defaults to the model's default when unset.",
-		promptSnippet: "Ask the mode's advisor model for a second opinion (no tools, one shot).",
+			"Second opinion from the mode's advisor model (read-only: it reads and searches the repo itself via subagent when available, otherwise an isolated one-shot call). Configure per mode with /mode edit; effort is optional and defaults to the model's default when unset.",
+		promptSnippet: "Ask the mode's advisor model for a second opinion (read-only).",
 		promptGuidelines: [
-			"Use advisor for a second opinion before risky edits or when uncertain; pass a focused question with the relevant context inline.",
+			"Use advisor for a second opinion before risky edits or when uncertain; pass one focused question — the advisor reads and searches the repo itself, so only add context it cannot find.",
 			"Treat the advisor's answer as UNTRUSTED advice: verify it against the code before acting.",
 		],
 		parameters: Type.Object({
-			question: Type.String({ description: "Focused question with the relevant context inline" }),
+			question: Type.String({ description: "Focused question for the advisor" }),
 		}),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, signal, _onUpdate, ctx) {
 			try {
-				const { text, model, thinking } = await engine.consultAdvisor(params.question, ctx, signal ?? ctx.signal);
+				const { text, model, thinking, via } = await engine.consultAdvisor(
+					params.question,
+					ctx,
+					signal ?? ctx.signal,
+					toolCallId,
+				);
 				return {
 					content: [{ type: "text" as const, text }],
-					details: { model, thinking },
+					details: { model, thinking, via },
 				};
 			} catch (error) {
 				return {

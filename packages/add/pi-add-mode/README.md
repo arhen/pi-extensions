@@ -77,10 +77,14 @@ advisor run at the model's default effort.
 ## Advisor
 
 Each mode can name an `advisorModel` with an optional `advisorThinking` effort. While the mode is active,
-the leader can call the `advisor` tool with a focused question (relevant context inline) for a second opinion
-from that model. The call is isolated — no tools — and returns advice text the leader must verify against
-the code before acting. With no effort set, the request omits the effort parameter so the provider applies
-the model's default.
+the leader can call the `advisor` tool with one focused question for a second opinion from that model.
+
+The advisor is read-only: when `@arhen/pi-core-subagent` is installed it runs as a read-only subagent
+on the advisor model, so it reads and searches the repo itself — only add context it cannot find
+(decisions, constraints, off-repo facts). Without the subagent tool it falls back to an isolated one-shot
+call that sees only the question. Either way the leader must verify the advice against the code before
+acting. With no effort set, the request omits the effort parameter so the provider applies the model's
+default.
 
 `leaderOverride` decides who wins when the leader names its own subagent model or effort:
 

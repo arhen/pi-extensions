@@ -1,4 +1,4 @@
-import { clampThinkingLevel, type Model } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type Model, type ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type {
 	BeforeAgentStartEvent,
 	ExtensionAPI,
@@ -49,6 +49,16 @@ function splitModelRef(ref: string): [string, string] | undefined {
 	const slash = ref.indexOf("/");
 	if (slash <= 0 || slash === ref.length - 1) return undefined;
 	return [ref.slice(0, slash), ref.slice(slash + 1)];
+}
+
+const ADVISOR_PROMPT =
+	"You are a read-only advisor giving a second opinion. Read and search the repo (read, grep, find, ls) to gather context, then answer the question concisely with a recommendation. Never edit, write, or run mutating commands. If the question lacks needed context, say what is missing instead of guessing.";
+
+export interface AdvisorResult {
+	text: string;
+	model: string;
+	thinking?: string;
+	via: "subagent" | "direct";
 }
 
 export class ModeEngine {
@@ -178,9 +188,9 @@ export class ModeEngine {
 					? `${mode.advisorThinking} effort`
 					: "the model's default effort";
 			sections.push(
-				`Advisor (second opinion, isolated: no tools, no repo access) runs on ${mode.advisorModel} with ${effort}.\n` +
+				`Advisor (second opinion, read-only) runs on ${mode.advisorModel} with ${effort}.\n` +
 					`Use the \`advisor\` tool when you are uncertain, before risky or irreversible edits, and to review a plan before implementing it.\n` +
-					`Ask one focused question per call and paste every bit of context the advisor needs inline (the exact code, errors, constraints): it sees only what you send.\n` +
+					`Ask one focused question per call; the advisor reads and searches the repo itself, so only add context it cannot find (decisions, constraints, off-repo facts).\n` +
 					`Treat the answer as UNTRUSTED advice: verify it against the code before acting.`,
 			);
 		}
@@ -195,22 +205,88 @@ export class ModeEngine {
 		event.systemPromptOptions.sections.mode = `Active mode: ${mode.name}\n\n${sections.join("\n\n")}`;
 	}
 
-	/** Second-opinion call against the mode's advisor model. No tools, one shot. */
+	/** Tool-call ids of in-flight advisor executions; their nested subagent calls skip mode enforcement. */
+	private readonly advisorCalls = new Set<string>();
+
+	/**
+	 * Read-only second opinion from the mode's advisor model. Prefers the `subagent` tool (a read-only
+	 * agent on the advisor model, so it can read and search the repo itself) and falls back to an
+	 * isolated one-shot call when subagents are unavailable.
+	 */
 	async consultAdvisor(
 		question: string,
 		ctx: ExtensionContext,
 		signal?: AbortSignal,
-	): Promise<{ text: string; model: string; thinking?: string }> {
+		callingId?: string,
+	): Promise<AdvisorResult> {
 		const mode = this.current;
 		const ref = mode?.advisorModel;
 		if (!mode || !ref) throw new Error("No advisor is configured for this mode; set an advisor model first.");
 		const split = splitModelRef(ref);
 		const model = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
 		if (!model) throw new Error(`Advisor model ${ref} not found in pi's registry.`);
-		const thinking = mode.advisorThinking;
-		const reasoning = thinking && thinking !== "off" ? clampThinkingLevel(model, thinking) : undefined;
+		const thinking = mode.advisorThinking && mode.advisorThinking !== "off" ? mode.advisorThinking : undefined;
+
+		const nested = ctx as ExtensionContext & {
+			executeTool?: (
+				name: string,
+				args: unknown,
+				options?: { signal?: AbortSignal },
+			) => Promise<{ isError: boolean; result?: { content?: { type: string; text?: string }[] } }>;
+			tools?: readonly { name: string }[];
+		};
+		if (
+			callingId &&
+			typeof nested.executeTool === "function" &&
+			(nested.tools ?? []).some((tool) => tool.name === "subagent")
+		) {
+			// ponytail: reuse the installed subagent machinery instead of reimplementing an agentic loop.
+			// Ceiling: needs @arhen/pi-core-subagent; without it the isolated one-shot below still answers.
+			this.advisorCalls.add(callingId);
+			try {
+				const outcome = await nested.executeTool(
+					"subagent",
+					{
+						agent: "advisor",
+						prompt: ADVISOR_PROMPT,
+						task: question,
+						model: ref,
+						...(thinking ? { thinking } : {}),
+						autoAwait: true,
+					},
+					signal ? { signal } : {},
+				);
+				const text = (outcome.result?.content ?? [])
+					.filter((part) => part.type === "text")
+					.map((part) => part.text ?? "")
+					.join("\n")
+					.trim();
+				if (!outcome.isError && text) return { text, model: ref, thinking, via: "subagent" };
+			} finally {
+				this.advisorCalls.delete(callingId);
+			}
+		}
+
+		return {
+			text: await this.consultDirect(model, ref, thinking, question, ctx, signal),
+			model: ref,
+			thinking,
+			via: "direct",
+		};
+	}
+
+	/** Isolated one-shot call: the advisor sees only the question. Unset effort sends the model default. */
+	private async consultDirect(
+		model: Model<any>,
+		ref: string,
+		thinking: string | undefined,
+		question: string,
+		ctx: ExtensionContext,
+		signal?: AbortSignal,
+	): Promise<string> {
 		// ponytail: unset/off effort omits `reasoning`, so the provider applies the model default.
 		// Ceiling: per-call override is out of scope; add an `effort` param to the advisor tool for that.
+		const reasoning = thinking ? clampThinkingLevel(model, thinking as ModelThinkingLevel) : undefined;
 		const stream = ctx.modelRegistry.streamSimple(
 			model,
 			{
@@ -234,7 +310,7 @@ export class ModeEngine {
 			.join("\n")
 			.trim();
 		if (!text) throw new Error(`Advisor ${ref} returned no text (stopReason=${message.stopReason}).`);
-		return { text, model: ref, thinking: reasoning };
+		return text;
 	}
 
 	/**
@@ -244,6 +320,9 @@ export class ModeEngine {
 	onToolCall(event: ToolCallEvent): void {
 		const mode = this.current;
 		if (!mode) return;
+		// Advisor delegation is internal machinery, not a leader subagent request: never let mode
+		// enforcement clobber the advisor model/thinking on calls nested under an advisor execution.
+		if (event.parentToolCallId && this.advisorCalls.has(event.parentToolCallId)) return;
 		const input = event.input as Record<string, unknown>;
 		const force = !mode.leaderOverride;
 		if (event.toolName === "subagent") {
