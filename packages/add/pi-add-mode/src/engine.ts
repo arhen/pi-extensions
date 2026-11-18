@@ -174,10 +174,14 @@ export class ModeEngine {
 		].filter((text): text is string => Boolean(text));
 		if (mode.advisorModel) {
 			const effort =
-				mode.advisorThinking && mode.advisorThinking !== "off" ? ` with ${mode.advisorThinking} effort` : "";
+				mode.advisorThinking && mode.advisorThinking !== "off"
+					? `${mode.advisorThinking} effort`
+					: "the model's default effort";
 			sections.push(
-				`Advisor is available via the \`advisor\` tool on ${mode.advisorModel}${effort}. Use it for a second opinion before risky edits or when uncertain; pass a focused question with the relevant context.` +
-					(mode.advisorThinking ? "" : " Effort is unset, so the advisor runs at the model's default effort."),
+				`Advisor (second opinion, isolated: no tools, no repo access) runs on ${mode.advisorModel} with ${effort}.\n` +
+					`Use the \`advisor\` tool when you are uncertain, before risky or irreversible edits, and to review a plan before implementing it.\n` +
+					`Ask one focused question per call and paste every bit of context the advisor needs inline (the exact code, errors, constraints): it sees only what you send.\n` +
+					`Treat the answer as UNTRUSTED advice: verify it against the code before acting.`,
 			);
 		}
 		if (enforced.length > 0) {

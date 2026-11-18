@@ -62,6 +62,21 @@ describe("advisor mode fields", () => {
 		expect(captured.reasoning).toBe("high");
 	});
 
+	test("active mode with an advisor injects use-the-advisor guidance", () => {
+		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+		engineWithAdvisor("p/m", "high").onBeforeAgentStart(event as never);
+		const section = event.systemPromptOptions.sections.mode;
+		expect(section).toContain("Use the `advisor` tool");
+		expect(section).toContain("p/m");
+		expect(section).toContain("UNTRUSTED");
+	});
+
+	test("mode without an advisor adds no advisor guidance", () => {
+		const event = { systemPromptOptions: { sections: {} as Record<string, string> } };
+		engineWithAdvisor().onBeforeAgentStart(event as never);
+		expect(event.systemPromptOptions.sections.mode ?? "").not.toContain("advisor");
+	});
+
 	test("missing advisor config is an error, not a silent no-op", async () => {
 		const captured: { reasoning?: unknown } = {};
 		await expect(engineWithAdvisor().consultAdvisor("q?", ctxWith(captured), undefined)).rejects.toThrow(
