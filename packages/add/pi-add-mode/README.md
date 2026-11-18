@@ -65,11 +65,22 @@ binds both to tab switching — so they usually do nothing.
 | `thinking` | effort while the mode is active: `off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`, unset = session level |
 | `subagentModel` | `provider/model-id` for subagent tasks; unset = leave the call's model |
 | `subagentThinking` | effort for subagent tasks; unset = leave the call's level |
+| `advisorModel` | `provider/model-id` for the `advisor` second-opinion tool; unset = no advisor |
+| `advisorThinking` | effort for advisor calls; unset = the model's default effort |
 | `leaderOverride` | `false` (default): subagent model/effort always applied. `true`: the leader may pick another per task |
 
 Picking a model in the editor always asks for the effort right after; cancelling the effort picker aborts the model
 change. The effort list follows the model: `off` only for non-reasoning models, minus levels the model marks
-unsupported.
+unsupported. Same for the advisor model: pick the model, then the effort, or keep `(default)` to let the
+advisor run at the model's default effort.
+
+## Advisor
+
+Each mode can name an `advisorModel` with an optional `advisorThinking` effort. While the mode is active,
+the leader can call the `advisor` tool with a focused question (relevant context inline) for a second opinion
+from that model. The call is isolated — no tools — and returns advice text the leader must verify against
+the code before acting. With no effort set, the request omits the effort parameter so the provider applies
+the model's default.
 
 `leaderOverride` decides who wins when the leader names its own subagent model or effort:
 

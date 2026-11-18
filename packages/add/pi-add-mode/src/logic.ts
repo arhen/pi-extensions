@@ -67,6 +67,8 @@ export function normalizeModeEntry(rawName: string, raw: unknown): Mode | undefi
 		thinking: normalizeThinking(entry.thinking),
 		subagentModel: normalizeString(entry.subagentModel),
 		subagentThinking: normalizeThinking(entry.subagentThinking),
+		advisorModel: normalizeString(entry.advisorModel),
+		advisorThinking: normalizeThinking(entry.advisorThinking),
 		leaderOverride: entry.leaderOverride === true,
 	};
 }

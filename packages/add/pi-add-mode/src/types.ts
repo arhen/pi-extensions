@@ -18,6 +18,8 @@ export interface Mode {
 	thinking?: ModeThinking;
 	subagentModel?: string;
 	subagentThinking?: ModeThinking;
+	advisorModel?: string;
+	advisorThinking?: ModeThinking;
 	/**
 	 * true: the subagent model/thinking are defaults the leader may override per task.
 	 * false (default): they are always applied, replacing whatever the leader passes.
@@ -35,6 +37,8 @@ export interface ModeFileEntry {
 	thinking?: unknown;
 	subagentModel?: unknown;
 	subagentThinking?: unknown;
+	advisorModel?: unknown;
+	advisorThinking?: unknown;
 	leaderOverride?: unknown;
 }
 

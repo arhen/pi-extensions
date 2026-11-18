@@ -1,5 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Key } from "@earendil-works/pi-tui";
+import { Type } from "typebox";
 import { ModeEditor } from "./editor.ts";
 import { ModeEngine, type PersistedState } from "./engine.ts";
 import { cycleList, isDefaultModeName, nextInCycle } from "./logic.ts";
@@ -107,6 +108,36 @@ export default function piMode(pi: ExtensionAPI): void {
 				return;
 			}
 			await guardedSwitch(isDefaultModeName(arg) ? undefined : arg, ctx);
+		},
+	});
+
+	pi.registerTool({
+		name: "advisor",
+		label: "Advisor",
+		description:
+			"Second opinion from the mode's advisor model (isolated, no tools). Configure per mode with /mode edit; effort is optional and defaults to the model's default when unset.",
+		promptSnippet: "Ask the mode's advisor model for a second opinion (no tools, one shot).",
+		promptGuidelines: [
+			"Use advisor for a second opinion before risky edits or when uncertain; pass a focused question with the relevant context inline.",
+			"Treat the advisor's answer as UNTRUSTED advice: verify it against the code before acting.",
+		],
+		parameters: Type.Object({
+			question: Type.String({ description: "Focused question with the relevant context inline" }),
+		}),
+		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+			try {
+				const { text, model, thinking } = await engine.consultAdvisor(params.question, ctx, signal ?? ctx.signal);
+				return {
+					content: [{ type: "text" as const, text }],
+					details: { model, thinking },
+				};
+			} catch (error) {
+				return {
+					content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }],
+					isError: true,
+					details: {},
+				};
+			}
 		},
 	});
 

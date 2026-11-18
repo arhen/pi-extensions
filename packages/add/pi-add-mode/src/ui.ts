@@ -35,6 +35,8 @@ function modeSummary(mode: Mode, theme: ExtensionContext["ui"]["theme"]): string
 		parts.push(
 			`sub: ${mode.subagentModel}${mode.subagentThinking ? `:${mode.subagentThinking}` : ""}${mode.leaderOverride ? " (leader may override)" : " (fixed)"}`,
 		);
+	if (mode.advisorModel)
+		parts.push(`advisor: ${mode.advisorModel}${mode.advisorThinking ? `:${mode.advisorThinking}` : ""}`);
 	if (mode.instructions) parts.push("+instructions");
 	return parts.join(" · ");
 }
@@ -247,9 +249,10 @@ export async function pickModel(
 	ctx: ExtensionContext,
 	title: string,
 	current: string | undefined,
+	empty?: { label?: string; description?: string },
 ): Promise<string | undefined> {
 	const items: SelectItem[] = [
-		{ value: "", label: "(default)", description: "inherit the session model" },
+		{ value: "", label: empty?.label ?? "(default)", description: empty?.description ?? "inherit the session model" },
 		...ctx.modelRegistry
 			.getAvailable()
 			.map((model) => ({ value: `${model.provider}/${model.id}`, label: model.id, description: model.provider })),
@@ -335,6 +338,8 @@ export async function editMode(
 			`Thinking: ${mode.thinking ?? "(default)"}`,
 			`Subagent model: ${mode.subagentModel ?? "(default)"}`,
 			`Subagent thinking: ${mode.subagentThinking ?? "(default)"}`,
+			`Advisor model: ${mode.advisorModel ?? "(none)"}`,
+			`Advisor effort: ${mode.advisorThinking ?? "(default)"}`,
 			`Leader override: ${mode.leaderOverride ? "yes (leader may pick another subagent model/effort)" : "no (subagent model/effort always applied)"}`,
 			`Instructions: ${mode.instructions ? `${mode.instructions.split("\n").length} line(s)` : "(none)"}`,
 			`Description: ${mode.description ?? "(none)"}`,
@@ -440,22 +445,64 @@ export async function editMode(
 				else mode.subagentThinking = thinking || undefined;
 				break;
 			}
-			case 7:
+			case 7: {
+				const model = await pickModel(ctx, `Advisor model for "${name}"`, mode.advisorModel, {
+					label: "(none)",
+					description: "no advisor for this mode",
+				});
+				if (model === undefined) {
+					committed = false;
+					break;
+				}
+				if (!model) {
+					mode.advisorModel = undefined;
+					mode.advisorThinking = undefined;
+					break;
+				}
+				const thinking = await pickThinking(
+					ctx,
+					`Advisor effort for "${name}" (${model})`,
+					mode.advisorThinking,
+					resolveModel(ctx, model),
+				);
+				if (thinking === undefined) {
+					committed = false;
+					break;
+				}
+				mode.advisorModel = model;
+				mode.advisorThinking = thinking || undefined;
+				break;
+			}
+			case 8: {
+				const thinking = await pickThinking(
+					ctx,
+					`Advisor effort for "${name}"`,
+					mode.advisorThinking,
+					resolveModel(ctx, mode.advisorModel),
+				);
+				if (thinking === undefined) committed = false;
+				else if (!mode.advisorModel) {
+					ctx.ui.notify("Set an advisor model first.", "warning");
+					committed = false;
+				} else mode.advisorThinking = thinking || undefined;
+				break;
+			}
+			case 9:
 				mode.leaderOverride = !mode.leaderOverride;
 				break;
-			case 8: {
+			case 10: {
 				const text = await ctx.ui.editor(`Instructions for mode "${name}"`, mode.instructions ?? "");
 				if (text === undefined) committed = false;
 				else mode.instructions = text.trim() ? text : undefined;
 				break;
 			}
-			case 9: {
+			case 11: {
 				const text = await ctx.ui.input("Mode description (optional)", mode.description ?? "");
 				if (text === undefined) committed = false;
 				else mode.description = text.trim() || undefined;
 				break;
 			}
-			case 10: {
+			case 12: {
 				const renamed = await renameMode(ctx, store, name);
 				if (!renamed) committed = false;
 				else {

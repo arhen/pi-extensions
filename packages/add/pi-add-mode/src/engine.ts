@@ -1,4 +1,4 @@
-import type { Model } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type Model } from "@earendil-works/pi-ai";
 import type {
 	BeforeAgentStartEvent,
 	ExtensionAPI,
@@ -172,6 +172,14 @@ export class ModeEngine {
 			mode.subagentModel ? `model ${mode.subagentModel}` : undefined,
 			mode.subagentThinking ? `thinking ${mode.subagentThinking}` : undefined,
 		].filter((text): text is string => Boolean(text));
+		if (mode.advisorModel) {
+			const effort =
+				mode.advisorThinking && mode.advisorThinking !== "off" ? ` with ${mode.advisorThinking} effort` : "";
+			sections.push(
+				`Advisor is available via the \`advisor\` tool on ${mode.advisorModel}${effort}. Use it for a second opinion before risky edits or when uncertain; pass a focused question with the relevant context.` +
+					(mode.advisorThinking ? "" : " Effort is unset, so the advisor runs at the model's default effort."),
+			);
+		}
 		if (enforced.length > 0) {
 			sections.push(
 				mode.leaderOverride
@@ -181,6 +189,48 @@ export class ModeEngine {
 		}
 		if (sections.length === 0) return;
 		event.systemPromptOptions.sections.mode = `Active mode: ${mode.name}\n\n${sections.join("\n\n")}`;
+	}
+
+	/** Second-opinion call against the mode's advisor model. No tools, one shot. */
+	async consultAdvisor(
+		question: string,
+		ctx: ExtensionContext,
+		signal?: AbortSignal,
+	): Promise<{ text: string; model: string; thinking?: string }> {
+		const mode = this.current;
+		const ref = mode?.advisorModel;
+		if (!mode || !ref) throw new Error("No advisor is configured for this mode; set an advisor model first.");
+		const split = splitModelRef(ref);
+		const model = split ? ctx.modelRegistry.find(split[0], split[1]) : undefined;
+		if (!model) throw new Error(`Advisor model ${ref} not found in pi's registry.`);
+		const thinking = mode.advisorThinking;
+		const reasoning = thinking && thinking !== "off" ? clampThinkingLevel(model, thinking) : undefined;
+		// ponytail: unset/off effort omits `reasoning`, so the provider applies the model default.
+		// Ceiling: per-call override is out of scope; add an `effort` param to the advisor tool for that.
+		const stream = ctx.modelRegistry.streamSimple(
+			model,
+			{
+				messages: [
+					{
+						role: "user",
+						content: [{ type: "text", text: question }],
+						timestamp: Date.now(),
+					},
+				],
+			},
+			reasoning && reasoning !== "off" ? { reasoning, signal } : { signal },
+		);
+		const message = await stream.result();
+		if (message.stopReason === "error" || message.stopReason === "aborted") {
+			throw new Error(message.errorMessage ?? `Advisor call failed (${message.stopReason}).`);
+		}
+		const text = (message.content ?? [])
+			.filter((part: { type: string }) => part.type === "text")
+			.map((part: { type: string; text?: string }) => part.text ?? "")
+			.join("\n")
+			.trim();
+		if (!text) throw new Error(`Advisor ${ref} returned no text (stopReason=${message.stopReason}).`);
+		return { text, model: ref, thinking: reasoning };
 	}
 
 	/**
