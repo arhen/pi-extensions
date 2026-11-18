@@ -169,6 +169,14 @@ export function createHarness(mode: ExtensionContext["mode"] = "tui") {
 		async emit(event: string, data: Record<string, unknown> = {}) {
 			for (const handler of handlers.get(event) ?? []) await handler({ type: event, ...data }, ctx);
 		},
+		async emitProviderRequest(payload: unknown) {
+			let currentPayload = payload;
+			for (const handler of handlers.get("before_provider_request") ?? []) {
+				const result = await handler({ type: "before_provider_request", payload: currentPayload }, ctx);
+				if (result !== undefined) currentPayload = result;
+			}
+			return currentPayload;
+		},
 		async toggle() {
 			await commands.get("senja")!.handler("", ctx as ExtensionCommandContext);
 		},

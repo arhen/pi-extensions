@@ -52,7 +52,7 @@ function footerText(h: ReturnType<typeof createHarness>, width = 400): string[] 
 describe("startup and toggle", () => {
 	test("factory only registers; terminal startup installs Senja header/footer/theme", async () => {
 		const h = createHarness();
-		expect([...h.commands.keys()]).toEqual(["senja"]);
+		expect([...h.commands.keys()]).toEqual(["senja", "fast", "ultrafast"]);
 		expect(h.ui.setTheme).not.toHaveBeenCalled();
 		expect(startInterval).not.toHaveBeenCalled();
 		await h.emit("session_start", { reason: "startup" });

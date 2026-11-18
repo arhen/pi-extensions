@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import {
 	existsSync,
+	lstatSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -140,6 +141,32 @@ describe("worktree", () => {
 		expect(() => commitWorktree(wt, "should be a no-op")).not.toThrow();
 		expect(git(["rev-parse", wt.branch])).toBe(git(["rev-parse", "HEAD"]));
 		removeWorktree(wt);
+	});
+
+	test("commitWorktree works when node_modules is gitignored (symlinked dep dir)", () => {
+		const root = mkdtempSync(join(tmpdir(), "wt-ign-"));
+		const g = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+		g(["init", "-q", "-b", "main"]);
+		g(["config", "user.name", "test"]);
+		g(["config", "user.email", "test@local"]);
+		g(["config", "commit.gpgsign", "false"]);
+		writeFileSync(join(root, ".gitignore"), "node_modules\n");
+		writeFileSync(join(root, "a.txt"), "hello\n");
+		g(["add", "-A"]);
+		g(["commit", "-qm", "init"]);
+		mkdirSync(join(root, "node_modules", "dep"), { recursive: true });
+		writeFileSync(join(root, "node_modules", "dep", "i.js"), "x\n");
+
+		const wt = createWorktree(root, "run_ign", "task_ign")!;
+		expect(lstatSync(join(wt.path, "node_modules")).isSymbolicLink()).toBe(true);
+		expect(commitWorktree(wt, "noop")).toBe("empty");
+
+		writeFileSync(join(wt.path, "feature.txt"), "work\n");
+		expect(commitWorktree(wt, "child work")).toBe("committed");
+		expect(g(["show", "--name-only", "--format=", wt.branch]).split("\n")).toEqual(["feature.txt"]);
+
+		removeWorktree(wt);
+		rmSync(root, { recursive: true, force: true });
 	});
 
 	test("reapDeadWorktrees commits a crashed child's work, keeps branch, drops dir", () => {
