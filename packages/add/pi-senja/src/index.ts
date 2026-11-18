@@ -38,6 +38,27 @@ interface RenderHandle {
 
 type SpeedTier = "fast" | "ultrafast";
 
+// Advisory only — OpenAI rejects or silently downgrades unsupported tiers server-side,
+// so unknown models still get the tier; they just warn here. Fast list from OpenAI's
+// model catalog (codex 0.166.0, service_tiers/priority); Ultrafast list from OpenAI's
+// Ultrafast mode docs. Extend as OpenAI ships new tiers/models.
+const SPEED_TIER_SUPPORT: Record<SpeedTier, ReadonlySet<string>> = {
+	fast: new Set([
+		"gpt-5.5",
+		"gpt-5.6-luna",
+		"gpt-5.6-sol",
+		"gpt-5.6-terra",
+		"gpt-6-astra",
+		"gpt-6-luna",
+		"gpt-6-sol",
+		"gpt-6.1-sol",
+		"gpt-6.1-terra",
+		"gpt-6.2-astra",
+		"gpt-6.2-sol",
+	]),
+	ultrafast: new Set(["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra"]),
+};
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /** Replace $HOME with ~, mirroring Pi's built-in footer logic. */
@@ -615,11 +636,25 @@ export default function (pi: ExtensionAPI) {
 			}
 			saveSpeedTier();
 			requestFooterRender();
-			if (ctx.hasUI) {
+			if (!ctx.hasUI) return;
+			if (!speedTier) {
+				ctx.ui.notify(`${tier} mode off`, "info");
+				return;
+			}
+			const model = ctx.model;
+			if (!model || (model.provider !== "openai" && model.provider !== "openai-codex")) {
 				ctx.ui.notify(
-					speedTier
-						? `${speedTier} mode on — service_tier: ${speedTier === "fast" ? "priority" : "ultrafast"}`
-						: `${tier} mode off`,
+					`${speedTier} mode on — it only affects OpenAI requests; active model is ${model ? `${model.provider}/${model.id}` : "unset"}`,
+					"warning",
+				);
+			} else if (!SPEED_TIER_SUPPORT[tier].has(model.id)) {
+				ctx.ui.notify(
+					`${speedTier} mode on — ${model.id} is not on the known ${speedTier} support list; OpenAI may reject or ignore the request`,
+					"warning",
+				);
+			} else {
+				ctx.ui.notify(
+					`${speedTier} mode on — service_tier: ${speedTier === "fast" ? "priority" : "ultrafast"}`,
 					"info",
 				);
 			}

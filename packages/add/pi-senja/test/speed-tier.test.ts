@@ -107,6 +107,49 @@ describe("speed tier", () => {
 		expect(result.service_tier).toBe("ultrafast");
 	});
 
+	test("setting on a known model reports info; the tier is sent", async () => {
+		const h = openaiHarness();
+		await h.emit("session_start", { reason: "startup" });
+		await setTier(h, "fast", "on");
+		expect(h.ui.notify).toHaveBeenCalledWith("fast mode on — service_tier: priority", "info");
+		await setTier(h, "ultrafast", "on");
+		expect(h.ui.notify).toHaveBeenCalledWith("ultrafast mode on — service_tier: ultrafast", "info");
+	});
+
+	test("setting on a non-OpenAI model warns that the tier only affects OpenAI requests", async () => {
+		const h = createHarness();
+		await h.emit("session_start", { reason: "startup" });
+		await setTier(h, "fast", "on");
+		expect(h.ui.notify).toHaveBeenCalledWith(
+			"fast mode on — it only affects OpenAI requests; active model is anthropic/claude-test",
+			"warning",
+		);
+		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "fast" });
+	});
+
+	test("setting on an OpenAI model outside the known list warns", async () => {
+		const h = openaiHarness();
+		h.ctx.model = { ...h.ctx.model, id: "gpt-4o" } as typeof h.ctx.model;
+		await h.emit("session_start", { reason: "startup" });
+		await setTier(h, "fast", "on");
+		expect(h.ui.notify).toHaveBeenCalledWith(
+			"fast mode on — gpt-4o is not on the known fast support list; OpenAI may reject or ignore the request",
+			"warning",
+		);
+		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "fast" });
+	});
+
+	test("ultrafast on a fast-only model warns", async () => {
+		const h = openaiHarness();
+		h.ctx.model = { ...h.ctx.model, id: "gpt-5.6-sol" } as typeof h.ctx.model;
+		await h.emit("session_start", { reason: "startup" });
+		await setTier(h, "ultrafast", "on");
+		expect(h.ui.notify).toHaveBeenCalledWith(
+			"ultrafast mode on — gpt-5.6-sol is not on the known ultrafast support list; OpenAI may reject or ignore the request",
+			"warning",
+		);
+	});
+
 	test("bare /fast reports state without changing it", async () => {
 		const h = openaiHarness();
 		await h.emit("session_start", { reason: "startup" });
