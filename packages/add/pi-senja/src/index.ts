@@ -356,7 +356,6 @@ export default function (pi: ExtensionAPI) {
 	let lastDoneIn: number | undefined;
 	let modeWorkingMessage: string | undefined;
 	const speedTiers = new Map<string, SpeedTier | null>();
-	const speedLabels = new Map<string, string>();
 	const pendingReports = new Map<string, SpeedTier>();
 
 	const unsubscribeMode = pi.events.on("pi-mode:working-message", (message) => {
@@ -394,13 +393,8 @@ export default function (pi: ExtensionAPI) {
 		if (warning && ctx.hasUI) ctx.ui.notify(warning, "warning");
 	}
 
-	function speedLabel(key: string, tier: SpeedTier) {
-		return speedLabels.get(key) ?? `${tier} requested`;
-	}
-
 	function setSpeedTier(key: string, tier: SpeedTier | null): void {
 		speedTiers.set(key, tier);
-		speedLabels.delete(key);
 		pendingReports.delete(key);
 		if (tier) {
 			mkdirSync(speedDir, { recursive: true });
@@ -435,31 +429,40 @@ export default function (pi: ExtensionAPI) {
 		const tier = speedTiers.get(key);
 		if (!tier) return;
 		pendingReports.delete(key);
-		if (payload.service_tier !== undefined) {
-			speedLabels.set(key, `${tier} overridden by preset`);
-			requestFooterRender();
-			return;
-		}
-		speedLabels.delete(key);
+		if (payload.service_tier !== undefined) return;
 		pendingReports.set(key, tier);
-		requestFooterRender();
 		return { ...payload, service_tier: wireTier(tier) };
 	});
 
-	pi.on("provider_stream_event", (event) => {
-		const data = event.data as { type?: string; response?: { service_tier?: unknown } } | null;
-		if (data?.type !== "response.completed" && data?.type !== "response.done") return;
-		const key = `${event.provider}/${event.model}`;
+	function finishSpeedRequest(key: string, served: unknown, ctx: ExtensionContext) {
 		const tier = pendingReports.get(key);
 		if (!tier) return;
 		pendingReports.delete(key);
-		const served = data.response?.service_tier;
-		if (typeof served !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(served)) return;
-		speedLabels.set(
-			key,
-			served === wireTier(tier) || served === tier ? `${tier} confirmed` : `${tier} requested → ${served}`,
-		);
+		if (served === wireTier(tier) || served === tier) return;
+		const reason =
+			typeof served === "string" && /^[a-z0-9_-]{1,32}$/i.test(served) ? `reported ${served}` : "did not report a tier";
+		let warning = `OpenAI ${reason}. Turned off ${tier} for ${key}.`;
+		try {
+			setSpeedTier(key, null);
+		} catch {
+			warning += " Could not save this change.";
+		}
 		requestFooterRender();
+		if (ctx.hasUI) ctx.ui.notify(warning, "warning");
+	}
+
+	pi.on("provider_stream_event", (event, ctx) => {
+		const data = event.data as { type?: string; response?: { service_tier?: unknown; status?: string } } | null;
+		if (data?.type !== "response.completed" && data?.type !== "response.done") return;
+		if (data.response?.status && data.response.status !== "completed") return;
+		finishSpeedRequest(`${event.provider}/${event.model}`, data.response?.service_tier, ctx);
+	});
+
+	pi.on("message_end", ({ message }, ctx) => {
+		if (message.role !== "assistant") return;
+		const key = `${message.provider}/${message.model}`;
+		if (message.stopReason === "stop" || message.stopReason === "toolUse") finishSpeedRequest(key, undefined, ctx);
+		else pendingReports.delete(key);
 	});
 
 	// Track how long the current prompt has been running.
@@ -587,8 +590,8 @@ export default function (pi: ExtensionAPI) {
 					}
 					const key = speedKey(ctx.model);
 					const tier = key && speedTiers.get(key);
-					if (key && tier) {
-						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg("warning", speedLabel(key, tier))}`;
+					if (tier) {
+						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg("warning", tier)}`;
 					}
 
 					const line1 = alignRight(locationBlock, modelBlock, width, theme);
@@ -712,8 +715,7 @@ export default function (pi: ExtensionAPI) {
 			let speedTier = key ? speedTiers.get(key) : null;
 			const arg = args.trim().toLowerCase();
 			if (arg !== "on" && arg !== "off") {
-				if (ctx.hasUI)
-					ctx.ui.notify(speedTier && key ? speedLabel(key, speedTier) : "Fast and Ultrafast are off", "info");
+				if (ctx.hasUI) ctx.ui.notify(speedTier ?? "Fast and Ultrafast are off", "info");
 				return;
 			}
 			if (!model || !key) {
@@ -725,7 +727,6 @@ export default function (pi: ExtensionAPI) {
 				if (warning) {
 					if (speedTiers.get(key) === tier) {
 						speedTiers.set(key, null);
-						speedLabels.delete(key);
 						pendingReports.delete(key);
 						requestFooterRender();
 					}
@@ -747,7 +748,7 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`${tier} mode off`, "info");
 				return;
 			}
-			ctx.ui.notify(speedLabel(key, speedTier), "info");
+			ctx.ui.notify(speedTier, "info");
 		},
 	});
 
@@ -756,7 +757,6 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("session_start", async (event, ctx) => {
 		speedTiers.clear();
-		speedLabels.clear();
 		pendingReports.clear();
 		await restoreSpeedTier(ctx);
 		clearWorkingTimers();
