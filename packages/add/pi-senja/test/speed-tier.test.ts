@@ -211,7 +211,7 @@ describe("speed tier", () => {
 		expect(await h.emitProviderRequest({ model: id })).toEqual({ model: id });
 	});
 
-	test.each(["fast", "ultrafast"] as const)("%s keeps its plain badge only on confirmation", async (tier) => {
+	test.each(["fast", "ultrafast"] as const)("%s stays on after an unconfirmed response", async (tier) => {
 		const h = openaiHarness();
 		await h.emit("session_start");
 		const id = h.ctx.model!.id;
@@ -227,6 +227,7 @@ describe("speed tier", () => {
 		expect(footerLine1(h)).toEndWith(`▪ ${tier}`);
 		await h.emitProviderRequest({ model: id });
 		await reply(tier === "fast" ? "priority" : tier);
+		expect(h.ui.notify).not.toHaveBeenCalledWith(expect.anything(), "warning");
 		await end("stop");
 		expect(footerLine1(h)).toEndWith(`▪ ${tier}`);
 
@@ -245,22 +246,24 @@ describe("speed tier", () => {
 		await end("stop");
 		expect(h.ui.notify).toHaveBeenCalledTimes(1);
 		expect(h.ui.notify).toHaveBeenCalledWith(
-			`OpenAI reported default. Turned off ${tier} for openai/${id}.`,
+			`Requested ${tier} for openai/${id}; OpenAI reported default. ${tier} stays on.`,
 			"warning",
 		);
-		expect(footerLine1(h)).not.toContain("fast");
+		expect(footerLine1(h)).toEndWith(`▪ ${tier}`);
+		const expected = { model: id, service_tier: tier === "fast" ? "priority" : tier };
 		const fresh = openaiHarness();
 		await fresh.emit("session_start");
-		expect(await fresh.emitProviderRequest({ model: id })).toEqual({ model: id });
+		expect(await fresh.emitProviderRequest({ model: id })).toEqual(expected);
 
 		for (const rawCompletion of [true, false]) {
-			await setTier(h, tier, "on");
-			await h.emitProviderRequest({ model: id });
+			h.ui.notify.mockClear();
+			expect(await h.emitProviderRequest({ model: id })).toEqual(expected);
 			if (rawCompletion) await reply();
 			await end("stop");
-			expect(footerLine1(h)).not.toContain("fast");
+			expect(footerLine1(h)).toEndWith(`▪ ${tier}`);
+			expect(h.ui.notify).toHaveBeenCalledTimes(1);
 			expect(h.ui.notify).toHaveBeenLastCalledWith(
-				`OpenAI did not report a tier. Turned off ${tier} for openai/${id}.`,
+				`Requested ${tier} for openai/${id}; OpenAI did not report a tier. ${tier} stays on.`,
 				"warning",
 			);
 		}

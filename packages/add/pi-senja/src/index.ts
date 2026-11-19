@@ -438,17 +438,10 @@ export default function (pi: ExtensionAPI) {
 		const tier = pendingReports.get(key);
 		if (!tier) return;
 		pendingReports.delete(key);
-		if (served === wireTier(tier) || served === tier) return;
+		if (!ctx.hasUI || served === wireTier(tier) || served === tier) return;
 		const reason =
 			typeof served === "string" && /^[a-z0-9_-]{1,32}$/i.test(served) ? `reported ${served}` : "did not report a tier";
-		let warning = `OpenAI ${reason}. Turned off ${tier} for ${key}.`;
-		try {
-			setSpeedTier(key, null);
-		} catch {
-			warning += " Could not save this change.";
-		}
-		requestFooterRender();
-		if (ctx.hasUI) ctx.ui.notify(warning, "warning");
+		ctx.ui.notify(`Requested ${tier} for ${key}; OpenAI ${reason}. ${tier} stays on.`, "warning");
 	}
 
 	pi.on("provider_stream_event", (event, ctx) => {
