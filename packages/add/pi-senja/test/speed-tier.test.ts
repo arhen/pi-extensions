@@ -159,7 +159,7 @@ describe("speed tier", () => {
 		h.ctx.model = { ...h.ctx.model, id: "gpt-4o" } as typeof h.ctx.model;
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "on");
-		expect(h.ui.notify).toHaveBeenCalledWith("fast is not available for openai/gpt-4o; not enabled.", "warning");
+		expect(h.ui.notify).toHaveBeenCalledWith("fast: not supported for openai/gpt-4o", "warning");
 		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
 		expect(await h.emitProviderRequest({ model: "gpt-4o" })).toEqual({ model: "gpt-4o" });
 	});
@@ -169,10 +169,7 @@ describe("speed tier", () => {
 		h.ctx.model = { ...h.ctx.model, id: "gpt-5.6-sol" } as typeof h.ctx.model;
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "ultrafast", "on");
-		expect(h.ui.notify).toHaveBeenCalledWith(
-			"ultrafast is not available for openai/gpt-5.6-sol; not enabled.",
-			"warning",
-		);
+		expect(h.ui.notify).toHaveBeenCalledWith("ultrafast: not supported for openai/gpt-5.6-sol", "warning");
 		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
 		expect(await h.emitProviderRequest({ model: "gpt-5.6-sol" })).toEqual({ model: "gpt-5.6-sol" });
 	});
@@ -189,10 +186,7 @@ describe("speed tier", () => {
 		await h.emit("session_start");
 		await setTier(h, "fast", "on");
 		await setTier(h, "ultrafast", "on");
-		expect(h.ui.notify).toHaveBeenLastCalledWith(
-			`ultrafast is not available for openai/${id}; not enabled.`,
-			"warning",
-		);
+		expect(h.ui.notify).toHaveBeenLastCalledWith(`ultrafast: not supported for openai/${id}`, "warning");
 		expect(footerLine1(h)).toEndWith("fast");
 		expect(await h.emitProviderRequest({ model: id })).toEqual({ model: id, service_tier: "priority" });
 		expect(lookup).toHaveBeenCalledTimes(2);
@@ -207,7 +201,7 @@ describe("speed tier", () => {
 
 		lookup.mockResolvedValueOnce(Response.json({ models: [{ slug: id, service_tiers: [] }] }));
 		await h.emit("session_start");
-		expect(h.ui.notify).toHaveBeenLastCalledWith(`fast is not available for openai/${id}; not enabled.`, "warning");
+		expect(h.ui.notify).toHaveBeenLastCalledWith(`fast: not supported for openai/${id}`, "warning");
 		expect(await h.emitProviderRequest({ model: id })).toEqual({ model: id });
 	});
 
@@ -245,10 +239,7 @@ describe("speed tier", () => {
 		await reply("default");
 		await end("stop");
 		expect(h.ui.notify).toHaveBeenCalledTimes(1);
-		expect(h.ui.notify).toHaveBeenCalledWith(
-			`Requested ${tier} for openai/${id}; OpenAI reported default. ${tier} stays on.`,
-			"warning",
-		);
+		expect(h.ui.notify).toHaveBeenCalledWith(h.ui.theme.fg("warning", `${tier} miss: served default (${id})`), "info");
 		expect(footerLine1(h)).toEndWith(`▪ ${tier}`);
 		const expected = { model: id, service_tier: tier === "fast" ? "priority" : tier };
 		const fresh = openaiHarness();
@@ -262,10 +253,7 @@ describe("speed tier", () => {
 			await end("stop");
 			expect(footerLine1(h)).toEndWith(`▪ ${tier}`);
 			expect(h.ui.notify).toHaveBeenCalledTimes(1);
-			expect(h.ui.notify).toHaveBeenLastCalledWith(
-				`Requested ${tier} for openai/${id}; OpenAI did not report a tier. ${tier} stays on.`,
-				"warning",
-			);
+			expect(h.ui.notify).toHaveBeenLastCalledWith(h.ui.theme.fg("warning", `${tier}: tier not confirmed`), "info");
 		}
 	});
 

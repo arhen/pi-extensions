@@ -63,7 +63,7 @@ async function canRequestTier(ctx: ExtensionContext, model: NonNullable<Extensio
 	const codex = model.provider === "openai-codex";
 	const base = codex ? "https://chatgpt.com/backend-api" : "https://api.openai.com/v1";
 	const failure = `Cannot verify ${tier} for ${model.provider}/${model.id}; not enabled.`;
-	const unsupported = `${tier} is not available for ${model.provider}/${model.id}; not enabled.`;
+	const unsupported = `${tier}: not supported for ${model.provider}/${model.id}`;
 	if (model.baseUrl?.replace(/\/$/, "") !== base) return failure;
 	if (!ctx.modelRegistry.isUsingOAuth(model)) return SPEED_TIER_SUPPORT[tier].has(model.id) ? undefined : unsupported;
 	try {
@@ -434,28 +434,34 @@ export default function (pi: ExtensionAPI) {
 		return { ...payload, service_tier: wireTier(tier) };
 	});
 
-	function finishSpeedRequest(key: string, served: unknown, ctx: ExtensionContext) {
+	function finishSpeedRequest(provider: string, model: string, served: unknown, ctx: ExtensionContext) {
+		const key = `${provider}/${model}`;
 		const tier = pendingReports.get(key);
 		if (!tier) return;
 		pendingReports.delete(key);
 		if (!ctx.hasUI || served === wireTier(tier) || served === tier) return;
-		const reason =
-			typeof served === "string" && /^[a-z0-9_-]{1,32}$/i.test(served) ? `reported ${served}` : "did not report a tier";
-		ctx.ui.notify(`Requested ${tier} for ${key}; OpenAI ${reason}. ${tier} stays on.`, "warning");
+		const message =
+			typeof served === "string" && ["default", "priority", "fast", "ultrafast", "flex", "scale"].includes(served)
+				? `${tier} miss: served ${served} (${sanitizeStatus(model)})`
+				: `${tier}: tier not confirmed`;
+		if (ctx.mode === "tui") ctx.ui.notify(ctx.ui.theme.fg("warning", message), "info");
+		else ctx.ui.notify(message, "warning");
 	}
 
 	pi.on("provider_stream_event", (event, ctx) => {
 		const data = event.data as { type?: string; response?: { service_tier?: unknown; status?: string } } | null;
 		if (data?.type !== "response.completed" && data?.type !== "response.done") return;
 		if (data.response?.status && data.response.status !== "completed") return;
-		finishSpeedRequest(`${event.provider}/${event.model}`, data.response?.service_tier, ctx);
+		finishSpeedRequest(event.provider, event.model, data.response?.service_tier, ctx);
 	});
 
 	pi.on("message_end", ({ message }, ctx) => {
 		if (message.role !== "assistant") return;
-		const key = `${message.provider}/${message.model}`;
-		if (message.stopReason === "stop" || message.stopReason === "toolUse") finishSpeedRequest(key, undefined, ctx);
-		else pendingReports.delete(key);
+		if (message.stopReason === "stop" || message.stopReason === "toolUse") {
+			finishSpeedRequest(message.provider, message.model, undefined, ctx);
+		} else {
+			pendingReports.delete(`${message.provider}/${message.model}`);
+		}
 	});
 
 	// Track how long the current prompt has been running.
