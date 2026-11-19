@@ -39,10 +39,7 @@ interface RenderHandle {
 
 type SpeedTier = "fast" | "ultrafast";
 
-// Advisory only — OpenAI rejects or silently downgrades unsupported tiers server-side,
-// so unknown models still get the tier; they just warn here. Fast list from OpenAI's
-// model catalog (codex 0.166.0, service_tiers/priority); Ultrafast list from OpenAI's
-// Ultrafast mode docs. Extend as OpenAI ships new tiers/models.
+// API-key model lists do not advertise speed tiers. OAuth uses the account catalog instead.
 const SPEED_TIER_SUPPORT: Record<SpeedTier, ReadonlySet<string>> = {
 	fast: new Set([
 		"gpt-5.5",
@@ -59,6 +56,41 @@ const SPEED_TIER_SUPPORT: Record<SpeedTier, ReadonlySet<string>> = {
 	]),
 	ultrafast: new Set(["gpt-6.1-sol", "gpt-6.2-astra", "gpt-6.2-sol", "gpt-6-astra"]),
 };
+
+const wireTier = (tier: SpeedTier) => (tier === "fast" ? "priority" : "ultrafast");
+
+async function canRequestTier(ctx: ExtensionContext, model: NonNullable<ExtensionContext["model"]>, tier: SpeedTier) {
+	const codex = model.provider === "openai-codex";
+	const base = codex ? "https://chatgpt.com/backend-api" : "https://api.openai.com/v1";
+	const failure = `Cannot verify ${tier} for ${model.provider}/${model.id}; not enabled.`;
+	const unsupported = `${tier} is not available for ${model.provider}/${model.id}; not enabled.`;
+	if (model.baseUrl?.replace(/\/$/, "") !== base) return failure;
+	if (!ctx.modelRegistry.isUsingOAuth(model)) return SPEED_TIER_SUPPORT[tier].has(model.id) ? undefined : unsupported;
+	try {
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+		if (!auth.ok || !auth.apiKey || (auth.baseUrl && auth.baseUrl.replace(/\/$/, "") !== base)) return failure;
+		const headers = new Headers({ Authorization: `Bearer ${auth.apiKey}` });
+		const account = auth.headers?.["chatgpt-account-id"];
+		if (account) headers.set("ChatGPT-Account-ID", account);
+		const response = await fetch(codex ? `${base}/codex/models?client_version=0.166.0` : `${base}/models`, {
+			headers,
+			redirect: "error",
+			signal: AbortSignal.timeout(5000),
+		});
+		if (!response.ok) return failure;
+		const catalog = (await response.json()) as { models?: unknown } | null;
+		if (!Array.isArray(catalog?.models)) return failure;
+		const entry = catalog.models.find((m: { slug?: string } | null) => m?.slug === model.id);
+		if (!entry) return unsupported;
+		const tiers = Array.isArray(entry.service_tiers)
+			? entry.service_tiers.map((t: { id?: string } | null) => t?.id)
+			: entry.additional_speed_tiers;
+		if (!Array.isArray(tiers)) return failure;
+		return tiers.includes(wireTier(tier)) || tiers.includes(tier) ? undefined : unsupported;
+	} catch {
+		return failure;
+	}
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -324,6 +356,8 @@ export default function (pi: ExtensionAPI) {
 	let lastDoneIn: number | undefined;
 	let modeWorkingMessage: string | undefined;
 	const speedTiers = new Map<string, SpeedTier | null>();
+	const speedLabels = new Map<string, string>();
+	const pendingReports = new Map<string, SpeedTier>();
 
 	const unsubscribeMode = pi.events.on("pi-mode:working-message", (message) => {
 		if (message === undefined || typeof message === "string") modeWorkingMessage = message || undefined;
@@ -342,23 +376,32 @@ export default function (pi: ExtensionAPI) {
 		return join(speedDir, createHash("sha256").update(key).digest("hex"));
 	}
 
-	function getSpeedTier(key: string | undefined) {
-		if (!key) return null;
-		if (!speedTiers.has(key)) {
-			let tier: SpeedTier | null = null;
-			try {
-				const saved = readFileSync(speedFile(key), "utf8").trim();
-				if (saved === "fast" || saved === "ultrafast") tier = saved;
-			} catch {
-				// No saved tier.
-			}
-			speedTiers.set(key, tier);
+	async function restoreSpeedTier(ctx: ExtensionContext) {
+		const model = ctx.model;
+		const key = speedKey(model);
+		if (!key || !model || speedTiers.has(key)) return;
+		let saved: string;
+		try {
+			saved = readFileSync(speedFile(key), "utf8").trim();
+		} catch {
+			speedTiers.set(key, null);
+			return;
 		}
-		return speedTiers.get(key);
+		if (saved !== "fast" && saved !== "ultrafast") return;
+		const warning = await canRequestTier(ctx, model, saved);
+		if (speedTiers.has(key)) return;
+		speedTiers.set(key, warning ? null : saved);
+		if (warning && ctx.hasUI) ctx.ui.notify(warning, "warning");
+	}
+
+	function speedLabel(key: string, tier: SpeedTier) {
+		return speedLabels.get(key) ?? `${tier} requested`;
 	}
 
 	function setSpeedTier(key: string, tier: SpeedTier | null): void {
 		speedTiers.set(key, tier);
+		speedLabels.delete(key);
+		pendingReports.delete(key);
 		if (tier) {
 			mkdirSync(speedDir, { recursive: true });
 			writeFileSync(speedFile(key), `${tier}\n`);
@@ -376,17 +419,47 @@ export default function (pi: ExtensionAPI) {
 
 	// Re-render when state that the footer displays changes.
 	pi.on("thinking_level_select", requestFooterRender);
-	pi.on("model_select", requestFooterRender);
+	pi.on("model_select", async (_event, ctx) => {
+		await restoreSpeedTier(ctx);
+		requestFooterRender();
+	});
 
 	// Inject the active speed tier into OpenAI requests. /fast maps to service_tier
 	// "priority": the ChatGPT backend rejects the literal "fast" value.
-	pi.on("before_provider_request", (event, ctx) => {
+	pi.on("before_provider_request", async (event, ctx) => {
 		const model = ctx.model;
-		const speedTier = getSpeedTier(speedKey(model));
-		if (!model || !speedTier) return;
+		const key = speedKey(model);
 		const payload = event.payload as { model?: string; service_tier?: unknown } | undefined;
-		if (!payload || payload.model !== model.id || payload.service_tier !== undefined) return;
-		return { ...payload, service_tier: speedTier === "fast" ? "priority" : "ultrafast" };
+		if (!key || !payload || payload.model !== model?.id) return;
+		await restoreSpeedTier(ctx);
+		const tier = speedTiers.get(key);
+		if (!tier) return;
+		pendingReports.delete(key);
+		if (payload.service_tier !== undefined) {
+			speedLabels.set(key, `${tier} overridden by preset`);
+			requestFooterRender();
+			return;
+		}
+		speedLabels.delete(key);
+		pendingReports.set(key, tier);
+		requestFooterRender();
+		return { ...payload, service_tier: wireTier(tier) };
+	});
+
+	pi.on("provider_stream_event", (event) => {
+		const data = event.data as { type?: string; response?: { service_tier?: unknown } } | null;
+		if (data?.type !== "response.completed" && data?.type !== "response.done") return;
+		const key = `${event.provider}/${event.model}`;
+		const tier = pendingReports.get(key);
+		if (!tier) return;
+		pendingReports.delete(key);
+		const served = data.response?.service_tier;
+		if (typeof served !== "string" || !/^[a-z0-9_-]{1,32}$/i.test(served)) return;
+		speedLabels.set(
+			key,
+			served === wireTier(tier) || served === tier ? `${tier} confirmed` : `${tier} requested → ${served}`,
+		);
+		requestFooterRender();
 	});
 
 	// Track how long the current prompt has been running.
@@ -512,9 +585,10 @@ export default function (pi: ExtensionAPI) {
 						const level = pi.getThinkingLevel();
 						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg(effortColor(level), level)}`;
 					}
-					const speedTier = getSpeedTier(speedKey(ctx.model));
-					if (speedTier) {
-						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg("warning", speedTier)}`;
+					const key = speedKey(ctx.model);
+					const tier = key && speedTiers.get(key);
+					if (key && tier) {
+						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg("warning", speedLabel(key, tier))}`;
 					}
 
 					const line1 = alignRight(locationBlock, modelBlock, width, theme);
@@ -635,17 +709,31 @@ export default function (pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			const model = ctx.model;
 			const key = speedKey(model);
-			let speedTier = getSpeedTier(key);
+			let speedTier = key ? speedTiers.get(key) : null;
 			const arg = args.trim().toLowerCase();
 			if (arg !== "on" && arg !== "off") {
-				if (ctx.hasUI) ctx.ui.notify(speedTier ? `${speedTier} mode is on` : "Fast and Ultrafast are off", "info");
+				if (ctx.hasUI)
+					ctx.ui.notify(speedTier && key ? speedLabel(key, speedTier) : "Fast and Ultrafast are off", "info");
 				return;
 			}
 			if (!model || !key) {
 				if (ctx.hasUI) ctx.ui.notify("Speed tiers require an OpenAI model", "warning");
 				return;
 			}
-			if (arg === "on" || speedTier === tier) {
+			if (arg === "on") {
+				const warning = await canRequestTier(ctx, model, tier);
+				if (warning) {
+					if (speedTiers.get(key) === tier) {
+						speedTiers.set(key, null);
+						speedLabels.delete(key);
+						pendingReports.delete(key);
+						requestFooterRender();
+					}
+					if (ctx.hasUI) ctx.ui.notify(warning, "warning");
+					return;
+				}
+			}
+			if (arg === "on" || !speedTier || speedTier === tier) {
 				speedTier = arg === "on" ? tier : null;
 				try {
 					setSpeedTier(key, speedTier);
@@ -659,24 +747,18 @@ export default function (pi: ExtensionAPI) {
 				ctx.ui.notify(`${tier} mode off`, "info");
 				return;
 			}
-			if (!SPEED_TIER_SUPPORT[speedTier].has(model.id)) {
-				ctx.ui.notify(
-					`${speedTier} mode on — ${model.id} is not on the known ${speedTier} support list; OpenAI may reject or ignore the request`,
-					"warning",
-				);
-			} else {
-				ctx.ui.notify(
-					`${speedTier} mode on — service_tier: ${speedTier === "fast" ? "priority" : "ultrafast"}`,
-					"info",
-				);
-			}
+			ctx.ui.notify(speedLabel(key, speedTier), "info");
 		},
 	});
 
 	pi.registerCommand("fast", speedTierCommand("fast"));
 	pi.registerCommand("ultrafast", speedTierCommand("ultrafast"));
 
-	pi.on("session_start", (event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		speedTiers.clear();
+		speedLabels.clear();
+		pendingReports.clear();
+		await restoreSpeedTier(ctx);
 		clearWorkingTimers();
 		workingSince = undefined;
 		lastDoneIn = undefined;

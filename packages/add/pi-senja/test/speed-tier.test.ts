@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	mock.restore();
 	if (agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 	else process.env.PI_CODING_AGENT_DIR = agentDir;
 	rmSync(dir, { recursive: true, force: true });
@@ -23,6 +24,7 @@ function openaiHarness() {
 	const h = createHarness();
 	h.ctx.model = {
 		provider: "openai",
+		baseUrl: "https://api.openai.com/v1",
 		id: "gpt-6.2-sol",
 		reasoning: true,
 		contextWindow: 272_000,
@@ -105,11 +107,11 @@ describe("speed tier", () => {
 		async function select(provider: string, id: string, tier?: "fast" | "ultrafast") {
 			h.ctx.model = { ...h.ctx.model!, provider, id };
 			await h.emit("model_select", { model: h.ctx.model });
-			expect(footerLine1(h)).toEndWith(`${provider} ▪ ${id} ▪ high${tier ? ` ▪ ${tier}` : ""}`);
+			expect(footerLine1(h)).toEndWith(`${provider} ▪ ${id} ▪ high${tier ? ` ▪ ${tier} requested` : ""}`);
 			const payload = await h.emitProviderRequest({ model: id });
 			expect(payload).toEqual(tier ? { model: id, service_tier: tier === "fast" ? "priority" : tier } : { model: id });
 			await setTier(h, "fast", "");
-			expect(h.ui.notify).toHaveBeenLastCalledWith(tier ? `${tier} mode is on` : "Fast and Ultrafast are off", "info");
+			expect(h.ui.notify).toHaveBeenLastCalledWith(tier ? `${tier} requested` : "Fast and Ultrafast are off", "info");
 		}
 		await select("openai", "gpt-6.2-sol");
 		await setTier(h, "fast", "on");
@@ -138,9 +140,9 @@ describe("speed tier", () => {
 		const h = openaiHarness();
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "on");
-		expect(h.ui.notify).toHaveBeenCalledWith("fast mode on — service_tier: priority", "info");
+		expect(h.ui.notify).toHaveBeenCalledWith("fast requested", "info");
 		await setTier(h, "ultrafast", "on");
-		expect(h.ui.notify).toHaveBeenCalledWith("ultrafast mode on — service_tier: ultrafast", "info");
+		expect(h.ui.notify).toHaveBeenCalledWith("ultrafast requested", "info");
 	});
 
 	test("setting on a non-OpenAI model warns that the tier only affects OpenAI requests", async () => {
@@ -157,10 +159,9 @@ describe("speed tier", () => {
 		h.ctx.model = { ...h.ctx.model, id: "gpt-4o" } as typeof h.ctx.model;
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "on");
-		expect(h.ui.notify).toHaveBeenCalledWith(
-			"fast mode on — gpt-4o is not on the known fast support list; OpenAI may reject or ignore the request",
-			"warning",
-		);
+		expect(h.ui.notify).toHaveBeenCalledWith("fast is not available for openai/gpt-4o; not enabled.", "warning");
+		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
+		expect(await h.emitProviderRequest({ model: "gpt-4o" })).toEqual({ model: "gpt-4o" });
 	});
 
 	test("ultrafast on a fast-only model warns", async () => {
@@ -169,9 +170,73 @@ describe("speed tier", () => {
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "ultrafast", "on");
 		expect(h.ui.notify).toHaveBeenCalledWith(
-			"ultrafast mode on — gpt-5.6-sol is not on the known ultrafast support list; OpenAI may reject or ignore the request",
+			"ultrafast is not available for openai/gpt-5.6-sol; not enabled.",
 			"warning",
 		);
+		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
+		expect(await h.emitProviderRequest({ model: "gpt-5.6-sol" })).toEqual({ model: "gpt-5.6-sol" });
+	});
+
+	test("account lists only Fast: reject Ultrafast without replacing Fast; fail closed on lookup errors", async () => {
+		const h = openaiHarness();
+		h.ctx.modelRegistry.isUsingOAuth = () => true;
+		h.ctx.modelRegistry.getApiKeyAndHeaders = async () => ({ ok: true, apiKey: "test-only" });
+		const id = h.ctx.model!.id;
+		const catalog = { models: [{ slug: id, service_tiers: [{ id: "priority" }] }] };
+		const lookup = spyOn(globalThis, "fetch")
+			.mockResolvedValueOnce(Response.json(catalog))
+			.mockResolvedValueOnce(Response.json(catalog));
+		await h.emit("session_start");
+		await setTier(h, "fast", "on");
+		await setTier(h, "ultrafast", "on");
+		expect(h.ui.notify).toHaveBeenLastCalledWith(
+			`ultrafast is not available for openai/${id}; not enabled.`,
+			"warning",
+		);
+		expect(footerLine1(h)).toEndWith("fast requested");
+		expect(await h.emitProviderRequest({ model: id })).toEqual({ model: id, service_tier: "priority" });
+		expect(lookup).toHaveBeenCalledTimes(2);
+
+		lookup.mockRejectedValue(new Error("offline"));
+		await setTier(h, "ultrafast", "on");
+		expect(h.ui.notify).toHaveBeenLastCalledWith(`Cannot verify ultrafast for openai/${id}; not enabled.`, "warning");
+		expect(footerLine1(h)).toEndWith("fast requested");
+		await h.emit("session_start");
+		expect(footerLine1(h)).not.toContain("fast");
+		expect(await h.emitProviderRequest({ model: id })).toEqual({ model: id });
+
+		lookup.mockResolvedValueOnce(Response.json({ models: [{ slug: id, service_tiers: [] }] }));
+		await h.emit("session_start");
+		expect(h.ui.notify).toHaveBeenLastCalledWith(`fast is not available for openai/${id}; not enabled.`, "warning");
+		expect(await h.emitProviderRequest({ model: id })).toEqual({ model: id });
+	});
+
+	test("footer reports only the selected model's Senja request, never a preset or an old response", async () => {
+		const h = openaiHarness();
+		await h.emit("session_start");
+		const id = h.ctx.model!.id;
+		const reply = (served: string, model = id) =>
+			h.emit("provider_stream_event", {
+				provider: "openai",
+				model,
+				data: { type: "response.completed", response: { service_tier: served } },
+			});
+		await setTier(h, "fast", "on");
+		await h.emitProviderRequest({ model: id });
+		await reply("default", "another-model");
+		expect(footerLine1(h)).toEndWith("fast requested");
+		await reply("default");
+		expect(footerLine1(h)).toEndWith("fast requested → default");
+		await h.emitProviderRequest({ model: id });
+		await reply("priority");
+		expect(footerLine1(h)).toEndWith("fast confirmed");
+		await h.emitProviderRequest({ model: id, service_tier: "flex" });
+		await reply("flex");
+		expect(footerLine1(h)).toEndWith("fast overridden by preset");
+		await h.emitProviderRequest({ model: id });
+		await setTier(h, "fast", "off");
+		await reply("default");
+		expect(footerLine1(h)).not.toContain("fast");
 	});
 
 	test("bare /fast reports state without changing it", async () => {
@@ -182,6 +247,6 @@ describe("speed tier", () => {
 		expect(h.ui.notify).toHaveBeenCalledWith("Fast and Ultrafast are off", "info");
 		await setTier(h, "ultrafast", "on");
 		await setTier(h, "fast", "");
-		expect(h.ui.notify).toHaveBeenCalledWith("ultrafast mode is on", "info");
+		expect(h.ui.notify).toHaveBeenCalledWith("ultrafast requested", "info");
 	});
 });
