@@ -1,17 +1,22 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { createHarness, plain } from "./harness.ts";
 
-const stateFile = () => join(process.env.PI_CODING_AGENT_DIR ?? "", "fast-mode.json");
+const agentDir = process.env.PI_CODING_AGENT_DIR;
+let dir: string;
 
 beforeEach(() => {
-	rmSync(stateFile(), { force: true });
+	dir = mkdtempSync(join(tmpdir(), "senja-speed-"));
+	process.env.PI_CODING_AGENT_DIR = dir;
 });
 
 afterEach(() => {
-	rmSync(stateFile(), { force: true });
+	if (agentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+	else process.env.PI_CODING_AGENT_DIR = agentDir;
+	rmSync(dir, { recursive: true, force: true });
 });
 
 function openaiHarness() {
@@ -40,7 +45,7 @@ describe("speed tier", () => {
 		const payload = { model: "gpt-6.2-sol", input: [] };
 		const result = await h.emitProviderRequest(payload);
 		expect(result).toBe(payload);
-		expect(existsSync(stateFile())).toBe(false);
+		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
 		expect(footerLine1(h)).not.toContain("fast");
 	});
 
@@ -48,7 +53,6 @@ describe("speed tier", () => {
 		const h = openaiHarness();
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "on");
-		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "fast" });
 		const result = (await h.emitProviderRequest({ model: "gpt-6.2-sol", input: [] })) as Record<string, unknown>;
 		expect(result.service_tier).toBe("priority");
 		expect(footerLine1(h)).toContain("▪ fast");
@@ -59,12 +63,11 @@ describe("speed tier", () => {
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "on");
 		await setTier(h, "ultrafast", "on");
-		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "ultrafast" });
 		const result = (await h.emitProviderRequest({ model: "gpt-6.2-sol" })) as Record<string, unknown>;
 		expect(result.service_tier).toBe("ultrafast");
 		expect(footerLine1(h)).toContain("▪ ultrafast");
 		await setTier(h, "fast", "off");
-		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "ultrafast" });
+		expect(footerLine1(h)).toContain("▪ ultrafast");
 	});
 
 	test("/ultrafast off clears the tier and stops injecting", async () => {
@@ -72,7 +75,6 @@ describe("speed tier", () => {
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "ultrafast", "on");
 		await setTier(h, "ultrafast", "off");
-		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: null });
 		const payload = { model: "gpt-6.2-sol" };
 		expect(await h.emitProviderRequest(payload)).toBe(payload);
 		expect(footerLine1(h)).not.toContain("fast");
@@ -94,6 +96,31 @@ describe("speed tier", () => {
 
 		const preset = { model: "gpt-6.2-sol", service_tier: "flex" };
 		expect(await h.emitProviderRequest(preset)).toBe(preset);
+	});
+
+	test("switching models restores each badge and request tier without inheriting the old global setting", async () => {
+		writeFileSync(join(dir, "fast-mode.json"), JSON.stringify({ tier: "fast" }));
+		const h = openaiHarness();
+		await h.emit("session_start", { reason: "startup" });
+		async function select(provider: string, id: string, tier?: "fast" | "ultrafast") {
+			h.ctx.model = { ...h.ctx.model!, provider, id };
+			await h.emit("model_select", { model: h.ctx.model });
+			expect(footerLine1(h)).toEndWith(`${provider} ▪ ${id} ▪ high${tier ? ` ▪ ${tier}` : ""}`);
+			const payload = await h.emitProviderRequest({ model: id });
+			expect(payload).toEqual(tier ? { model: id, service_tier: tier === "fast" ? "priority" : tier } : { model: id });
+			await setTier(h, "fast", "");
+			expect(h.ui.notify).toHaveBeenLastCalledWith(tier ? `${tier} mode is on` : "Fast and Ultrafast are off", "info");
+		}
+		await select("openai", "gpt-6.2-sol");
+		await setTier(h, "fast", "on");
+		await select("openai", "gpt-6.2-astra");
+		await setTier(h, "ultrafast", "on");
+		await select("openai-codex", "gpt-6.2-sol");
+		await select("claude-code", "claude-opus-5");
+		await select("openai", "gpt-6.2-sol", "fast");
+		await setTier(h, "fast", "off");
+		await select("openai", "gpt-6.2-astra", "ultrafast");
+		await select("openai", "gpt-6.2-sol");
 	});
 
 	test("persisted tier loads into a fresh instance and injects without toggling", async () => {
@@ -120,11 +147,9 @@ describe("speed tier", () => {
 		const h = createHarness();
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "on");
-		expect(h.ui.notify).toHaveBeenCalledWith(
-			"fast mode on — it only affects OpenAI requests; active model is anthropic/claude-test",
-			"warning",
-		);
-		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "fast" });
+		expect(h.ui.notify).toHaveBeenCalledWith("Speed tiers require an OpenAI model", "warning");
+		expect(footerLine1(h)).not.toContain("fast");
+		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
 	});
 
 	test("setting on an OpenAI model outside the known list warns", async () => {
@@ -136,7 +161,6 @@ describe("speed tier", () => {
 			"fast mode on — gpt-4o is not on the known fast support list; OpenAI may reject or ignore the request",
 			"warning",
 		);
-		expect(JSON.parse(readFileSync(stateFile(), "utf8"))).toEqual({ tier: "fast" });
 	});
 
 	test("ultrafast on a fast-only model warns", async () => {
@@ -154,7 +178,7 @@ describe("speed tier", () => {
 		const h = openaiHarness();
 		await h.emit("session_start", { reason: "startup" });
 		await setTier(h, "fast", "");
-		expect(existsSync(stateFile())).toBe(false);
+		expect(existsSync(join(dir, "fast-mode"))).toBe(false);
 		expect(h.ui.notify).toHaveBeenCalledWith("Fast and Ultrafast are off", "info");
 		await setTier(h, "ultrafast", "on");
 		await setTier(h, "fast", "");

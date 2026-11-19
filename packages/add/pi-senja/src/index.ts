@@ -12,7 +12,8 @@
  *   /ultrafast on|off  OpenAI Ultrafast mode (service_tier: ultrafast)
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { AssistantMessage, ThinkingLevel } from "@earendil-works/pi-ai";
@@ -322,8 +323,7 @@ export default function (pi: ExtensionAPI) {
 	let workingTimer: ReturnType<typeof setInterval> | undefined;
 	let lastDoneIn: number | undefined;
 	let modeWorkingMessage: string | undefined;
-	let speedTier: SpeedTier | null = null;
-	let speedTierLoaded = false;
+	const speedTiers = new Map<string, SpeedTier | null>();
 
 	const unsubscribeMode = pi.events.on("pi-mode:working-message", (message) => {
 		if (message === undefined || typeof message === "string") modeWorkingMessage = message || undefined;
@@ -333,26 +333,37 @@ export default function (pi: ExtensionAPI) {
 		renderHandle?.requestRender();
 	}
 
-	function speedStateFile(): string {
-		return join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "fast-mode.json");
+	function speedKey(model: ExtensionContext["model"]): string | undefined {
+		if (model?.provider === "openai" || model?.provider === "openai-codex") return `${model.provider}/${model.id}`;
 	}
 
-	function loadSpeedTier(): void {
-		if (speedTierLoaded) return;
-		speedTierLoaded = true;
-		try {
-			const raw = JSON.parse(readFileSync(speedStateFile(), "utf8")) as { tier?: unknown };
-			speedTier = raw.tier === "fast" || raw.tier === "ultrafast" ? raw.tier : null;
-		} catch {
-			speedTier = null;
+	const speedDir = join(process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"), "fast-mode");
+	function speedFile(key: string): string {
+		return join(speedDir, createHash("sha256").update(key).digest("hex"));
+	}
+
+	function getSpeedTier(key: string | undefined) {
+		if (!key) return null;
+		if (!speedTiers.has(key)) {
+			let tier: SpeedTier | null = null;
+			try {
+				const saved = readFileSync(speedFile(key), "utf8").trim();
+				if (saved === "fast" || saved === "ultrafast") tier = saved;
+			} catch {
+				// No saved tier.
+			}
+			speedTiers.set(key, tier);
 		}
+		return speedTiers.get(key);
 	}
 
-	function saveSpeedTier(): void {
-		try {
-			writeFileSync(speedStateFile(), `${JSON.stringify({ tier: speedTier })}\n`);
-		} catch {
-			// Best-effort persistence; the toggle still applies to this session.
+	function setSpeedTier(key: string, tier: SpeedTier | null): void {
+		speedTiers.set(key, tier);
+		if (tier) {
+			mkdirSync(speedDir, { recursive: true });
+			writeFileSync(speedFile(key), `${tier}\n`);
+		} else {
+			rmSync(speedFile(key), { force: true });
 		}
 	}
 
@@ -370,10 +381,9 @@ export default function (pi: ExtensionAPI) {
 	// Inject the active speed tier into OpenAI requests. /fast maps to service_tier
 	// "priority": the ChatGPT backend rejects the literal "fast" value.
 	pi.on("before_provider_request", (event, ctx) => {
-		loadSpeedTier();
-		if (!speedTier) return;
 		const model = ctx.model;
-		if (!model || (model.provider !== "openai" && model.provider !== "openai-codex")) return;
+		const speedTier = getSpeedTier(speedKey(model));
+		if (!model || !speedTier) return;
 		const payload = event.payload as { model?: string; service_tier?: unknown } | undefined;
 		if (!payload || payload.model !== model.id || payload.service_tier !== undefined) return;
 		return { ...payload, service_tier: speedTier === "fast" ? "priority" : "ultrafast" };
@@ -502,6 +512,7 @@ export default function (pi: ExtensionAPI) {
 						const level = pi.getThinkingLevel();
 						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg(effortColor(level), level)}`;
 					}
+					const speedTier = getSpeedTier(speedKey(ctx.model));
 					if (speedTier) {
 						modelBlock += ` ${theme.fg("dim", GLYPH.square)} ${theme.fg("warning", speedTier)}`;
 					}
@@ -622,32 +633,33 @@ export default function (pi: ExtensionAPI) {
 		getArgumentCompletions: (prefix: string) =>
 			["on", "off"].filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
-			loadSpeedTier();
+			const model = ctx.model;
+			const key = speedKey(model);
+			let speedTier = getSpeedTier(key);
 			const arg = args.trim().toLowerCase();
-			if (arg === "on") {
-				speedTier = tier;
-			} else if (arg === "off") {
-				if (speedTier === tier) speedTier = null;
-			} else {
-				if (ctx.hasUI) {
-					ctx.ui.notify(speedTier ? `${speedTier} mode is on` : "Fast and Ultrafast are off", "info");
-				}
+			if (arg !== "on" && arg !== "off") {
+				if (ctx.hasUI) ctx.ui.notify(speedTier ? `${speedTier} mode is on` : "Fast and Ultrafast are off", "info");
 				return;
 			}
-			saveSpeedTier();
+			if (!model || !key) {
+				if (ctx.hasUI) ctx.ui.notify("Speed tiers require an OpenAI model", "warning");
+				return;
+			}
+			if (arg === "on" || speedTier === tier) {
+				speedTier = arg === "on" ? tier : null;
+				try {
+					setSpeedTier(key, speedTier);
+				} catch {
+					if (ctx.hasUI) ctx.ui.notify("Speed setting changed for this session but could not be saved", "warning");
+				}
+			}
 			requestFooterRender();
 			if (!ctx.hasUI) return;
 			if (!speedTier) {
 				ctx.ui.notify(`${tier} mode off`, "info");
 				return;
 			}
-			const model = ctx.model;
-			if (!model || (model.provider !== "openai" && model.provider !== "openai-codex")) {
-				ctx.ui.notify(
-					`${speedTier} mode on — it only affects OpenAI requests; active model is ${model ? `${model.provider}/${model.id}` : "unset"}`,
-					"warning",
-				);
-			} else if (!SPEED_TIER_SUPPORT[tier].has(model.id)) {
+			if (!SPEED_TIER_SUPPORT[speedTier].has(model.id)) {
 				ctx.ui.notify(
 					`${speedTier} mode on — ${model.id} is not on the known ${speedTier} support list; OpenAI may reject or ignore the request`,
 					"warning",
@@ -665,7 +677,6 @@ export default function (pi: ExtensionAPI) {
 	pi.registerCommand("ultrafast", speedTierCommand("ultrafast"));
 
 	pi.on("session_start", (event, ctx) => {
-		loadSpeedTier();
 		clearWorkingTimers();
 		workingSince = undefined;
 		lastDoneIn = undefined;
