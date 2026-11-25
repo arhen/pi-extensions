@@ -2,7 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import {
+	createCodemodeExtension,
+	type ExtensionAPI,
+	initTheme,
+	type ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import { KeybindingsManager, setKeybindings, TUI_KEYBINDINGS } from "@earendil-works/pi-tui";
 import { SubagentsWidget } from "../src/format.ts";
 import type { PeekTask } from "../src/peek.ts";
@@ -12,6 +17,7 @@ import type { RunSnapshot, TaskRef, TaskSnapshot } from "../src/types.ts";
 initTheme();
 const keybindings = new KeybindingsManager({
 	...TUI_KEYBINDINGS,
+	"app.tools.expand": { defaultKeys: "ctrl+o", description: "Toggle tool output" },
 	"app.thinking.toggle": { defaultKeys: "ctrl+t", description: "Toggle thinking blocks" },
 });
 setKeybindings(keybindings);
@@ -278,4 +284,106 @@ test("session view renders the child transcript with a leader bar, follows live,
 	view.handleInput("\x1b");
 	expect(closed).toBe(true);
 	view.dispose();
+});
+
+test("codemode and edit use native previews; live states and folding survive transcript refresh", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "subagent-tools-"));
+	dirs.push(dir);
+	const file = join(dir, "child.jsonl");
+	const entry = (message: object) => JSON.stringify({ type: "message", message });
+	const code = Array.from({ length: 13 }, (_, i) => `const value${i} = ${i};`).join("\n");
+	const diff = Array.from({ length: 20 }, (_, i) => `+${i + 1} const added${i} = true;`).join("\n");
+	writeFileSync(
+		file,
+		[
+			JSON.stringify({ type: "session", version: 3, id: "s", cwd: dir }),
+			entry({
+				role: "assistant",
+				content: [
+					{ type: "toolCall", id: "c", name: "codemode", arguments: { code } },
+					{ type: "toolCall", id: "e", name: "edit", arguments: { path: "example.ts" } },
+				],
+			}),
+			entry({
+				role: "toolResult",
+				toolCallId: "e",
+				isError: false,
+				details: { diff },
+				content: [{ type: "text", text: "edited" }],
+			}),
+		].join("\n"),
+	);
+	const task: PeekTask = {
+		runId: "r",
+		taskId: "t",
+		agent: "a",
+		status: "running",
+		running: true,
+		line: "",
+		sessionFile: file,
+		tools: { revision: 0, calls: new Map() },
+	};
+	const renderers = new Map<string, ToolRenderers>();
+	await createCodemodeExtension()({
+		registerTool: (tool: ToolRenderers) => renderers.set("codemode", tool),
+	} as unknown as ExtensionAPI);
+	const view = createSessionView({
+		tui: { terminal: { rows: 100 }, requestRender() {} } as any,
+		theme: { ...plain, fg: (color: string, s: string) => `[${color}:${s}]` },
+		keybindings: keybindings as any,
+		getTasks: () => [task],
+		startTask: task,
+		renderers,
+		leaderBusy: () => false,
+		hideThinking: false,
+		contextWindow: () => undefined,
+		send: () => "",
+		close() {},
+	});
+	const screen = () => view.render(100).map(strip).join("\n");
+	try {
+		expect(screen()).toContain("[dim:queued]");
+		expect(screen()).toContain("[success:success]");
+		expect(screen()).toContain("const value0 = 0;");
+		expect(screen()).not.toContain('"code":');
+		expect(screen()).not.toContain("value12");
+		expect(screen()).toContain("added0");
+		expect(screen()).not.toContain("added19");
+		const y = view
+			.render(100)
+			.map(strip)
+			.findIndex((line) => line.includes("codemode"));
+		view.handleMouse({ ...click(y), width: 100 });
+		expect(screen()).toContain("value12");
+		task.tools!.calls.set("c", {
+			type: "tool_execution_update",
+			toolCallId: "c",
+			toolName: "codemode",
+			args: { code },
+			partialResult: { content: [], details: { calls: [{ name: "read", args: "a.ts", status: "running" }] } },
+		});
+		task.tools!.revision++;
+		expect(screen()).toContain("[warning:running]");
+		expect(screen()).toContain("… read");
+		expect(screen()).toContain("value12");
+		appendFileSync(
+			file,
+			"\n" +
+				entry({
+					role: "toolResult",
+					toolCallId: "c",
+					isError: true,
+					content: [{ type: "text", text: "script failed" }],
+				}),
+		);
+		expect(screen()).toContain("[error:failed]");
+		expect(screen()).toContain("value12");
+		view.handleInput("\x0f");
+		expect(screen()).toContain("added19");
+		view.handleInput("\x0f");
+		expect(screen()).not.toContain("value12");
+		expect(screen()).not.toContain("added19");
+	} finally {
+		view.dispose();
+	}
 });

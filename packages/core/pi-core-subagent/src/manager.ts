@@ -31,6 +31,7 @@ import {
 	lastAssistantFailure,
 	updateUsageFromMessage,
 } from "./outcome.ts";
+import type { LiveToolCalls } from "./peek.ts";
 import { RunWidget } from "./run-widget.ts";
 import {
 	clampResumeThinking,
@@ -118,7 +119,7 @@ export class SubagentManager {
 	private pendingReplies = new Map<string, PendingReply>();
 	private liveChildren = new Map<
 		string,
-		{ abort: () => void; dispose: () => void; steer: (message: string) => void }
+		{ abort: () => void; dispose: () => void; steer: (message: string) => void; tools: LiveToolCalls }
 	>();
 	private mailboxes: Mailbox = createMailbox();
 	private liveWorktrees = new Map<string, Worktree>();
@@ -205,6 +206,10 @@ export class SubagentManager {
 	}
 	scheduleNotificationFlush(ctx: ExtensionContext, delayMs?: number): void {
 		this.delivery.scheduleNotificationFlush(ctx, delayMs);
+	}
+
+	liveTools(runId: string, taskId: string) {
+		return this.liveChildren.get(`${runId}:${taskId}`)?.tools;
 	}
 
 	listRuns(): RunSnapshot[] {
@@ -427,6 +432,26 @@ export class SubagentManager {
 		onUpdate: ((partial: any) => void) | undefined,
 		state: ChildEventState,
 	): void {
+		const tools = this.liveTools(run.id, task.id);
+		if (tools) {
+			if (
+				event.type === "tool_execution_start" ||
+				event.type === "tool_execution_update" ||
+				event.type === "tool_execution_end"
+			) {
+				if (!("parentToolCallId" in event && event.parentToolCallId)) tools.calls.set(event.toolCallId, event);
+				tools.revision++;
+			} else if (
+				event.type === "message_end" &&
+				event.message.role === "toolResult" &&
+				tools.calls.delete(event.message.toolCallId)
+			) {
+				tools.revision++;
+			} else if (event.type === "agent_end") {
+				tools.calls.clear();
+				tools.revision++;
+			}
+		}
 		const active =
 			event.type === "message_update" ||
 			event.type === "message_end" ||
@@ -692,6 +717,7 @@ export class SubagentManager {
 				throw new Error("Canceled by subagent_cancel");
 			}
 			this.liveChildren.set(key, {
+				tools: { revision: 0, calls: new Map() },
 				abort: () => void child?.abort(),
 				dispose: () => child?.dispose(),
 

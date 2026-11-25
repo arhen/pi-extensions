@@ -13,10 +13,12 @@ import {
 	getMarkdownTheme,
 	getSelectListTheme,
 	type KeybindingsManager,
+	keyText,
 	parseSessionEntries,
 	type Theme,
 	type ThemeColor,
 	ToolExecutionComponent,
+	type ToolRenderers,
 	UserMessageComponent,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -30,7 +32,7 @@ import {
 	truncateToWidth,
 	visibleWidth,
 } from "@earendil-works/pi-tui";
-import type { PeekTask } from "./peek.ts";
+import { type PeekTask, statusTag } from "./peek.ts";
 import type { TaskRef } from "./types.ts";
 
 const POLL_MS = 700;
@@ -88,19 +90,23 @@ export interface ChildStats {
 }
 
 /** Child transcript drawn with pi's own message components, so it reads like a normal session. */
-export function transcript(
-	sessionFile: string,
-	tui: TUI,
+function transcript(
+	task: PeekTask,
+	opts: SessionViewOptions,
 	hideThinking: boolean,
+	expanded: boolean,
+	overrides: Map<string, boolean>,
 ): { root: Container; stats: ChildStats } {
 	const root = new Container();
 	let entries: any[] = [];
 	try {
-		entries = parseSessionEntries(readFileSync(sessionFile, "utf8"));
+		entries = parseSessionEntries(readFileSync(task.sessionFile!, "utf8"));
 	} catch {}
 	const cwd = entries[0]?.type === "session" ? entries[0].cwd : process.cwd();
 	const stats: ChildStats = { cwd, input: 0, output: 0, cost: 0, context: 0 };
-	const pending = new Map<string, ToolExecutionComponent>();
+	const results = new Map(
+		entries.filter((e) => e.message?.role === "toolResult").map(({ message }) => [message.toolCallId, message]),
+	);
 	const md = getMarkdownTheme();
 	for (const entry of entries) {
 		if (entry.type !== "message") continue;
@@ -123,20 +129,52 @@ export function transcript(
 			root.addChild(new AssistantMessageComponent(message, hideThinking, md));
 			for (const block of message.content ?? []) {
 				if (block.type !== "toolCall") continue;
-				const tool = new ToolExecutionComponent(
-					block.name,
-					block.id,
-					block.arguments,
-					{},
-					BUILTIN_TOOLS[block.name]?.(cwd),
-					tui,
-					cwd,
-				);
-				root.addChild(tool);
-				pending.set(block.id, tool);
+				const live = task.tools?.calls.get(block.id);
+				const saved = results.get(block.id);
+				const result =
+					saved ??
+					(live?.type === "tool_execution_end"
+						? { ...live.result, isError: live.isError }
+						: live?.type === "tool_execution_update"
+							? live.partialResult
+							: undefined);
+				const partial = !saved && live?.type !== "tool_execution_end";
+				const status = !partial
+					? result?.isError
+						? "failed"
+						: "success"
+					: live
+						? "running"
+						: task.tools
+							? "queued"
+							: "unfinished";
+				const renderer =
+					opts.renderers?.get(block.name) ??
+					(Object.hasOwn(BUILTIN_TOOLS, block.name) ? BUILTIN_TOOLS[block.name]!(cwd) : {});
+				const key = JSON.stringify([task.sessionFile, block.id]);
+				let open = overrides.get(key) ?? expanded;
+				const tool = new ToolExecutionComponent(block.name, block.id, block.arguments, {}, renderer, opts.tui, cwd);
+				if (open) tool.setExpanded(true);
+				if (result) tool.updateResult(result, partial);
+				root.addChild({
+					render(width) {
+						const lines = tool.render(width);
+						const header = truncateToWidth(` ${open ? "▾" : "▸"} ${statusTag(status, opts.theme)}`, width);
+						// Pi's edit renderer always draws the full diff, even in compact mode.
+						return !open && block.name === "edit" && lines.length > 12
+							? [header, ...lines.slice(1, 11), opts.theme.fg("dim", ` … ${lines.length - 11} more lines`)]
+							: [header, ...lines.slice(1)];
+					},
+					handleMouse(event: TuiMouseEvent) {
+						if (event.type !== "click" || event.button !== "left") return undefined;
+						open = !open;
+						overrides.set(key, open);
+						tool.setExpanded(open);
+						return { handled: true };
+					},
+					invalidate: () => tool.invalidate(),
+				});
 			}
-		} else if (message.role === "toolResult") {
-			pending.get(message.toolCallId)?.updateResult(message);
 		}
 	}
 	return { root, stats };
@@ -159,6 +197,8 @@ export interface SessionViewOptions {
 	keybindings: KeybindingsManager;
 	getTasks: () => PeekTask[];
 	startTask: TaskRef;
+	renderers?: ReadonlyMap<string, ToolRenderers>;
+	toolsExpanded?: boolean;
 	leaderBusy: () => boolean;
 	hideThinking: boolean;
 	contextWindow: (provider: string | undefined, model: string | undefined) => number | undefined;
@@ -178,6 +218,8 @@ export function createSessionView(opts: SessionViewOptions) {
 	let fromBottom = 0;
 	let viewport = 10;
 	let hideThinking = opts.hideThinking;
+	let toolsExpanded = opts.toolsExpanded ?? false;
+	const overrides = new Map<string, boolean>();
 	let cache: { key: string; lines: string[]; stats: ChildStats; root: Container } | undefined;
 	let layout: { width: number; head: number; pad: number; start: number; end: number } | undefined;
 	let notice: { text: string; until: number } | undefined;
@@ -208,6 +250,12 @@ export function createSessionView(opts: SessionViewOptions) {
 		cache = undefined;
 		tui.requestRender();
 	});
+	editor.onAction("app.tools.expand", () => {
+		toolsExpanded = !toolsExpanded;
+		overrides.clear();
+		cache = undefined;
+		tui.requestRender();
+	});
 	editor.onSubmit = (value) => {
 		const message = value.trim();
 		const { task } = current();
@@ -224,10 +272,10 @@ export function createSessionView(opts: SessionViewOptions) {
 		try {
 			size = statSync(task.sessionFile).size;
 		} catch {}
-		const key = `${task.sessionFile}:${size}:${width}:${hideThinking}`;
+		const key = `${task.sessionFile}:${size}:${width}:${hideThinking}:${task.tools?.revision ?? "-"}`;
 		if (cache?.key === key) return cache;
 		const previous = cache?.key.startsWith(`${task.sessionFile}:`) ? cache.lines.length : undefined;
-		const { root, stats } = transcript(task.sessionFile, tui, hideThinking);
+		const { root, stats } = transcript(task, opts, hideThinking, toolsExpanded, overrides);
 		const lines = root.render(width);
 		// Hold the reading position while new output lands below it.
 		if (fromBottom > 0 && previous !== undefined) fromBottom += Math.max(0, lines.length - previous);
@@ -298,14 +346,14 @@ export function createSessionView(opts: SessionViewOptions) {
 			const bar = theme.bg(
 				"selectedBg",
 				truncateToWidth(
-					` ${theme.fg("accent", "◀ Leader")} ${busy ? theme.fg("warning", "● working") : theme.fg("success", "○ idle")}${theme.fg("dim", " · esc back · tab agent · pgup/pgdn scroll · enter send · shift+enter newline")}`,
+					` ${theme.fg("accent", "◀ Leader")} ${busy ? theme.fg("warning", "● working") : theme.fg("success", "○ idle")}${theme.fg("dim", ` · esc back · tab agent · ${keyText("app.tools.expand") || "click"} tools · pgup/pgdn scroll · enter send · shift+enter newline`)}`,
 					width,
 					"…",
 					true,
 				),
 			);
 			const crumb = task
-				? ` ${theme.fg("accent", theme.bold(`subagent: ${task.agent}`))} ${theme.fg("muted", `${task.status} · ${index + 1}/${tasks.length}`)}`
+				? ` ${theme.fg("accent", theme.bold(`subagent: ${task.agent}`))} ${statusTag(task.status, theme)}${theme.fg("muted", ` · ${index + 1}/${tasks.length}`)}`
 				: theme.fg("dim", " (no subagents)");
 			const head = [bar, truncateToWidth(crumb, width, "…", true)];
 			const { lines, stats } = body(task, width);

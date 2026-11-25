@@ -1,4 +1,10 @@
-import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import {
+	createCodemodeExtension,
+	type ExtensionAPI,
+	type ExtensionContext,
+	type ToolDefinition,
+	type ToolRenderers,
+} from "@earendil-works/pi-coding-agent";
 import { Key, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { TSchema } from "typebox";
 import {
@@ -51,6 +57,12 @@ function intercomLine(message: ParkedMsg): string {
 
 export default function (pi: ExtensionAPI) {
 	const manager = new SubagentManager(pi);
+	const renderers = new Map<string, ToolRenderers>();
+	pi.registerToolRenderer?.((name, next) => {
+		const renderer = next();
+		if (renderer) renderers.set(name, renderer);
+		return renderer;
+	});
 	const definitions: AnyToolDefinition[] = [];
 	const presentation = createPresentation(pi, definitions);
 	const defineTool = <TParams extends TSchema, TDetails = unknown, TState = any>(
@@ -70,6 +82,7 @@ export default function (pi: ExtensionAPI) {
 				status: task.status,
 				running: !TERMINAL.includes(task.status),
 				sessionFile: task.sessionFile,
+				tools: manager.liveTools(task.runId, task.id),
 				line: taskLine(task),
 				thinking: task.thinking,
 				startedAt: task.startedAt,
@@ -78,6 +91,13 @@ export default function (pi: ExtensionAPI) {
 	// Never ctx.switchSession(): it aborts the leader's turn and its session_shutdown kills every child.
 	const openSession = async (ctx: ExtensionContext, startTask: TaskRef) => {
 		if (ctx.mode !== "tui") return;
+		// A restored child may have used codemode before the leader rendered its first call.
+		if (!renderers.has("codemode")) {
+			await createCodemodeExtension()({
+				...pi,
+				registerTool: (tool) => renderers.set(tool.name, tool as AnyToolDefinition),
+			});
+		}
 		await ctx.ui.custom<void>(
 			(tui, theme, keybindings, done) =>
 				createSessionView({
@@ -85,6 +105,8 @@ export default function (pi: ExtensionAPI) {
 					theme,
 					keybindings,
 					getTasks,
+					renderers,
+					toolsExpanded: ctx.ui.getToolsExpanded(),
 					contextWindow: (provider, model) =>
 						provider && model ? ctx.modelRegistry.find(provider, model)?.contextWindow : undefined,
 					startTask,

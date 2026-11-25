@@ -1,10 +1,18 @@
 import { closeSync, openSync, readSync, statSync } from "node:fs";
-import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { AgentSessionEvent, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 const TAIL_BYTES = 64 * 1024;
 const POLL_MS = 700;
 const TAIL_ROWS = 18;
+
+export interface LiveToolCalls {
+	revision: number;
+	calls: Map<
+		string,
+		Extract<AgentSessionEvent, { type: "tool_execution_start" | "tool_execution_update" | "tool_execution_end" }>
+	>;
+}
 
 export interface PeekTask {
 	runId: string;
@@ -13,6 +21,7 @@ export interface PeekTask {
 	status: string;
 	running: boolean;
 	sessionFile?: string;
+	tools?: LiveToolCalls;
 	line: string;
 	thinking?: string;
 	startedAt?: number;
@@ -121,9 +130,11 @@ function renderLine(line: PeekLine, theme: Theme): string {
 	return `${theme.fg("dim", line.gutter)} ${line.text}`;
 }
 
-function statusTag(status: string, theme: Theme): string {
+export function statusTag(status: string, theme: Theme): string {
+	if (status === "running") return theme.fg("warning", status);
+	if (status === "queued") return theme.fg("dim", status);
 	if (status === "failed") return theme.fg("error", status);
-	if (status === "completed") return theme.fg("success", status);
+	if (status === "completed" || status === "success") return theme.fg("success", status);
 	if (status === "aborted") return theme.fg("warning", status);
 	return theme.fg("muted", status);
 }
